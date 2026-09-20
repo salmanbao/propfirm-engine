@@ -9,9 +9,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict, ViolationBuilder};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 /// Maximum daily drawdown rule.
 #[derive(Debug, Clone, Default)]
@@ -25,27 +25,45 @@ pub struct DailyDrawdownRule {
 }
 
 impl Rule for DailyDrawdownRule {
-    fn id(&self) -> RuleId { RuleId::named("daily_drawdown") }
-    fn name(&self) -> &str { "Daily Drawdown" }
-    fn kind(&self) -> ViolationKind { ViolationKind::DailyDrawdown }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("daily_drawdown")
+    }
+    fn name(&self) -> &'static str {
+        "Daily Drawdown"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::DailyDrawdown
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::OnTick
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
     /// P0-D: pack entry's priority overrides default.
     fn priority(&self) -> u32 {
-        self.params.as_ref().and_then(|p| p.priority()).unwrap_or(900)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::priority)
+            .unwrap_or(900)
     }
     /// P0-D: pack entry's tolerance overrides default.
     fn tolerance_cents(&self) -> i64 {
-        self.params.as_ref().and_then(|p| p.tolerance_cents()).unwrap_or(1)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::tolerance_cents)
+            .unwrap_or(1)
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Maximum drawdown permitted within a single trading day, measured from the day-start balance."
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
         if let Some(p) = &self.params {
-            if !p.enabled { return false; }
+            if !p.enabled {
+                return false;
+            }
         }
         self.effective_pct(ctx) > rust_decimal::Decimal::ZERO
     }
@@ -73,7 +91,11 @@ impl Rule for DailyDrawdownRule {
                 severity,
                 format!(
                     "Daily drawdown breach{}: {dd} > {limit}+{tolerance} ({}%)",
-                    if ctx.equity_is_broker_reported() { "" } else { " [ESTIMATED — not terminating]" },
+                    if ctx.equity_is_broker_reported() {
+                        ""
+                    } else {
+                        " [ESTIMATED — not terminating]"
+                    },
                     plan_pct * rust_decimal::Decimal::ONE_HUNDRED
                 ),
             );
@@ -84,8 +106,10 @@ impl Rule for DailyDrawdownRule {
             });
         }
         // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
-        let warn_pct = self.params.as_ref()
-            .and_then(|p| p.early_warning_pct())
+        let warn_pct = self
+            .params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::early_warning_pct)
             .unwrap_or(rust_decimal::Decimal::new(8, 1));
         let warn_threshold = limit.0 * warn_pct;
         if dd.0 >= warn_threshold {
@@ -109,8 +133,11 @@ impl Rule for DailyDrawdownRule {
 
 impl DailyDrawdownRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        DailyDrawdownRule { params: Some(RuleParams::from_entry(entry)) }
+        DailyDrawdownRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 
     /// Effective daily DD pct — pack entry's value if set, else plan.

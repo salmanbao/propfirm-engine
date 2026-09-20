@@ -3,7 +3,7 @@
 //! All metrics accept a slice of equity samples (point-in-time equity
 //! values) and return a single scalar. They use `Decimal` for precision.
 
-use crate::core::types::{Decimal, Money, dec};
+use crate::core::types::{dec, Decimal, Money};
 use crate::core::Error;
 use rust_decimal::MathematicalOps;
 
@@ -31,14 +31,16 @@ pub struct RiskMetrics {
 }
 
 impl RiskMetrics {
-    /// Computes a full risk profile from equity samples and per-trade PnL.
+    /// Computes a full risk profile from equity samples and per-trade `PnL`.
+    #[must_use]
     pub fn compute(equity_curve: &[Money], trades_pnl: &[Money]) -> Self {
         let sharpe = sharpe_ratio(equity_curve);
         let sortino = sortino_ratio(equity_curve);
         let max_dd = max_drawdown(equity_curve);
         let max_dd_pct = max_drawdown_pct(equity_curve);
         let calmar = calmar_ratio(equity_curve);
-        let (pf, total, wins, losses, avg_w, avg_l, lw, ll, expect, win_rate, zscore) = trade_stats(trades_pnl);
+        let (pf, total, wins, losses, avg_w, avg_l, lw, ll, expect, win_rate, zscore) =
+            trade_stats(trades_pnl);
         let recovery = recovery_factor(equity_curve);
         RiskMetrics {
             sharpe,
@@ -65,6 +67,7 @@ impl RiskMetrics {
 
 /// Sharpe ratio (annualization factor = sqrt(252) for daily series).
 /// Returns 0 if the sample has insufficient length or zero variance.
+#[must_use]
 pub fn sharpe_ratio(equity: &[Money]) -> Decimal {
     let rets = returns(equity);
     if rets.is_empty() {
@@ -72,10 +75,14 @@ pub fn sharpe_ratio(equity: &[Money]) -> Decimal {
     }
     let n = Decimal::from(rets.len());
     let mean = rets.iter().copied().sum::<Decimal>() / n;
-    let var = rets.iter().map(|r| {
-        let d = *r - mean;
-        d * d
-    }).sum::<Decimal>() / n;
+    let var = rets
+        .iter()
+        .map(|r| {
+            let d = *r - mean;
+            d * d
+        })
+        .sum::<Decimal>()
+        / n;
     let std = var.sqrt().unwrap_or(dec!(0));
     if std.is_zero() {
         return dec!(0);
@@ -85,6 +92,7 @@ pub fn sharpe_ratio(equity: &[Money]) -> Decimal {
 }
 
 /// Sortino ratio (only penalizes downside volatility).
+#[must_use]
 pub fn sortino_ratio(equity: &[Money]) -> Decimal {
     let rets = returns(equity);
     if rets.is_empty() {
@@ -92,7 +100,10 @@ pub fn sortino_ratio(equity: &[Money]) -> Decimal {
     }
     let n = Decimal::from(rets.len());
     let mean = rets.iter().copied().sum::<Decimal>() / n;
-    let downside: Vec<Decimal> = rets.iter().map(|r| if *r < dec!(0) { *r - dec!(0) } else { dec!(0) }).collect();
+    let downside: Vec<Decimal> = rets
+        .iter()
+        .map(|r| if *r < dec!(0) { *r - dec!(0) } else { dec!(0) })
+        .collect();
     let downside_n = Decimal::from(downside.len());
     if downside_n.is_zero() {
         return dec!(0);
@@ -107,6 +118,7 @@ pub fn sortino_ratio(equity: &[Money]) -> Decimal {
 }
 
 /// Calmar ratio = annualized return / maximum drawdown.
+#[must_use]
 pub fn calmar_ratio(equity: &[Money]) -> Decimal {
     let max_dd = max_drawdown_pct(equity);
     if max_dd.is_zero() {
@@ -131,6 +143,7 @@ pub fn calmar_ratio(equity: &[Money]) -> Decimal {
 }
 
 /// Maximum drawdown in absolute money.
+#[must_use]
 pub fn max_drawdown(equity: &[Money]) -> Decimal {
     let mut peak = dec!(0);
     let mut max_dd = dec!(0);
@@ -147,6 +160,7 @@ pub fn max_drawdown(equity: &[Money]) -> Decimal {
 }
 
 /// Maximum drawdown as a percentage of peak.
+#[must_use]
 pub fn max_drawdown_pct(equity: &[Money]) -> Decimal {
     let mut peak = dec!(0);
     let mut max_dd_pct = dec!(0);
@@ -166,17 +180,27 @@ pub fn max_drawdown_pct(equity: &[Money]) -> Decimal {
 }
 
 /// Profit factor = sum(positive pnl) / |sum(negative pnl)|.
+#[must_use]
 pub fn profit_factor(trades: &[Money]) -> Decimal {
     let gross_profit: Decimal = trades.iter().filter(|p| p.0 > dec!(0)).map(|p| p.0).sum();
-    let gross_loss: Decimal = trades.iter().filter(|p| p.0 < dec!(0)).map(|p| p.0.abs()).sum();
+    let gross_loss: Decimal = trades
+        .iter()
+        .filter(|p| p.0 < dec!(0))
+        .map(|p| p.0.abs())
+        .sum();
     if gross_loss.is_zero() {
         // No losses → return profit (or 0 if no profits either).
-        return if gross_profit.is_zero() { dec!(0) } else { gross_profit };
+        return if gross_profit.is_zero() {
+            dec!(0)
+        } else {
+            gross_profit
+        };
     }
     gross_profit / gross_loss
 }
 
 /// Expectancy per trade.
+#[must_use]
 pub fn expectancy(trades: &[Money]) -> Decimal {
     if trades.is_empty() {
         return dec!(0);
@@ -186,6 +210,7 @@ pub fn expectancy(trades: &[Money]) -> Decimal {
 }
 
 /// Recovery factor = net profit / max drawdown.
+#[must_use]
 pub fn recovery_factor(equity: &[Money]) -> Decimal {
     if equity.len() < 2 {
         return dec!(0);
@@ -201,6 +226,7 @@ pub fn recovery_factor(equity: &[Money]) -> Decimal {
 }
 
 /// Z-score (statistical measure of streaks).
+#[must_use]
 pub fn z_score(trades: &[Money]) -> Decimal {
     if trades.len() < 10 {
         return dec!(0);
@@ -235,38 +261,104 @@ pub fn z_score(trades: &[Money]) -> Decimal {
 }
 
 /// Converts an equity curve into a series of returns (decimal ratio).
+#[must_use]
 pub fn returns(equity: &[Money]) -> Vec<Decimal> {
-    equity.windows(2)
+    equity
+        .windows(2)
         .filter_map(|w| {
             let prev = w[0].0;
             let curr = w[1].0;
-            if prev.is_zero() { None } else { Some((curr - prev) / prev) }
+            if prev.is_zero() {
+                None
+            } else {
+                Some((curr - prev) / prev)
+            }
         })
         .collect()
 }
 
 /// Per-trade statistics: profit factor, totals, avg win/loss, etc.
 #[allow(clippy::type_complexity)]
-fn trade_stats(trades: &[Money]) -> (Decimal, usize, usize, usize, Decimal, Decimal, Decimal, Decimal, Decimal, Decimal, Decimal) {
+fn trade_stats(
+    trades: &[Money],
+) -> (
+    Decimal,
+    usize,
+    usize,
+    usize,
+    Decimal,
+    Decimal,
+    Decimal,
+    Decimal,
+    Decimal,
+    Decimal,
+    Decimal,
+) {
     if trades.is_empty() {
-        return (dec!(0), 0, 0, 0, dec!(0), dec!(0), dec!(0), dec!(0), dec!(0), dec!(0), dec!(0));
+        return (
+            dec!(0),
+            0,
+            0,
+            0,
+            dec!(0),
+            dec!(0),
+            dec!(0),
+            dec!(0),
+            dec!(0),
+            dec!(0),
+            dec!(0),
+        );
     }
     let total = trades.len();
-    let wins: Vec<Decimal> = trades.iter().filter(|p| p.0 > dec!(0)).map(|p| p.0).collect();
-    let losses: Vec<Decimal> = trades.iter().filter(|p| p.0 < dec!(0)).map(|p| p.0).collect();
+    let wins: Vec<Decimal> = trades
+        .iter()
+        .filter(|p| p.0 > dec!(0))
+        .map(|p| p.0)
+        .collect();
+    let losses: Vec<Decimal> = trades
+        .iter()
+        .filter(|p| p.0 < dec!(0))
+        .map(|p| p.0)
+        .collect();
     let n_wins = wins.len();
     let n_losses = losses.len();
     let gp: Decimal = wins.iter().sum();
-    let gl: Decimal = losses.iter().map(|v| v.abs()).sum();
-    let pf = if gl.is_zero() { if gp.is_zero() { dec!(0) } else { dec!(100) } } else { gp / gl };
-    let avg_w = if n_wins == 0 { dec!(0) } else { gp / Decimal::from(n_wins) };
-    let avg_l = if n_losses == 0 { dec!(0) } else { gl / Decimal::from(n_losses) };
+    let gl: Decimal = losses.iter().map(rust_decimal::Decimal::abs).sum();
+    let pf = if gl.is_zero() {
+        if gp.is_zero() {
+            dec!(0)
+        } else {
+            dec!(100)
+        }
+    } else {
+        gp / gl
+    };
+    let avg_w = if n_wins == 0 {
+        dec!(0)
+    } else {
+        gp / Decimal::from(n_wins)
+    };
+    let avg_l = if n_losses == 0 {
+        dec!(0)
+    } else {
+        gl / Decimal::from(n_losses)
+    };
     let lw = wins.iter().copied().max().unwrap_or(dec!(0));
-    let ll = losses.iter().map(|v| v.abs()).max().unwrap_or(dec!(0));
-    let win_rate = if total == 0 { dec!(0) } else { Decimal::from(n_wins) / Decimal::from(total) };
+    let ll = losses
+        .iter()
+        .map(rust_decimal::Decimal::abs)
+        .max()
+        .unwrap_or(dec!(0));
+    let win_rate = if total == 0 {
+        dec!(0)
+    } else {
+        Decimal::from(n_wins) / Decimal::from(total)
+    };
     let expect = expectancy(trades);
     let zs = z_score(trades);
-    (pf, total, n_wins, n_losses, avg_w, avg_l, lw, ll, expect, win_rate, zs)
+    (
+        pf, total, n_wins, n_losses, avg_w, avg_l, lw, ll, expect, win_rate, zs,
+    )
 }
 
 /// Validates a sample equity curve for sanity.
@@ -275,7 +367,9 @@ pub fn validate(equity: &[Money]) -> Result<(), Error> {
         return Err(Error::InvalidState("equity curve is empty".into()));
     }
     if equity.iter().any(|m| m.0 < dec!(0)) {
-        return Err(Error::InvalidState("equity curve contains negative values".into()));
+        return Err(Error::InvalidState(
+            "equity curve contains negative values".into(),
+        ));
     }
     Ok(())
 }

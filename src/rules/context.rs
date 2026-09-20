@@ -4,14 +4,14 @@
 //! order / trade / tick that triggered the evaluation, and the engine's
 //! evaluation scope (open order, trade fill, tick revaluation, day rollover).
 
+use crate::config::rule_config::RuleConfig;
 use crate::core::account::Account;
 use crate::core::events::DomainEvent;
 use crate::core::order::Order;
 use crate::core::position::Position;
 use crate::core::tick::Tick;
 use crate::core::trade::Trade;
-use crate::core::types::{Timestamp, ServerTime};
-use crate::config::rule_config::RuleConfig;
+use crate::core::types::ServerTime;
 use crate::equity_input::EquityInput;
 
 /// What triggered the evaluation. Determines which rules apply.
@@ -64,6 +64,7 @@ pub struct RuleContext {
 }
 
 impl RuleContext {
+    #[must_use]
     pub fn new(account: Account) -> Self {
         RuleContext {
             account,
@@ -84,6 +85,7 @@ impl RuleContext {
     /// is broker-reported. Breach-capable rules check this before emitting
     /// `Fail`/`Liquidate` — if false, the rule must downgrade to `Warn`
     /// at most (no termination on an estimate).
+    #[must_use]
     pub fn equity_is_broker_reported(&self) -> bool {
         self.equity_input.is_broker_reported()
     }
@@ -92,7 +94,12 @@ impl RuleContext {
     /// broker-reported. Called by the pipeline when the tick event
     /// carries the broker's own equity number (the only valid source
     /// for breach decisions).
-    pub fn with_broker_equity(mut self, equity: crate::core::types::Money, balance: crate::core::types::Money) -> Self {
+    #[must_use]
+    pub fn with_broker_equity(
+        mut self,
+        equity: crate::core::types::Money,
+        balance: crate::core::types::Money,
+    ) -> Self {
         self.equity_input = EquityInput::BrokerReported { equity, balance };
         self
     }
@@ -100,11 +107,17 @@ impl RuleContext {
     /// **P1-5 fix**: builder-style setter to mark the equity input as
     /// engine-derived (estimated). The default; breach-capable rules will
     /// refuse to terminate on this.
-    pub fn with_estimated_equity(mut self, equity: crate::core::types::Money, balance: crate::core::types::Money) -> Self {
+    #[must_use]
+    pub fn with_estimated_equity(
+        mut self,
+        equity: crate::core::types::Money,
+        balance: crate::core::types::Money,
+    ) -> Self {
         self.equity_input = EquityInput::Estimated { equity, balance };
         self
     }
 
+    #[must_use]
     pub fn for_open_order(account: Account, order: &Order) -> Self {
         let mut ctx = Self::new(account);
         ctx.pending_order = Some(order.clone());
@@ -113,6 +126,7 @@ impl RuleContext {
         ctx
     }
 
+    #[must_use]
     pub fn for_trade_fill(account: Account, trade: &Trade) -> Self {
         let mut ctx = Self::new(account);
         ctx.latest_trade = Some(trade.clone());
@@ -121,6 +135,7 @@ impl RuleContext {
         ctx
     }
 
+    #[must_use]
     pub fn for_tick(account: Account, tick: &Tick) -> Self {
         let mut ctx = Self::new(account);
         ctx.latest_tick = Some(tick.clone());
@@ -129,6 +144,7 @@ impl RuleContext {
         ctx
     }
 
+    #[must_use]
     pub fn for_day_rollover(account: Account) -> Self {
         let mut ctx = Self::new(account);
         ctx.kind = RuleContextKind::OnDayRollover;
@@ -136,6 +152,7 @@ impl RuleContext {
         ctx
     }
 
+    #[must_use]
     pub fn at(server_time: ServerTime) -> Self {
         let mut ctx = Self::new(Account::default_for_tests());
         ctx.server_time = server_time;
@@ -143,21 +160,25 @@ impl RuleContext {
     }
 
     /// Returns true if the context kind is `OnOrderSubmit`.
+    #[must_use]
     pub fn is_pre_trade(&self) -> bool {
         self.kind == RuleContextKind::OnOrderSubmit
     }
 
     /// Returns true if the context kind is `OnTick`.
+    #[must_use]
     pub fn is_on_tick(&self) -> bool {
         self.kind == RuleContextKind::OnTick
     }
 
     /// Number of currently open positions (across all symbols).
+    #[must_use]
     pub fn open_position_count(&self) -> usize {
         self.open_positions.iter().filter(|p| p.is_open()).count()
     }
 
     /// Total lots currently open.
+    #[must_use]
     pub fn total_open_lots(&self) -> rust_decimal::Decimal {
         self.open_positions
             .iter()
@@ -167,6 +188,7 @@ impl RuleContext {
     }
 
     /// Today's trade count.
+    #[must_use]
     pub fn today_trade_count(&self) -> usize {
         self.today_trades.len()
     }
@@ -180,6 +202,9 @@ trait DefaultForTests {
 
 impl DefaultForTests for Account {
     fn default_for_tests() -> Self {
-        Account::new(crate::core::ids::AccountId::new(), crate::config::plan::ChallengePlan::default())
+        Account::new(
+            crate::core::ids::AccountId::new(),
+            crate::config::plan::ChallengePlan::default(),
+        )
     }
 }

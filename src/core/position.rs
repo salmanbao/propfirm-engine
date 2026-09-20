@@ -7,7 +7,7 @@
 use crate::core::ids::PositionId;
 use crate::core::order::OrderSide;
 use crate::core::tick::Quote;
-use crate::core::types::{Decimal, Money, Price, Quantity, Symbol, Timestamp, dec};
+use crate::core::types::{dec, Decimal, Money, Price, Quantity, Symbol, Timestamp};
 
 /// Side of an open position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,12 +18,14 @@ pub enum PositionSide {
 
 impl PositionSide {
     /// Sign multiplier: +1 for long, -1 for short.
+    #[must_use]
     pub fn sign(self) -> Decimal {
         match self {
             PositionSide::Long => dec!(1),
             PositionSide::Short => dec!(-1),
         }
     }
+    #[must_use]
     pub fn from_order(s: OrderSide) -> Self {
         match s {
             OrderSide::Buy => PositionSide::Long,
@@ -78,6 +80,8 @@ pub struct Position {
 
 impl Position {
     /// Constructs a fresh open position from a single fill.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // broker fill metadata is inherently wide
     pub fn open(
         account_id: crate::core::ids::AccountId,
         symbol: Symbol,
@@ -113,15 +117,17 @@ impl Position {
     }
 
     /// Returns true if the position is currently open.
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.status == PositionStatus::Open && self.open_quantity.is_positive()
     }
 
     /// Computes the unrealized P&L given a current market quote.
     ///
-    /// PnL = (current_price - entry_price) * sign * volume * contract_size
-    /// For simplicity, contract_size = 1 here; multipliers should be applied
+    /// `PnL` = (`current_price` - `entry_price`) * sign * volume * `contract_size`
+    /// For simplicity, `contract_size` = 1 here; multipliers should be applied
     /// upstream by the adapter layer.
+    #[must_use]
     pub fn unrealized_pnl(&self, quote: &Quote) -> Money {
         if !self.is_open() {
             return Money::ZERO;
@@ -135,6 +141,7 @@ impl Position {
 }
 
 /// Pure helper: computes unrealized P&L for a long/short position.
+#[must_use]
 pub fn unrealized_pnl(entry: Price, current: Price, qty: Quantity, side: PositionSide) -> Money {
     let diff = match side {
         PositionSide::Long => current.0 - entry.0,
@@ -144,6 +151,7 @@ pub fn unrealized_pnl(entry: Price, current: Price, qty: Quantity, side: Positio
 }
 
 /// Net exposure in quote currency = price * qty (signed by side).
+#[must_use]
 pub fn exposure(price: Price, qty: Quantity, side: PositionSide) -> Money {
     let signed = match side {
         PositionSide::Long => qty.0,

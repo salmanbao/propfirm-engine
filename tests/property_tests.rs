@@ -16,18 +16,17 @@
 //! 5. Trailing max-loss floor floats up monotonically with peak equity.
 //! 6. Decision priority is invariant under rule reordering.
 
-use propfirm::config::plan::{ChallengePlan, ChallengePhase, LossReference};
+use propfirm::config::plan::{ChallengePlan, LossReference};
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::{Account, AccountStatus};
 use propfirm::core::ids::AccountId;
 use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Money, Price, Symbol, dec};
+use propfirm::core::types::{dec, Money, Price, Symbol};
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::rules::evaluators::*;
 use propfirm::rules::registry::RuleRegistry;
-use propfirm::rules::traits::{Rule, RuleVerdict};
-use std::sync::Arc;
 use proptest::prelude::*;
+use std::sync::Arc;
 
 /// Helper: build a plan with the given loss reference and a $100k balance.
 fn make_plan(loss_ref: LossReference) -> ChallengePlan {
@@ -43,9 +42,16 @@ fn make_plan(loss_ref: LossReference) -> ChallengePlan {
 /// Helper: build an account at the given equity/balance, with the given
 /// peak values. Marks equity as broker-reported so breach rules can
 /// terminate (no P1-5 downgrade).
-fn make_account(plan: ChallengePlan, balance: i64, equity: i64, peak_balance: i64, peak_equity: i64) -> Account {
+fn make_account(
+    plan: ChallengePlan,
+    balance: i64,
+    equity: i64,
+    peak_balance: i64,
+    peak_equity: i64,
+) -> Account {
     let mut acc = Account::new(AccountId::new(), plan)
-        .start(chrono::Utc::now()).unwrap();
+        .start(chrono::Utc::now())
+        .unwrap();
     acc.balance = Money(rust_decimal::Decimal::from(balance));
     acc.equity = Money(rust_decimal::Decimal::from(equity));
     acc.peak_balance = Money(rust_decimal::Decimal::from(peak_balance));
@@ -57,12 +63,21 @@ fn make_account(plan: ChallengePlan, balance: i64, equity: i64, peak_balance: i6
 }
 
 /// Helper: evaluate a tick on the given account.
-fn eval_tick(evaluator: &Evaluator, account: &Account) -> propfirm::engine::evaluator::EvaluationResult {
-    let tick = Tick::new(Symbol::new("EURUSD"), Quote {
-        bid: Price(dec!(1.0800)), ask: Price(dec!(1.0802)),
-        ts: chrono::Utc::now(),
-    });
-    evaluator.evaluate_tick(account, &tick, &[], &[], Vec::new()).unwrap()
+fn eval_tick(
+    evaluator: &Evaluator,
+    account: &Account,
+) -> propfirm::engine::evaluator::EvaluationResult {
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
+    evaluator
+        .evaluate_tick(account, &tick, &[], &[], Vec::new())
+        .unwrap()
 }
 
 proptest! {

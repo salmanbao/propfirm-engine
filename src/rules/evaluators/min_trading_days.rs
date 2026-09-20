@@ -5,12 +5,11 @@
 //! demand; it produces a warning if the trader hasn't yet met the day count.
 
 use crate::core::ids::RuleId;
-use crate::core::types::dec;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct MinTradingDaysRule {
@@ -23,13 +22,23 @@ pub struct MinTradingDaysRule {
 }
 
 impl Rule for MinTradingDaysRule {
-    fn id(&self) -> RuleId { RuleId::named("min_trading_days") }
-    fn name(&self) -> &str { "Minimum Trading Days" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MinTradingDays }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::Periodic }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Warning }
+    fn id(&self) -> RuleId {
+        RuleId::named("min_trading_days")
+    }
+    fn name(&self) -> &'static str {
+        "Minimum Trading Days"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MinTradingDays
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::Periodic
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Warning
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Requires a minimum number of distinct active trading days before a phase can be passed."
     }
 
@@ -70,8 +79,11 @@ impl Rule for MinTradingDaysRule {
 
 impl MinTradingDaysRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        MinTradingDaysRule { params: Some(RuleParams::from_entry(entry)) }
+        MinTradingDaysRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

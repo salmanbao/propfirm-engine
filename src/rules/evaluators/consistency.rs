@@ -8,9 +8,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct ConsistencyRule {
@@ -23,13 +23,23 @@ pub struct ConsistencyRule {
 }
 
 impl Rule for ConsistencyRule {
-    fn id(&self) -> RuleId { RuleId::named("consistency") }
-    fn name(&self) -> &str { "Consistency" }
-    fn kind(&self) -> ViolationKind { ViolationKind::Consistency }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::Periodic }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Warning }
+    fn id(&self) -> RuleId {
+        RuleId::named("consistency")
+    }
+    fn name(&self) -> &'static str {
+        "Consistency"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::Consistency
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::Periodic
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Warning
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Largest single-day profit must not exceed X% of total cumulative profit."
     }
 
@@ -71,8 +81,11 @@ impl Rule for ConsistencyRule {
 
 impl ConsistencyRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        ConsistencyRule { params: Some(RuleParams::from_entry(entry)) }
+        ConsistencyRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

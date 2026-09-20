@@ -27,6 +27,7 @@ pub struct LiquidationPosition {
 }
 
 impl LiquidationPosition {
+    #[must_use]
     pub fn from_position(p: &crate::core::position::Position) -> Self {
         LiquidationPosition {
             position_id: p.id,
@@ -86,7 +87,7 @@ pub struct LiquidationInstruction {
     /// Actor that triggered the liquidation (for audit). For
     /// `EmergencyStop`, this is the `actor_id` from the
     /// `PipelineEvent::EmergencyStop` payload. For `RuleBreach`, this
-    /// is "rule_engine". For `Manual`, the ops user id.
+    /// is "`rule_engine`". For `Manual`, the ops user id.
     pub actor_id: String,
 }
 
@@ -128,8 +129,14 @@ impl LiquidationInstruction {
     }
 
     /// Returns true if there are no positions to liquidate.
-    pub fn is_empty(&self) -> bool { self.positions.is_empty() }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
 
     /// Returns the number of positions to liquidate.
-    pub fn len(&self) -> usize { self.positions.len() }
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
 }

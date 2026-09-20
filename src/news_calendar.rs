@@ -7,10 +7,23 @@
 //!
 //! This module defines the [`NewsCalendarProvider`] trait so a
 //! production deployment can swap in a real calendar feed (e.g.
-//! FinancialJuice, ForexFactory, or an internal Bloomberg/Reuters
+//! `FinancialJuice`, `ForexFactory`, or an internal Bloomberg/Reuters
 //! feed) without touching the rule itself.
 
 use crate::core::types::Timestamp;
+
+/// Row shape of the built-in static calendar: (name, currency, weekday,
+/// hour, minute, impact, affected symbols). Private; kept as a type alias
+/// purely to keep the literal table below readable.
+type BuiltinEventRow = (
+    &'static str,
+    Option<&'static str>,
+    chrono::Weekday,
+    u32,
+    u32,
+    NewsImpact,
+    &'static [&'static str],
+);
 
 /// Impact level of a news event. Matches the binding spec's
 /// `impact: red | orange | yellow | gray` field.
@@ -65,6 +78,7 @@ pub struct CalendarEvent {
 impl CalendarEvent {
     /// Returns true if this event falls within `window_minutes` of `ts`
     /// (either side). Used by the news trading rule.
+    #[must_use]
     pub fn within_window(&self, ts: Timestamp, window_minutes: i64) -> bool {
         let delta = (ts - self.at).num_minutes().abs();
         delta <= window_minutes
@@ -72,6 +86,7 @@ impl CalendarEvent {
 
     /// Returns true if `symbol` is in the affected-symbols list, OR
     /// if the affected list is None (all symbols).
+    #[must_use]
     pub fn affects_symbol(&self, symbol: &str) -> bool {
         match &self.affected_symbols {
             None => true,
@@ -86,7 +101,12 @@ impl CalendarEvent {
 pub trait NewsCalendarProvider: Send + Sync {
     /// Returns all events within `window_minutes` of `ts` (either side).
     /// Filtered by `impact >= min_impact`.
-    fn events_within(&self, ts: Timestamp, window_minutes: i64, min_impact: NewsImpact) -> Vec<CalendarEvent>;
+    fn events_within(
+        &self,
+        ts: Timestamp,
+        window_minutes: i64,
+        min_impact: NewsImpact,
+    ) -> Vec<CalendarEvent>;
 
     /// Returns true if `symbol` is tradable at `ts` (i.e. no red/orange
     /// event affecting it within the window).
@@ -102,31 +122,81 @@ pub trait NewsCalendarProvider: Send + Sync {
 pub struct BuiltinCalendar;
 
 impl BuiltinCalendar {
-    pub fn new() -> Self { Self }
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl NewsCalendarProvider for BuiltinCalendar {
-    fn events_within(&self, ts: Timestamp, window_minutes: i64, min_impact: NewsImpact) -> Vec<CalendarEvent> {
+    fn events_within(
+        &self,
+        ts: Timestamp,
+        window_minutes: i64,
+        min_impact: NewsImpact,
+    ) -> Vec<CalendarEvent> {
         // Static illustrative list — production should fetch from a real feed.
-        use chrono::{Datelike, TimeZone, Utc, Weekday, NaiveTime};
-        let builtin: &[(&str, Option<&str>, Weekday, u32, u32, NewsImpact, &[&str])] = &[
-            ("NFP",              Some("USD"), Weekday::Fri, 12, 30, NewsImpact::Red,    &["EURUSD", "USDJPY", "GBPUSD", "USDCAD"]),
-            ("CPI",              Some("USD"), Weekday::Wed, 12, 30, NewsImpact::Red,    &["EURUSD", "USDJPY"]),
-            ("FOMC",             Some("USD"), Weekday::Wed, 18, 0,  NewsImpact::Red,    &["EURUSD", "USDJPY", "GBPUSD"]),
-            ("ECB Rate",         Some("EUR"), Weekday::Thu, 11, 45, NewsImpact::Red,    &["EURUSD", "EURJPY"]),
-            ("BOE Rate",         Some("GBP"), Weekday::Thu, 11, 0,  NewsImpact::Red,    &["GBPUSD", "GBPJPY"]),
+        use chrono::{Datelike, NaiveTime, TimeZone, Utc, Weekday};
+        let builtin: &[BuiltinEventRow] = &[
+            (
+                "NFP",
+                Some("USD"),
+                Weekday::Fri,
+                12,
+                30,
+                NewsImpact::Red,
+                &["EURUSD", "USDJPY", "GBPUSD", "USDCAD"],
+            ),
+            (
+                "CPI",
+                Some("USD"),
+                Weekday::Wed,
+                12,
+                30,
+                NewsImpact::Red,
+                &["EURUSD", "USDJPY"],
+            ),
+            (
+                "FOMC",
+                Some("USD"),
+                Weekday::Wed,
+                18,
+                0,
+                NewsImpact::Red,
+                &["EURUSD", "USDJPY", "GBPUSD"],
+            ),
+            (
+                "ECB Rate",
+                Some("EUR"),
+                Weekday::Thu,
+                11,
+                45,
+                NewsImpact::Red,
+                &["EURUSD", "EURJPY"],
+            ),
+            (
+                "BOE Rate",
+                Some("GBP"),
+                Weekday::Thu,
+                11,
+                0,
+                NewsImpact::Red,
+                &["GBPUSD", "GBPJPY"],
+            ),
         ];
         let mut out: Vec<CalendarEvent> = Vec::new();
         for (name, ccy, weekday, hour, minute, impact, syms) in builtin {
-            if *impact < min_impact { continue; }
+            if *impact < min_impact {
+                continue;
+            }
             // Construct this week's instance.
             let naive_time = match NaiveTime::from_hms_opt(*hour, *minute, 0) {
                 Some(t) => t,
                 None => continue,
             };
             let today = ts.weekday();
-            let event_offset = weekday.num_days_from_monday() as i64;
-            let today_offset = today.num_days_from_monday() as i64;
+            let event_offset = i64::from(weekday.num_days_from_monday());
+            let today_offset = i64::from(today.num_days_from_monday());
             let day_diff = (event_offset - today_offset).rem_euclid(7);
             let event_date = (ts + chrono::Duration::days(day_diff)).date_naive();
             let event_dt = event_date.and_time(naive_time);
@@ -135,13 +205,15 @@ impl NewsCalendarProvider for BuiltinCalendar {
             if delta <= window_minutes {
                 out.push(CalendarEvent {
                     name: (*name).to_string(),
-                    currency: ccy.map(|s| s.to_string()),
+                    currency: ccy.map(std::string::ToString::to_string),
                     at: event_utc,
                     impact: *impact,
                     actual: None,
                     forecast: None,
                     previous: None,
-                    affected_symbols: Some(syms.iter().map(|s| s.to_string()).collect()),
+                    affected_symbols: Some(
+                        syms.iter().map(std::string::ToString::to_string).collect(),
+                    ),
                 });
             }
         }

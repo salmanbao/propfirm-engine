@@ -15,18 +15,19 @@ use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::{Account, AccountStatus};
 use propfirm::core::ids::AccountId;
 use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Money, Price, Symbol, dec};
-use propfirm::engine::evaluator::Evaluator;
-use propfirm::rulepack::{RuleBasis, RuleEntry, RulePack, RuleUnit, PackLifecycle};
+use propfirm::core::types::ServerTime;
+use propfirm::core::types::{dec, Money, Price, Symbol};
+use propfirm::rulepack::{PackLifecycle, RuleBasis, RuleEntry, RulePack, RuleUnit};
 use propfirm::rules::context::RuleContextKind;
 use propfirm::rules::registry::RuleRegistry;
-use propfirm::core::types::ServerTime;
 
 /// Helper: build an account at the given equity/peak with a 10% static
 /// max-loss preset (so the max_drawdown rule is the only thing in play).
 fn make_account() -> Account {
     let plan = ftmo_phase1().with_loss_reference(LossReference::Static);
-    let mut acc = Account::new(AccountId::new(), plan).start(chrono::Utc::now()).unwrap();
+    let mut acc = Account::new(AccountId::new(), plan)
+        .start(chrono::Utc::now())
+        .unwrap();
     acc.initial_balance = Money(dec!(100_000));
     // Account at 95k equity — comfortably above the 90k static floor
     // for a 10% max-loss limit. NO breach at 10%.
@@ -68,18 +69,28 @@ fn make_pack(max_drawdown_pct: rust_decimal::Decimal) -> RulePack {
 }
 
 /// Helper: evaluate the account against a pack and return the decision kind.
-fn eval_against_pack(account: &Account, pack: &RulePack) -> propfirm::engine::decision::DecisionKind {
+fn eval_against_pack(
+    account: &Account,
+    pack: &RulePack,
+) -> propfirm::engine::decision::DecisionKind {
     let registry = RuleRegistry::build_from_pack(pack).unwrap();
-    let tick = Tick::new(Symbol::new("EURUSD"), Quote {
-        bid: Price(dec!(1.0800)), ask: Price(dec!(1.0802)), ts: chrono::Utc::now(),
-    });
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
     let verdict = propfirm::pure::evaluate(
-        account, pack, &registry,
+        account,
+        pack,
+        &registry,
         RuleContextKind::OnTick,
         ServerTime::now(),
-        &[], &[], Vec::new(),
-        None, None, Some(&tick),
-    ).unwrap();
+        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick),
+    )
+    .unwrap();
     verdict.decision.kind
 }
 
@@ -105,18 +116,25 @@ fn p0_d_tenant_edits_pack_value_verdict_changes() {
     let decision_b = eval_against_pack(&account, &pack_b);
 
     // Pack A (10% limit, account at 95k) → NO breach.
-    assert!(!decision_a.is_terminating(),
-        "pack A (10% limit) should NOT breach at 95k equity; got {:?}", decision_a);
+    assert!(
+        !decision_a.is_terminating(),
+        "pack A (10% limit) should NOT breach at 95k equity; got {:?}",
+        decision_a
+    );
 
     // Pack B (4% limit, account at 95k) → BREACH (Liquidate).
-    assert!(decision_b.is_terminating(),
+    assert!(
+        decision_b.is_terminating(),
         "pack B (4% limit) SHOULD breach at 95k equity (95k < 96k floor); got {:?}",
-        decision_b);
+        decision_b
+    );
 
     // The decisions must differ — proving the pack's `value` field is
     // the source of truth, not the plan.
-    assert_ne!(decision_a, decision_b,
-        "P0-D: tenant editing the pack's value field MUST change the verdict");
+    assert_ne!(
+        decision_a, decision_b,
+        "P0-D: tenant editing the pack's value field MUST change the verdict"
+    );
 }
 
 #[test]
@@ -165,17 +183,28 @@ fn p0_d_pack_priority_overrides_default() {
     pack.rules[0].priority = 42;
 
     let registry = RuleRegistry::build_from_pack(&pack).unwrap();
-    let tick = Tick::new(Symbol::new("EURUSD"), Quote {
-        bid: Price(dec!(1.0800)), ask: Price(dec!(1.0802)), ts: chrono::Utc::now(),
-    });
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
     let verdict = propfirm::pure::evaluate(
-        &account, &pack, &registry,
-        RuleContextKind::OnTick, ServerTime::now(),
-        &[], &[], Vec::new(), None, None, Some(&tick),
-    ).unwrap();
+        &account,
+        &pack,
+        &registry,
+        RuleContextKind::OnTick,
+        ServerTime::now(),
+        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick),
+    )
+    .unwrap();
     assert!(verdict.decision.is_terminating(), "expected breach");
-    assert_eq!(verdict.decision.winning_priority, 42,
-        "P0-D: pack entry's priority (42) should override the rule's default (1000)");
+    assert_eq!(
+        verdict.decision.winning_priority, 42,
+        "P0-D: pack entry's priority (42) should override the rule's default (1000)"
+    );
 }
 
 #[test]
@@ -200,8 +229,14 @@ fn p0_d_pack_tolerance_overrides_default() {
     let decision_small = eval_against_pack(&account, &pack_small_tol);
     let decision_big = eval_against_pack(&account, &pack_big_tol);
 
-    assert!(decision_small.is_terminating(),
-        "with 1¢ tolerance, 0.50 below floor should breach; got {:?}", decision_small);
-    assert!(!decision_big.is_terminating(),
-        "with $1 tolerance, 0.50 below floor should NOT breach; got {:?}", decision_big);
+    assert!(
+        decision_small.is_terminating(),
+        "with 1¢ tolerance, 0.50 below floor should breach; got {:?}",
+        decision_small
+    );
+    assert!(
+        !decision_big.is_terminating(),
+        "with $1 tolerance, 0.50 below floor should NOT breach; got {:?}",
+        decision_big
+    );
 }

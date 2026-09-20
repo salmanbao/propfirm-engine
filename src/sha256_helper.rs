@@ -1,7 +1,7 @@
 //! Real sha256 hashing for the engine (P0-B fix).
 //!
 //! Previously, `pure.rs::compute_input_hash` and `rulepack.rs::content_hash`
-//! used `std::collections::hash_map::DefaultHasher` (SipHash) truncated to
+//! used `std::collections::hash_map::DefaultHasher` (`SipHash`) truncated to
 //! 16 hex chars (64 bits), despite being labeled `sha256:`. The README
 //! sells "byte-for-byte recomputation… the dispute-resolution mechanism"
 //! on a mislabeled 64-bit non-crypto hash.
@@ -17,26 +17,32 @@ use std::hash::{Hash, Hasher};
 /// Wrapper that bridges the `std::hash::Hash` API onto a real `Sha256`
 /// hasher. Used by `input_hash()` and `content_hash()` so the existing
 /// `foo.hash(&mut h)` calls feed bytes into a real crypto hash rather
-/// than SipHash.
+/// than `SipHash`.
 pub struct Sha256Hasher(Sha256);
 
 impl Sha256Hasher {
-    pub fn new() -> Self { Self(Sha256::new()) }
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
 
     /// Consume the hasher and return the full 64-char lowercase hex digest.
+    #[must_use]
     pub fn finalize_hex(self) -> String {
         let bytes = self.0.finalize();
         let mut s = String::with_capacity(64 + 7); // "sha256:" + 64
         s.push_str("sha256:");
         for b in bytes {
-            s.push_str(&format!("{:02x}", b));
+            s.push_str(&format!("{b:02x}"));
         }
         s
     }
 }
 
 impl Default for Sha256Hasher {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Hasher for Sha256Hasher {
@@ -63,6 +69,7 @@ pub fn hash_to_hex<T: Hash>(value: &T) -> String {
 }
 
 /// Convenience: hash raw bytes and return the 64-char hex digest.
+#[must_use]
 pub fn hash_bytes_to_hex(bytes: &[u8]) -> String {
     let mut h = Sha256Hasher::new();
     h.write(bytes);

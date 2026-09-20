@@ -16,9 +16,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct ProfitTargetRule {
@@ -31,17 +31,29 @@ pub struct ProfitTargetRule {
 }
 
 impl Rule for ProfitTargetRule {
-    fn id(&self) -> RuleId { RuleId::named("profit_target") }
-    fn name(&self) -> &str { "Profit Target" }
-    fn kind(&self) -> ViolationKind { ViolationKind::ProfitTargetMissed }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Info }
-    /// Positive outcomes (TargetHit) shouldn't drown out breach verdicts
+    fn id(&self) -> RuleId {
+        RuleId::named("profit_target")
+    }
+    fn name(&self) -> &'static str {
+        "Profit Target"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::ProfitTargetMissed
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::OnTick
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Info
+    }
+    /// Positive outcomes (`TargetHit`) shouldn't drown out breach verdicts
     /// in the priority ordering — they get the default 100. If a breach
     /// fires on the same tick, the breach wins regardless.
-    fn priority(&self) -> u32 { 100 }
+    fn priority(&self) -> u32 {
+        100
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Verifies the account has reached its profit target for the current phase. \
          First-reached timestamp is sticky (P0-2); emits TargetHit verdict distinct from \
          Pass (P0-3)."
@@ -104,8 +116,11 @@ impl Rule for ProfitTargetRule {
 
 impl ProfitTargetRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        ProfitTargetRule { params: Some(RuleParams::from_entry(entry)) }
+        ProfitTargetRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

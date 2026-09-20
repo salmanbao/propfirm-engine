@@ -42,7 +42,10 @@ use crate::core::Error;
 
 /// Lifecycle of a rule pack. Maps to the binding spec's
 /// `lifecycle: draft | active | superseded` field.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackLifecycle {
@@ -82,7 +85,10 @@ impl std::str::FromStr for PackLifecycle {
 
 /// Basis of a rule's measurement. Maps directly to the binding spec's
 /// `basis: static | trailing | eod_trailing` field.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleBasis {
@@ -120,7 +126,10 @@ impl std::str::FromStr for RuleBasis {
 }
 
 /// Unit of a rule's value.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleUnit {
@@ -155,10 +164,13 @@ impl std::str::FromStr for RuleUnit {
 /// A single rule entry in a [`RulePack`]. This is the data shape — the
 /// concrete rule implementation (e.g. `MaxDrawdownRule`) is looked up
 /// by `kind` at evaluation time.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct RuleEntry {
-    /// Stable identifier (e.g. "max_total_loss", "daily_loss", "profit_target").
+    /// Stable identifier (e.g. "`max_total_loss`", "`daily_loss`", "`profit_target`").
     pub id: String,
     /// Kind name — maps to a registered rule factory.
     pub kind: String,
@@ -187,7 +199,11 @@ pub struct RuleEntry {
 
 impl RuleEntry {
     /// Constructs a new rule entry with sensible defaults.
-    pub fn new(id: impl Into<String>, kind: impl Into<String>, value: rust_decimal::Decimal) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        value: rust_decimal::Decimal,
+    ) -> Self {
         RuleEntry {
             id: id.into(),
             kind: kind.into(),
@@ -205,7 +221,10 @@ impl RuleEntry {
 
 /// A versioned rule pack. The full data artifact that defines which
 /// rules apply to an account and with what parameters.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct RulePack {
     /// Stable pack identifier (e.g. "funderblu-default-v3").
@@ -259,19 +278,21 @@ impl RulePack {
     }
 
     /// Returns the rule entry with the given id, if any.
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<&RuleEntry> {
         self.rules.iter().find(|r| r.id == id)
     }
 
     /// Computes the real sha256 content hash of this pack's content
-    /// (P0-B fix — was previously mislabeled SipHash truncated to 64 bits).
+    /// (P0-B fix — was previously mislabeled `SipHash` truncated to 64 bits).
     ///
     /// Used by the pure-evaluate function (P1-7 fix) to record the exact
     /// rule set that produced a verdict — so any past verdict can be
     /// recomputed byte-for-byte from its recorded inputs.
+    #[must_use]
     pub fn content_hash(&self) -> String {
         use crate::sha256_helper::Sha256Hasher;
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hash;
         let mut h = Sha256Hasher::new();
         // Hash the pack's identifying content (not the volatile metadata).
         self.id.hash(&mut h);
@@ -297,6 +318,7 @@ impl RulePack {
 
     /// Looks up the rule id for a given kind/name. Useful for cross-referencing
     /// a `RuleEntry` with a registered rule implementation.
+    #[must_use]
     pub fn rule_id_for(kind: &str) -> RuleId {
         RuleId::named(kind)
     }
@@ -306,20 +328,24 @@ impl RulePack {
     #[cfg(feature = "serialization")]
     pub fn to_json(&self) -> crate::Result<String> {
         use serde_json::json;
-        let rules_json: Vec<serde_json::Value> = self.rules.iter().map(|r| {
-            json!({
-                "id": r.id,
-                "kind": r.kind,
-                "basis": r.basis.to_string(),
-                "unit": r.unit.to_string(),
-                "value": r.value,
-                "tolerance_cents": r.tolerance_cents,
-                "early_warning_pct": r.early_warning_pct,
-                "priority": r.priority,
-                "enabled": r.enabled,
-                "params": r.params_json,
+        let rules_json: Vec<serde_json::Value> = self
+            .rules
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "kind": r.kind,
+                    "basis": r.basis.to_string(),
+                    "unit": r.unit.to_string(),
+                    "value": r.value,
+                    "tolerance_cents": r.tolerance_cents,
+                    "early_warning_pct": r.early_warning_pct,
+                    "priority": r.priority,
+                    "enabled": r.enabled,
+                    "params": r.params_json,
+                })
             })
-        }).collect();
+            .collect();
         let json = json!({
             "id": self.id,
             "version": self.version,
@@ -334,7 +360,6 @@ impl RulePack {
             "rules": rules_json,
             "content_hash": self.content_hash(),
         });
-        serde_json::to_string_pretty(&json)
-            .map_err(|e| crate::Error::Serialization(e.to_string()))
+        serde_json::to_string_pretty(&json).map_err(|e| crate::Error::Serialization(e.to_string()))
     }
 }

@@ -8,9 +8,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct TrailingDrawdownRule {
@@ -23,13 +23,23 @@ pub struct TrailingDrawdownRule {
 }
 
 impl Rule for TrailingDrawdownRule {
-    fn id(&self) -> RuleId { RuleId::named("trailing_drawdown") }
-    fn name(&self) -> &str { "Trailing Drawdown" }
-    fn kind(&self) -> ViolationKind { ViolationKind::TrailingDrawdown }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("trailing_drawdown")
+    }
+    fn name(&self) -> &'static str {
+        "Trailing Drawdown"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::TrailingDrawdown
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::OnTick
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Drawdown limit that trails the peak equity. Terminate if equity falls below (peak - trail%)."
     }
 
@@ -77,9 +87,7 @@ impl Rule for TrailingDrawdownRule {
                 self,
                 ctx,
                 ViolationSeverity::Warning,
-                format!(
-                    "Equity approaching trailing drawdown floor: {equity} vs floor {floor}"
-                ),
+                format!("Equity approaching trailing drawdown floor: {equity} vs floor {floor}"),
             );
             v = v.with_breach(Money(warn_floor.0 - equity.0), trail_amount);
             return Ok(RuleVerdict::EarlyWarning(v));
@@ -90,8 +98,11 @@ impl Rule for TrailingDrawdownRule {
 
 impl TrailingDrawdownRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        TrailingDrawdownRule { params: Some(RuleParams::from_entry(entry)) }
+        TrailingDrawdownRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

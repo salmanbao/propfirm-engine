@@ -1,21 +1,26 @@
 //! Value-at-Risk (parametric, Gaussian).
 
-use crate::core::types::{Decimal, Money, dec};
+use crate::core::types::{dec, Decimal, Money};
 use rust_decimal::MathematicalOps;
 
-/// Parametric VaR using a Gaussian assumption.
+/// Parametric `VaR` using a Gaussian assumption.
 /// Returns the expected loss at the given confidence level over the given
 /// horizon (in days), given a vector of daily returns.
+#[must_use]
 pub fn parametric_var(returns: &[Decimal], confidence: Decimal, horizon_days: u32) -> Money {
     if returns.is_empty() {
         return Money::ZERO;
     }
     let n = Decimal::from(returns.len());
     let mean = returns.iter().copied().sum::<Decimal>() / n;
-    let var = returns.iter().map(|r| {
-        let d = *r - mean;
-        d * d
-    }).sum::<Decimal>() / n;
+    let var = returns
+        .iter()
+        .map(|r| {
+            let d = *r - mean;
+            d * d
+        })
+        .sum::<Decimal>()
+        / n;
     let std = var.sqrt().unwrap_or(dec!(0));
     if std.is_zero() {
         return Money::ZERO;
@@ -40,6 +45,7 @@ pub fn parametric_var(returns: &[Decimal], confidence: Decimal, horizon_days: u3
 }
 
 /// Expected Shortfall (ES) using the same Gaussian assumption.
+#[must_use]
 pub fn expected_shortfall(returns: &[Decimal], confidence: Decimal, horizon_days: u32) -> Money {
     if returns.is_empty() {
         return Money::ZERO;
@@ -47,10 +53,14 @@ pub fn expected_shortfall(returns: &[Decimal], confidence: Decimal, horizon_days
     let var = parametric_var(returns, confidence, horizon_days);
     let n = Decimal::from(returns.len());
     let mean = returns.iter().copied().sum::<Decimal>() / n;
-    let var2 = returns.iter().map(|r| {
-        let d = *r - mean;
-        d * d
-    }).sum::<Decimal>() / n;
+    let var2 = returns
+        .iter()
+        .map(|r| {
+            let d = *r - mean;
+            d * d
+        })
+        .sum::<Decimal>()
+        / n;
     let std = var2.sqrt().unwrap_or(dec!(0));
     if std.is_zero() {
         return Money::ZERO;

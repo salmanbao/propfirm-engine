@@ -14,12 +14,17 @@ pub struct EventStore {
 }
 
 impl Default for EventStore {
-    fn default() -> Self { Self::in_memory() }
+    fn default() -> Self {
+        Self::in_memory()
+    }
 }
 
 impl EventStore {
+    #[must_use]
     pub fn in_memory() -> Self {
-        EventStore { events: Arc::new(RwLock::new(HashMap::new())) }
+        EventStore {
+            events: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub fn append(&self, ev: DomainEvent) -> Result<(), Error> {
@@ -28,10 +33,12 @@ impl EventStore {
         Ok(())
     }
 
+    #[must_use]
     pub fn all(&self, id: AccountId) -> Vec<DomainEvent> {
         self.events.read().get(&id).cloned().unwrap_or_default()
     }
 
+    #[must_use]
     pub fn recent(&self, id: AccountId, n: usize) -> Vec<DomainEvent> {
         let all = self.all(id);
         let len = all.len();
@@ -44,7 +51,11 @@ impl EventStore {
 
     /// Replays the entire event log to reconstruct account state. Returns
     /// the final account after applying all events.
-    pub fn replay(&self, id: AccountId, initial: crate::core::account::Account) -> Result<crate::core::account::Account, Error> {
+    pub fn replay(
+        &self,
+        id: AccountId,
+        initial: crate::core::account::Account,
+    ) -> Result<crate::core::account::Account, Error> {
         use crate::core::events::DomainEventKind as K;
         let events = self.all(id);
         let mut acc = initial;
@@ -59,12 +70,16 @@ impl EventStore {
                 K::TradeFilled { trade } => {
                     let net = trade.net_pnl();
                     acc.balance = crate::core::types::Money(acc.balance.0 + net.0);
-                    acc.total_realized_pnl = crate::core::types::Money(acc.total_realized_pnl.0 + net.0);
+                    acc.total_realized_pnl =
+                        crate::core::types::Money(acc.total_realized_pnl.0 + net.0);
                     if acc.balance.0 > acc.peak_balance.0 {
                         acc.peak_balance = acc.balance;
                     }
                 }
-                K::DayRollover { new_day_index, day_start } => {
+                K::DayRollover {
+                    new_day_index,
+                    day_start,
+                } => {
                     if acc.today_realized_pnl.0 != crate::core::types::dec!(0) {
                         acc.active_trading_days += 1;
                     }

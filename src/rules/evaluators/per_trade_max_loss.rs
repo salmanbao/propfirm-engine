@@ -10,9 +10,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::dec;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict, ViolationBuilder};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct PerTradeMaxLossRule {
@@ -20,12 +20,15 @@ pub struct PerTradeMaxLossRule {
 }
 
 impl PerTradeMaxLossRule {
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        PerTradeMaxLossRule { params: Some(RuleParams::from_entry(entry)) }
+        PerTradeMaxLossRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 
     /// Effective max per-trade loss as a fraction of balance (default 0.02 = 2%).
-    fn effective_max_loss_pct(&self, ctx: &RuleContext) -> rust_decimal::Decimal {
+    fn effective_max_loss_pct(&self, _ctx: &RuleContext) -> rust_decimal::Decimal {
         if let Some(p) = &self.params {
             if let Some(v) = p.value() {
                 return v;
@@ -37,19 +40,35 @@ impl PerTradeMaxLossRule {
 }
 
 impl Rule for PerTradeMaxLossRule {
-    fn id(&self) -> RuleId { RuleId::named("per_trade_max_loss") }
-    fn name(&self) -> &str { "Per-Trade Max Loss" }
-    fn kind(&self) -> ViolationKind { ViolationKind::Custom }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PostTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("per_trade_max_loss")
+    }
+    fn name(&self) -> &'static str {
+        "Per-Trade Max Loss"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::Custom
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PostTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
     fn priority(&self) -> u32 {
-        self.params.as_ref().and_then(|p| p.priority()).unwrap_or(800)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::priority)
+            .unwrap_or(800)
     }
     fn tolerance_cents(&self) -> i64 {
-        self.params.as_ref().and_then(|p| p.tolerance_cents()).unwrap_or(1)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::tolerance_cents)
+            .unwrap_or(1)
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids any single closed trade from losing more than X% of \
          the account balance. Distinct from daily/max drawdown: catches \
          a single bad trade before it blows the account."
@@ -71,7 +90,8 @@ impl Rule for PerTradeMaxLossRule {
         if loss.0 >= dec!(0) {
             return Ok(RuleVerdict::Pass);
         }
-        let max_loss = crate::core::types::Money(self.effective_max_loss_pct(ctx) * ctx.account.balance.0);
+        let max_loss =
+            crate::core::types::Money(self.effective_max_loss_pct(ctx) * ctx.account.balance.0);
         let loss_abs = loss.abs();
         if loss_abs.0 > max_loss.0 + self.tolerance_money().0 {
             // P1-5 fix: refuse to terminate on estimated equity. Realized
@@ -83,10 +103,14 @@ impl Rule for PerTradeMaxLossRule {
                 ViolationSeverity::Warning
             };
             let v = build_violation(
-                self, ctx, severity,
+                self,
+                ctx,
+                severity,
                 format!(
                     "Per-trade max loss breach: trade lost {} > max {} ({}% of balance)",
-                    loss_abs, max_loss, self.effective_max_loss_pct(ctx) * dec!(100)
+                    loss_abs,
+                    max_loss,
+                    self.effective_max_loss_pct(ctx) * dec!(100)
                 ),
             );
             return Ok(match severity {
@@ -98,8 +122,10 @@ impl Rule for PerTradeMaxLossRule {
         let warn_threshold = max_loss.0 * dec!(0.8);
         if loss_abs.0 >= warn_threshold {
             let v = build_violation(
-                self, ctx, ViolationSeverity::Warning,
-                format!("Per-trade loss approaching limit: {}/{}", loss_abs, max_loss),
+                self,
+                ctx,
+                ViolationSeverity::Warning,
+                format!("Per-trade loss approaching limit: {loss_abs}/{max_loss}"),
             );
             return Ok(RuleVerdict::EarlyWarning(v));
         }

@@ -26,6 +26,21 @@ use crate::persistence::traits::AccountStore;
 /// produced a breach. The binding spec reference value is 10 minutes.
 pub const STALE_TICK_THRESHOLD_MINUTES: i64 = 10;
 
+/// Output of [`Pipeline::apply_event`]: the mutated state plus the
+/// pre-fetched collections the rule context is built from.
+pub struct AppliedEvent {
+    /// The account state after the event's state transition was applied.
+    pub state: AccountState,
+    /// Which rule-context kind this event maps to.
+    pub ctx_kind: crate::rules::context::RuleContextKind,
+    /// Open positions fetched from the store before evaluation.
+    pub open_positions: Vec<Position>,
+    /// Today's trades fetched from the store before evaluation.
+    pub today_trades: Vec<Trade>,
+    /// Recent domain events fetched from the event store.
+    pub recent_events: Vec<DomainEvent>,
+}
+
 /// Inputs to the pipeline.
 #[derive(Debug, Clone)]
 pub enum PipelineEvent {
@@ -61,15 +76,21 @@ pub enum PipelineEvent {
     OnDemand,
     /// **P1-12 fix**: emergency stop. Short-circuits normal rule evaluation
     /// and forces `DecisionKind::Emergency` with full audit metadata
-    /// (reason + actor_id). Used for disaster-response scenarios — e.g.
+    /// (reason + `actor_id`). Used for disaster-response scenarios — e.g.
     /// a broker feed is clearly corrupted and every account needs to
     /// freeze immediately.
-    EmergencyStop { reason: String, actor_id: String, at: Timestamp },
+    EmergencyStop {
+        reason: String,
+        actor_id: String,
+        at: Timestamp,
+    },
     /// **P1-11 fix**: manual override clearing a false-positive breach.
     /// Reverts the account from `Failed`/`EmergencyStopped` back to
     /// `Active`. The original violation stays in the audit log; the
     /// override is recorded alongside it as the rebuttal.
-    OverrideBreach { override_record: crate::override_engine::Override },
+    OverrideBreach {
+        override_record: crate::override_engine::Override,
+    },
 }
 
 /// The result of processing a pipeline event: snapshot + emitted events + rule-evaluation result.
@@ -85,9 +106,15 @@ pub struct PipelineResult {
 
 impl PipelineResult {
     /// Returns true if all rules passed.
-    pub fn passed(&self) -> bool { self.result.passed() }
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.result.passed()
+    }
     /// Returns true if any rule produced a terminating decision.
-    pub fn failed(&self) -> bool { self.result.failed() }
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.result.failed()
+    }
 }
 
 /// The pipeline. Holds an evaluator and references to backing stores.
@@ -118,19 +145,25 @@ where
 
     /// Processes a single pipeline event.
     ///
-    /// **P0-E fix**: reads the account (account_id is globally unique —
-    /// UUIDv4), then writes via `put_with_version` (optimistic
+    /// **P0-E fix**: reads the account (`account_id` is globally unique —
+    /// `UUIDv4`), then writes via `put_with_version` (optimistic
     /// concurrency — a concurrent writer between our read and write
     /// produces `Error::StateConflict`, which the caller must retry).
     /// The pipeline is no longer the version owner; the store is — so
     /// there's no double-increment.
     ///
     /// For strict tenant-scoped reads (e.g. when the caller doesn't
-    /// trust the account_id to be globally unique within their store),
+    /// trust the `account_id` to be globally unique within their store),
     /// use [`process_for_tenant`](Self::process_for_tenant) instead.
-    pub fn process(&mut self, account_id: crate::core::ids::AccountId, ev: PipelineEvent) -> crate::Result<PipelineResult> {
+    pub fn process(
+        &mut self,
+        account_id: crate::core::ids::AccountId,
+        ev: PipelineEvent,
+    ) -> crate::Result<PipelineResult> {
         // Read the account (unscoped — account_id is UUIDv4 globally unique).
-        let account = self.store.get(account_id)?
+        let account = self
+            .store
+            .get(account_id)?
             .ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
         // Extract the account's own tenant_id; pass to the OCC-scoped
         // process_for_tenant so the write uses put_with_version.
@@ -149,8 +182,14 @@ where
         account_id: crate::core::ids::AccountId,
         ev: PipelineEvent,
     ) -> crate::Result<PipelineResult> {
-        let account = self.store.get_for_tenant(tenant_id, account_id)?
-            .ok_or_else(|| crate::Error::NotFound(format!("account {account_id} not found for tenant {tenant_id}")))?;
+        let account = self
+            .store
+            .get_for_tenant(tenant_id, account_id)?
+            .ok_or_else(|| {
+                crate::Error::NotFound(format!(
+                    "account {account_id} not found for tenant {tenant_id}"
+                ))
+            })?;
         self.process_with_loaded_account(account, tenant_id, ev)
     }
 
@@ -168,9 +207,23 @@ where
         let mut events: Vec<DomainEvent> = Vec::new();
 
         // Apply state transitions.
-        let (new_state, ctx_kind, open_positions, today_trades, recent_events) = self.apply_event(state, &ev, &mut events)?;
+        let applied = self.apply_event(state, &ev, &mut events)?;
+        let (new_state, ctx_kind, open_positions, today_trades, recent_events) = (
+            applied.state,
+            applied.ctx_kind,
+            applied.open_positions,
+            applied.today_trades,
+            applied.recent_events,
+        );
         // Build context
-        let ctx = self.build_context(new_state.account.clone(), ctx_kind, &ev, &open_positions, &today_trades, recent_events);
+        let ctx = self.build_context(
+            new_state.account.clone(),
+            ctx_kind,
+            &ev,
+            &open_positions,
+            &today_trades,
+            recent_events,
+        );
         // Evaluate rules
         let result = self.evaluator.evaluate(&ctx)?;
         // P0-2: post-evaluation state update.
@@ -205,21 +258,32 @@ where
             final_state.account.status = target_status;
             events.push(DomainEvent::new(
                 account_id,
-                DomainEventKind::AccountStatusChanged { from, to: target_status },
+                DomainEventKind::AccountStatusChanged {
+                    from,
+                    to: target_status,
+                },
                 ctx.server_time.ts(),
             ));
             // P1.10: emit a LiquidationInstruction when the decision is
             // Liquidate or Emergency. The bridge consumes this event and
             // closes all listed positions on the broker side.
-            if matches!(result.decision.kind, crate::engine::decision::DecisionKind::Liquidate
-                | crate::engine::decision::DecisionKind::Emergency)
-            {
+            if matches!(
+                result.decision.kind,
+                crate::engine::decision::DecisionKind::Liquidate
+                    | crate::engine::decision::DecisionKind::Emergency
+            ) {
                 let reason = match result.decision.kind {
                     crate::engine::decision::DecisionKind::Liquidate => {
-                        let violation = result.decision.all_violations.iter()
-                            .find(|v| v.severity >= crate::core::violation::ViolationSeverity::Liquidate)
+                        let violation = result
+                            .decision
+                            .all_violations
+                            .iter()
+                            .find(|v| {
+                                v.severity >= crate::core::violation::ViolationSeverity::Liquidate
+                            })
                             .or_else(|| result.decision.all_violations.first());
-                        let kind = violation.map(|v| v.kind).unwrap_or(crate::core::violation::ViolationKind::Custom);
+                        let kind = violation
+                            .map_or(crate::core::violation::ViolationKind::Custom, |v| v.kind);
                         crate::liquidation::LiquidationReason::RuleBreach(kind)
                     }
                     crate::engine::decision::DecisionKind::Emergency => {
@@ -262,7 +326,8 @@ where
         let snap = Snapshot::new(&final_state.account, result.decision.clone());
         // P0-E: persist via `put_with_version` so optimistic-concurrency
         // conflicts are detected at the storage layer.
-        self.store.put_with_version(final_state.account.clone(), expected_version)?;
+        self.store
+            .put_with_version(final_state.account.clone(), expected_version)?;
         // Emit decision event
         let _decision_event = self.emit_decision_event(account_id, &result.decision, &mut events);
         // Append events
@@ -280,21 +345,48 @@ where
         })
     }
 
-    fn apply_event(&self, mut state: AccountState, ev: &PipelineEvent, events: &mut Vec<DomainEvent>) -> crate::Result<(AccountState, crate::rules::context::RuleContextKind, Vec<Position>, Vec<Trade>, Vec<DomainEvent>)> {
-        use crate::rules::context::RuleContextKind::*;
-        let mut open_positions = self.store.open_positions(state.account.id).unwrap_or_default();
-        let today_trades = self.store.today_trades(state.account.id).unwrap_or_default();
+    fn apply_event(
+        &self,
+        mut state: AccountState,
+        ev: &PipelineEvent,
+        events: &mut Vec<DomainEvent>,
+    ) -> crate::Result<AppliedEvent> {
+        use crate::rules::context::RuleContextKind::{
+            OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
+        };
+        let open_positions = self
+            .store
+            .open_positions(state.account.id)
+            .unwrap_or_default();
+        let today_trades = self
+            .store
+            .today_trades(state.account.id)
+            .unwrap_or_default();
         let recent_events = self.event_store.recent(state.account.id, 50);
         match ev {
             PipelineEvent::AccountStarted { at } => {
                 let new_acc = state.account.clone().start(*at)?;
-                events.push(DomainEvent::new(new_acc.id, DomainEventKind::AccountStarted, *at));
+                events.push(DomainEvent::new(
+                    new_acc.id,
+                    DomainEventKind::AccountStarted,
+                    *at,
+                ));
                 state.account = new_acc;
-                Ok((state, OnDemand, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state,
+                    ctx_kind: OnDemand,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
-            PipelineEvent::OrderSubmitted { order } => {
-                Ok((state, OnOrderSubmit, open_positions, today_trades, recent_events))
-            }
+            PipelineEvent::OrderSubmitted { order: _ } => Ok(AppliedEvent {
+                state,
+                ctx_kind: OnOrderSubmit,
+                open_positions,
+                today_trades,
+                recent_events,
+            }),
             PipelineEvent::TradeFilled { trade } => {
                 // Apply realized P&L on exits
                 let (pnl, commission, swap) = match trade.exit_info.as_ref() {
@@ -304,12 +396,24 @@ where
                 let new_state = state.apply_realized_pnl(pnl, commission, swap, trade.executed_at);
                 events.push(DomainEvent::new(
                     new_state.account.id,
-                    DomainEventKind::TradeFilled { trade: trade.clone() },
+                    DomainEventKind::TradeFilled {
+                        trade: trade.clone(),
+                    },
                     trade.executed_at,
                 ));
-                Ok((new_state, OnTradeFill, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnTradeFill,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
-            PipelineEvent::Tick { tick, broker_equity, broker_balance } => {
+            PipelineEvent::Tick {
+                tick,
+                broker_equity,
+                broker_balance,
+            } => {
                 // P1-14: stale-tick guard — skip evaluation if tick is older
                 // than 10 minutes from wall-clock "now". A stale equity value
                 // must never drive a breach decision.
@@ -338,10 +442,18 @@ where
                     .update_balance(*broker_balance);
                 events.push(DomainEvent::new(
                     new_state.account.id,
-                    DomainEventKind::TickEvaluated { equity: *broker_equity },
+                    DomainEventKind::TickEvaluated {
+                        equity: *broker_equity,
+                    },
                     tick.quote.ts,
                 ));
-                Ok((new_state, OnTick, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnTick,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
             PipelineEvent::TickEstimated { tick } => {
                 // P1-5: estimate-only path. The engine computes equity
@@ -355,24 +467,55 @@ where
                     DomainEventKind::TickEvaluated { equity },
                     tick.quote.ts,
                 ));
-                Ok((new_state, OnTick, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnTick,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
             PipelineEvent::DayRollover { had_trades_today } => {
                 let new_state = state.rollover_day(*had_trades_today);
                 events.push(DomainEvent::new(
                     new_state.account.id,
-                    DomainEventKind::DayRollover { new_day_index: new_state.account.trading_day_index, day_start: new_state.account.day_start_balance },
+                    DomainEventKind::DayRollover {
+                        new_day_index: new_state.account.trading_day_index,
+                        day_start: new_state.account.day_start_balance,
+                    },
                     chrono::Utc::now(),
                 ));
-                Ok((new_state, OnDayRollover, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnDayRollover,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
-            PipelineEvent::EndOfDay => Ok((state, OnEndOfDay, open_positions, today_trades, recent_events)),
-            PipelineEvent::OnDemand => Ok((state, OnDemand, open_positions, today_trades, recent_events)),
+            PipelineEvent::EndOfDay => Ok(AppliedEvent {
+                state,
+                ctx_kind: OnEndOfDay,
+                open_positions,
+                today_trades,
+                recent_events,
+            }),
+            PipelineEvent::OnDemand => Ok(AppliedEvent {
+                state,
+                ctx_kind: OnDemand,
+                open_positions,
+                today_trades,
+                recent_events,
+            }),
             // P1-12: emergency stop short-circuits state transition;
             // the actual `Emergency` verdict is produced in `process()`
             // after this function returns. Here we just stamp the
             // emergency-stop status on the account.
-            PipelineEvent::EmergencyStop { reason, actor_id, at } => {
+            PipelineEvent::EmergencyStop {
+                reason,
+                actor_id,
+                at,
+            } => {
                 let new_state = state.emergency_stop(reason, actor_id, *at);
                 events.push(DomainEvent::new(
                     new_state.account.id,
@@ -382,7 +525,13 @@ where
                     },
                     *at,
                 ));
-                Ok((new_state, OnDemand, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnDemand,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
             // P1-11: override-breach reverts the account from
             // Failed/EmergencyStopped back to Active. The original
@@ -399,12 +548,26 @@ where
                     },
                     override_record.at,
                 ));
-                Ok((new_state, OnDemand, open_positions, today_trades, recent_events))
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnDemand,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
             }
         }
     }
 
-    fn build_context(&self, account: Account, kind: crate::rules::context::RuleContextKind, ev: &PipelineEvent, open_positions: &[Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::rules::context::RuleContext {
+    fn build_context(
+        &self,
+        account: Account,
+        kind: crate::rules::context::RuleContextKind,
+        ev: &PipelineEvent,
+        open_positions: &[Position],
+        today_trades: &[Trade],
+        recent_events: Vec<DomainEvent>,
+    ) -> crate::rules::context::RuleContext {
         use crate::rules::context::RuleContext;
         let mut ctx = RuleContext::new(account);
         ctx.kind = kind;
@@ -413,26 +576,45 @@ where
         ctx.recent_events = recent_events;
         ctx.rule_config = crate::config::rule_config::RuleConfig::from_plan(&ctx.account.plan);
         match ev {
-            PipelineEvent::OrderSubmitted { order } => { ctx.pending_order = Some(order.clone()); }
-            PipelineEvent::TradeFilled { trade } => { ctx.latest_trade = Some(trade.clone()); }
+            PipelineEvent::OrderSubmitted { order } => {
+                ctx.pending_order = Some(order.clone());
+            }
+            PipelineEvent::TradeFilled { trade } => {
+                ctx.latest_trade = Some(trade.clone());
+            }
             // P1-5: broker-is-truth equity input — tag the context so
             // breach-capable rules know they CAN terminate.
-            PipelineEvent::Tick { tick, broker_equity, broker_balance } => {
+            PipelineEvent::Tick {
+                tick,
+                broker_equity,
+                broker_balance,
+            } => {
                 ctx.latest_tick = Some(tick.clone());
-                ctx.equity_input = EquityInput::BrokerReported { equity: *broker_equity, balance: *broker_balance };
+                ctx.equity_input = EquityInput::BrokerReported {
+                    equity: *broker_equity,
+                    balance: *broker_balance,
+                };
             }
             // P1-5: estimate-only path — breach-capable rules will refuse
             // to terminate on this context.
             PipelineEvent::TickEstimated { tick } => {
                 ctx.latest_tick = Some(tick.clone());
-                ctx.equity_input = EquityInput::Estimated { equity: ctx.account.equity, balance: ctx.account.balance };
+                ctx.equity_input = EquityInput::Estimated {
+                    equity: ctx.account.equity,
+                    balance: ctx.account.balance,
+                };
             }
             _ => {}
         }
         ctx
     }
 
-    fn emit_decision_event(&self, account_id: crate::core::ids::AccountId, decision: &Decision, events: &mut Vec<DomainEvent>) -> Option<DomainEvent> {
+    fn emit_decision_event(
+        &self,
+        account_id: crate::core::ids::AccountId,
+        decision: &Decision,
+        events: &mut Vec<DomainEvent>,
+    ) -> Option<DomainEvent> {
         if let DecisionKind::Fail | DecisionKind::Liquidate = decision.kind {
             let ev = DomainEvent::new(
                 account_id,

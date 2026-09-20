@@ -19,7 +19,10 @@ pub struct InMemoryStore {
 }
 
 impl InMemoryStore {
-    pub fn new() -> Self { Self::default() }
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl AccountStore for InMemoryStore {
@@ -71,9 +74,14 @@ impl AccountStore for InMemoryStore {
         Ok(())
     }
     fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
-        Ok(self.positions.read().get(&id).cloned().unwrap_or_default()
+        Ok(self
+            .positions
+            .read()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
             .into_iter()
-            .filter(|p| p.is_open())
+            .filter(super::super::core::position::Position::is_open)
             .collect())
     }
     fn add_position(&self, position: Position) -> Result<(), Error> {
@@ -105,7 +113,12 @@ impl AccountStore for InMemoryStore {
     }
     fn today_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
         let now = Utc::now();
-        Ok(self.trades.read().get(&id).cloned().unwrap_or_default()
+        Ok(self
+            .trades
+            .read()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
             .into_iter()
             .filter(|t| (now - t.executed_at).num_hours() < 24)
             .collect())

@@ -3,9 +3,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct TakeProfitRequiredRule {
@@ -18,13 +18,23 @@ pub struct TakeProfitRequiredRule {
 }
 
 impl Rule for TakeProfitRequiredRule {
-    fn id(&self) -> RuleId { RuleId::named("tp_required") }
-    fn name(&self) -> &str { "Take-Profit Required" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MissingTakeProfit }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Warning }
+    fn id(&self) -> RuleId {
+        RuleId::named("tp_required")
+    }
+    fn name(&self) -> &'static str {
+        "Take-Profit Required"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MissingTakeProfit
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Warning
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Requires every new position to have a take-profit set at submission."
     }
 
@@ -57,8 +67,11 @@ impl Rule for TakeProfitRequiredRule {
 
 impl TakeProfitRequiredRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        TakeProfitRequiredRule { params: Some(RuleParams::from_entry(entry)) }
+        TakeProfitRequiredRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

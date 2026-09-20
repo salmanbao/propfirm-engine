@@ -22,9 +22,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict, ViolationBuilder};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct MaxDrawdownRule {
@@ -38,8 +38,11 @@ pub struct MaxDrawdownRule {
 
 impl MaxDrawdownRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        MaxDrawdownRule { params: Some(RuleParams::from_entry(entry)) }
+        MaxDrawdownRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 
     /// Effective drawdown pct — pack entry's value if set, else plan.
@@ -64,21 +67,37 @@ impl MaxDrawdownRule {
 }
 
 impl Rule for MaxDrawdownRule {
-    fn id(&self) -> RuleId { RuleId::named("max_drawdown") }
-    fn name(&self) -> &str { "Maximum Drawdown" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MaxDrawdown }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("max_drawdown")
+    }
+    fn name(&self) -> &'static str {
+        "Maximum Drawdown"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MaxDrawdown
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::OnTick
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
     /// P0-D: pack entry's priority overrides default.
     fn priority(&self) -> u32 {
-        self.params.as_ref().and_then(|p| p.priority()).unwrap_or(1000)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::priority)
+            .unwrap_or(1000)
     }
     /// P0-D: pack entry's tolerance overrides default.
     fn tolerance_cents(&self) -> i64 {
-        self.params.as_ref().and_then(|p| p.tolerance_cents()).unwrap_or(1)
+        self.params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::tolerance_cents)
+            .unwrap_or(1)
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Maximum cumulative drawdown permitted over the life of the account. \
          Reference point (static vs trailing vs eod_trailing) is set by \
          ChallengePlan::max_loss_reference or the rule-pack entry's basis \
@@ -89,7 +108,9 @@ impl Rule for MaxDrawdownRule {
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
         // P0-D: if the pack entry explicitly disabled this rule, honor it.
         if let Some(p) = &self.params {
-            if !p.enabled { return false; }
+            if !p.enabled {
+                return false;
+            }
         }
         // Otherwise: enabled iff there's a non-zero threshold to check
         // (either from pack or plan).
@@ -111,7 +132,11 @@ impl Rule for MaxDrawdownRule {
             crate::config::plan::LossReference::EodTrailing => ctx.account.day_start_balance,
         };
         let limit = Money(plan_pct * reference.0);
-        let current = if ctx.account.plan.drawdown_on_balance { ctx.account.balance } else { ctx.account.equity };
+        let current = if ctx.account.plan.drawdown_on_balance {
+            ctx.account.balance
+        } else {
+            ctx.account.equity
+        };
         let dd = Money((reference.0 - current.0).max(dec!(0)));
 
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
@@ -129,7 +154,11 @@ impl Rule for MaxDrawdownRule {
                 severity,
                 format!(
                     "Maximum drawdown breach{} ({:?} mode): {dd} > {limit}+{tolerance} ({}%)",
-                    if ctx.equity_is_broker_reported() { "" } else { " [ESTIMATED — not terminating]" },
+                    if ctx.equity_is_broker_reported() {
+                        ""
+                    } else {
+                        " [ESTIMATED — not terminating]"
+                    },
                     basis,
                     plan_pct * dec!(100)
                 ),
@@ -141,8 +170,10 @@ impl Rule for MaxDrawdownRule {
             });
         }
         // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
-        let warn_pct = self.params.as_ref()
-            .and_then(|p| p.early_warning_pct())
+        let warn_pct = self
+            .params
+            .as_ref()
+            .and_then(super::super::params::RuleParams::early_warning_pct)
             .unwrap_or(dec!(0.8));
         let warn = limit.0 * warn_pct;
         if dd.0 >= warn {
@@ -171,6 +202,7 @@ impl ParameterizedRule for MaxDrawdownRule {
 
 /// Helper to compute current drawdown from peak balance, as `Money`.
 #[deprecated(note = "use Account::total_drawdown() which respects the static/trailing reference")]
+#[must_use]
 pub fn peak_drawdown(current: Money, peak: Money) -> Money {
     Money((peak.0 - current.0).max(dec!(0)))
 }

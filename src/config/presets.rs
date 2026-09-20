@@ -11,21 +11,23 @@
 
 use crate::config::plan::{ChallengePhase, ChallengePlan, LossReference, PlanMeta};
 use crate::core::ids::ChallengeId;
-use crate::core::types::{Money, Pct, dec};
+use crate::core::types::{dec, Money, Pct};
 use chrono::Utc;
 
 fn base_plan(firm: &str, program: &str, balance: Money) -> ChallengePlan {
-    let mut p = ChallengePlan::default();
-    p.id = ChallengeId::new();
-    p.meta = PlanMeta {
-        firm_name: firm.into(),
-        program_name: program.into(),
-        version: "1.0.0".into(),
-        currency: "USD".into(),
-        description: format!("{firm} {program} evaluation program"),
+    let p = ChallengePlan {
+        id: ChallengeId::new(),
+        meta: PlanMeta {
+            firm_name: firm.into(),
+            program_name: program.into(),
+            version: "1.0.0".into(),
+            currency: "USD".into(),
+            description: format!("{firm} {program} evaluation program"),
+        },
+        initial_balance_money: balance,
+        effective_at: Utc::now(),
+        ..ChallengePlan::default()
     };
-    p.initial_balance_money = balance;
-    p.effective_at = Utc::now();
     p
 }
 
@@ -41,6 +43,7 @@ fn base_plan(firm: &str, program: &str, balance: Money) -> ChallengePlan {
 ///
 /// **P1.12 fix**: FTMO's published minimum trading days is **4** (was
 /// hardcoded to 3 — drift caught by the deep assessment).
+#[must_use]
 pub fn ftmo_phase1() -> ChallengePlan {
     let mut p = base_plan("FTMO", "Challenge", Money(dec!(10_000)));
     p.phase = ChallengePhase::Phase1;
@@ -52,7 +55,7 @@ pub fn ftmo_phase1() -> ChallengePlan {
     // breach (you're still above the $9k floor).
     p.max_loss_reference = LossReference::Static;
     p.drawdown_on_balance = false;
-    p.min_trading_days = 4;  // P1.12: FTMO published spec is 4, not 3.
+    p.min_trading_days = 4; // P1.12: FTMO published spec is 4, not 3.
     p.time_limit_days = Some(30);
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
@@ -67,6 +70,7 @@ pub fn ftmo_phase1() -> ChallengePlan {
 }
 
 /// FTMO-style Phase 2 plan.
+#[must_use]
 pub fn ftmo_phase2() -> ChallengePlan {
     let mut p = ftmo_phase1();
     p.phase = ChallengePhase::Phase2;
@@ -82,6 +86,7 @@ pub fn ftmo_phase2() -> ChallengePlan {
 /// Funded accounts have no profit target and use a *trailing* max loss
 /// (the floor floats up as the account grows — this is what FTMO's
 /// published "trailing drawdown" actually refers to).
+#[must_use]
 pub fn ftmo_funded() -> ChallengePlan {
     let mut p = ftmo_phase2();
     p.phase = ChallengePhase::Funded;
@@ -98,6 +103,7 @@ pub fn ftmo_funded() -> ChallengePlan {
 }
 
 /// MyForexFunds-style Phase 1 (aggressive).
+#[must_use]
 pub fn myforexfunds_phase1() -> ChallengePlan {
     let mut p = base_plan("MyForexFunds", "Challenge", Money(dec!(50_000)));
     p.phase = ChallengePhase::Phase1;
@@ -120,6 +126,7 @@ pub fn myforexfunds_phase1() -> ChallengePlan {
 }
 
 /// The Funded Trader-style Phase 1.
+#[must_use]
 pub fn thefundedtrader_phase1() -> ChallengePlan {
     let mut p = base_plan("The Funded Trader", "Challenge", Money(dec!(100_000)));
     p.phase = ChallengePhase::Phase1;
@@ -142,6 +149,7 @@ pub fn thefundedtrader_phase1() -> ChallengePlan {
 }
 
 /// SurgeTrader-style plan (single phase, profit target only).
+#[must_use]
 pub fn surgetrader_plan() -> ChallengePlan {
     let mut p = base_plan("SurgeTrader", "One-Step", Money(dec!(25_000)));
     p.phase = ChallengePhase::Phase1;
@@ -164,6 +172,7 @@ pub fn surgetrader_plan() -> ChallengePlan {
 }
 
 /// Custom plan builder.
+#[must_use]
 pub fn custom(name: &str, balance: Money) -> ChallengePlan {
     base_plan("Custom", name, balance)
 }
@@ -178,6 +187,7 @@ pub fn custom(name: &str, balance: Money) -> ChallengePlan {
 ///
 /// Note: real 1-Step plans use EOD-reset trailing max loss; the engine
 /// supports this via `LossReference::EodTrailing` once P1.6 lands.
+#[must_use]
 pub fn ftmo_1step() -> ChallengePlan {
     let mut p = base_plan("FTMO", "1-Step Challenge", Money(dec!(10_000)));
     p.phase = ChallengePhase::Phase1;
@@ -187,8 +197,8 @@ pub fn ftmo_1step() -> ChallengePlan {
     // P1.6: when EOD-trailing lands, switch this to EodTrailing.
     p.max_loss_reference = LossReference::Static;
     p.drawdown_on_balance = false;
-    p.min_trading_days = 0;  // 1-Step has no min days.
-    p.time_limit_days = None;  // unlimited + inactivity termination (P1 future).
+    p.min_trading_days = 0; // 1-Step has no min days.
+    p.time_limit_days = None; // unlimited + inactivity termination (P1 future).
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
     p.weekend_holding_allowed = false;
@@ -207,10 +217,11 @@ pub fn ftmo_1step() -> ChallengePlan {
 /// evaluation entirely — start on a funded account with reduced profit
 /// split (often 50% → scaling plan → 90%) until a profit target is hit.
 /// This preset captures the funded-with-restrictions shape.
+#[must_use]
 pub fn ftmo_instant_funding() -> ChallengePlan {
     let mut p = base_plan("FTMO", "Instant Funding", Money(dec!(10_000)));
     p.phase = ChallengePhase::Funded;
-    p.profit_target_pct = Pct(dec!(0.05));  // lower target — just verify profitability
+    p.profit_target_pct = Pct(dec!(0.05)); // lower target — just verify profitability
     p.max_daily_drawdown_pct = Pct(dec!(0.05));
     p.max_total_drawdown_pct = Pct(dec!(0.10));
     p.max_loss_reference = LossReference::Trailing;
@@ -232,6 +243,7 @@ pub fn ftmo_instant_funding() -> ChallengePlan {
 }
 
 /// **P1.12 fix**: FundedNext-style 1-Step plan (50k account, 8% target).
+#[must_use]
 pub fn fundednext_1step() -> ChallengePlan {
     let mut p = base_plan("FundedNext", "1-Step", Money(dec!(50_000)));
     p.phase = ChallengePhase::Phase1;
@@ -253,6 +265,7 @@ pub fn fundednext_1step() -> ChallengePlan {
 }
 
 /// **P1.12 fix**: Topstep-style futures plan (per-trade max loss, no time limit).
+#[must_use]
 pub fn topstep_futures() -> ChallengePlan {
     let mut p = base_plan("Topstep", "Trading Combine", Money(dec!(50_000)));
     p.phase = ChallengePhase::Phase1;
@@ -268,7 +281,7 @@ pub fn topstep_futures() -> ChallengePlan {
     p.hedging_allowed = false;
     p.require_stop_loss = true;
     p.consistency_pct = None;
-    p.leverage = 1;  // futures: no leverage flag; 1 contract per position
+    p.leverage = 1; // futures: no leverage flag; 1 contract per position
     p.validate().unwrap();
     p
 }

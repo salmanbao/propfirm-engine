@@ -6,9 +6,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct MaxDailyTradesRule {
@@ -21,13 +21,23 @@ pub struct MaxDailyTradesRule {
 }
 
 impl Rule for MaxDailyTradesRule {
-    fn id(&self) -> RuleId { RuleId::named("max_daily_trades") }
-    fn name(&self) -> &str { "Max Daily Trades" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MaxDailyTrades }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("max_daily_trades")
+    }
+    fn name(&self) -> &'static str {
+        "Max Daily Trades"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MaxDailyTrades
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids new orders when the number of trades today has reached the daily cap."
     }
 
@@ -61,8 +71,11 @@ impl Rule for MaxDailyTradesRule {
 
 impl MaxDailyTradesRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        MaxDailyTradesRule { params: Some(RuleParams::from_entry(entry)) }
+        MaxDailyTradesRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

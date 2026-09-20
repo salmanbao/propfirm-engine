@@ -7,9 +7,9 @@ use crate::core::ids::RuleId;
 use crate::core::types::dec;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct MaxPositionSizeRule {
@@ -22,13 +22,23 @@ pub struct MaxPositionSizeRule {
 }
 
 impl Rule for MaxPositionSizeRule {
-    fn id(&self) -> RuleId { RuleId::named("max_position_size") }
-    fn name(&self) -> &str { "Max Position Size" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MaxPositionSize }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("max_position_size")
+    }
+    fn name(&self) -> &'static str {
+        "Max Position Size"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MaxPositionSize
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids orders exceeding the maximum lot size per order."
     }
 
@@ -70,8 +80,11 @@ impl Rule for MaxPositionSizeRule {
 
 impl MaxPositionSizeRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        MaxPositionSizeRule { params: Some(RuleParams::from_entry(entry)) }
+        MaxPositionSizeRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

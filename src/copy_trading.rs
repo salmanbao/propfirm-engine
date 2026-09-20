@@ -35,10 +35,17 @@ pub enum CopyTradingVerdict {
     Clean,
     /// Suspicious: correlated with N master trades within the window.
     /// Not enough for a hard verdict.
-    Suspicious { correlated_count: usize, window_seconds: i64 },
+    Suspicious {
+        correlated_count: usize,
+        window_seconds: i64,
+    },
     /// Hard failure: correlated with ≥ N master trades within the window
     /// (configurable threshold).
-    Confirmed { correlated_count: usize, window_seconds: i64, master_account_ids: Vec<String> },
+    Confirmed {
+        correlated_count: usize,
+        window_seconds: i64,
+        master_account_ids: Vec<String>,
+    },
 }
 
 /// Trait for copy-trading detectors. Real implementations compare an
@@ -56,7 +63,9 @@ pub trait CopyTradingDetector: Send + Sync {
 
     /// Returns the most recent N master trades the detector has seen.
     /// Used by tests + the breach-report endpoint to surface evidence.
-    fn recent_master_trades(&self, _n: usize) -> Vec<MasterTrade> { Vec::new() }
+    fn recent_master_trades(&self, _n: usize) -> Vec<MasterTrade> {
+        Vec::new()
+    }
 }
 
 /// No-op copy-trading detector — never detects anything. Safe default
@@ -85,6 +94,7 @@ pub struct ThresholdCopyTradingDetector {
 }
 
 impl ThresholdCopyTradingDetector {
+    #[must_use]
     pub fn new(window_seconds: i64, threshold: usize) -> Self {
         Self {
             masters: Vec::new(),
@@ -134,7 +144,10 @@ impl CopyTradingDetector for ThresholdCopyTradingDetector {
             }
         }
         let count = correlated.len();
-        let master_ids: Vec<String> = correlated.iter().map(|m| m.master_account_id.clone()).collect();
+        let master_ids: Vec<String> = correlated
+            .iter()
+            .map(|m| m.master_account_id.clone())
+            .collect();
         if count >= self.threshold {
             CopyTradingVerdict::Confirmed {
                 correlated_count: count,
@@ -164,13 +177,17 @@ pub struct InMemoryMasterFeed {
 }
 
 impl InMemoryMasterFeed {
-    pub fn new() -> Self { Self::default() }
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn add(&mut self, master_account_id: impl Into<String>, trade: MasterTrade) {
         let id = master_account_id.into();
         self.masters.entry(id).or_default().push(trade);
     }
 
+    #[must_use]
     pub fn all(&self) -> Vec<&MasterTrade> {
         self.masters.values().flat_map(|v| v.iter()).collect()
     }

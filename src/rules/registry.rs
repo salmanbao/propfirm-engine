@@ -6,9 +6,9 @@
 
 use crate::core::ids::RuleId;
 use crate::core::violation::{Violation, ViolationSeverity};
+use crate::core::Error;
 use crate::rules::context::{EvaluationScope, RuleContext, RuleContextKind};
 use crate::rules::traits::{Rule, RuleReport, RuleVerdict};
-use crate::core::Error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// [`RuleEntry`](crate::rulepack::RuleEntry). Maps the rule-pack's `kind`
 /// string to the concrete Rust rule implementation that backs it.
 ///
-/// (P1-6 fix, P0-D fix.) Each `kind` ("max_drawdown", "daily_drawdown", etc.) maps
+/// (P1-6 fix, P0-D fix.) Each `kind` ("`max_drawdown`", "`daily_drawdown`", etc.) maps
 /// to a registered rule factory; the factory reads the entry's `value`,
 /// `basis`, `unit`, `tolerance_cents`, `early_warning_pct`, `priority`,
 /// and `params_json` fields to construct a parameterized rule. The rule
@@ -28,38 +28,98 @@ pub type RuleFactory = fn(&crate::rulepack::RuleEntry) -> Result<Arc<dyn Rule>, 
 /// Default factory: maps kind name → constructor for the standard rule library.
 /// Each factory reads the `RuleEntry`'s `value`, `basis`, `unit`, etc. and
 /// produces a parameterized rule.
+#[must_use]
 pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
-    use crate::rules::evaluators::*;
     use crate::rulepack::RuleEntry;
+    use crate::rules::evaluators::{
+        consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
+        max_daily_trades, max_drawdown, max_open_positions, max_position_size, min_trading_days,
+        news_trading, overnight_holding, per_trade_max_loss, profit_target, sl_required,
+        time_limit, tp_required, trailing_drawdown, weekend_holding,
+    };
     Some(match kind {
-        "daily_drawdown" => |e: &RuleEntry| Ok(Arc::new(daily_drawdown::DailyDrawdownRule::from_entry(e))),
-        "max_drawdown" => |e: &RuleEntry| Ok(Arc::new(max_drawdown::MaxDrawdownRule::from_entry(e))),
-        "trailing_drawdown" => |e: &RuleEntry| Ok(Arc::new(trailing_drawdown::TrailingDrawdownRule::from_entry(e))),
-        "profit_target" => |e: &RuleEntry| Ok(Arc::new(profit_target::ProfitTargetRule::from_entry(e))),
-        "min_trading_days" => |e: &RuleEntry| Ok(Arc::new(min_trading_days::MinTradingDaysRule::from_entry(e))),
+        "daily_drawdown" => {
+            |e: &RuleEntry| Ok(Arc::new(daily_drawdown::DailyDrawdownRule::from_entry(e)))
+        }
+        "max_drawdown" => {
+            |e: &RuleEntry| Ok(Arc::new(max_drawdown::MaxDrawdownRule::from_entry(e)))
+        }
+        "trailing_drawdown" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                trailing_drawdown::TrailingDrawdownRule::from_entry(e),
+            ))
+        },
+        "profit_target" => {
+            |e: &RuleEntry| Ok(Arc::new(profit_target::ProfitTargetRule::from_entry(e)))
+        }
+        "min_trading_days" => |e: &RuleEntry| {
+            Ok(Arc::new(min_trading_days::MinTradingDaysRule::from_entry(
+                e,
+            )))
+        },
         "consistency" => |e: &RuleEntry| Ok(Arc::new(consistency::ConsistencyRule::from_entry(e))),
-        "news_trading" => |e: &RuleEntry| Ok(Arc::new(news_trading::NewsTradingRule::from_entry(e))),
-        "overnight_holding" => |e: &RuleEntry| Ok(Arc::new(overnight_holding::OvernightHoldingRule::from_entry(e))),
-        "weekend_holding" => |e: &RuleEntry| Ok(Arc::new(weekend_holding::WeekendHoldingRule::from_entry(e))),
-        "max_position_size" => |e: &RuleEntry| Ok(Arc::new(max_position_size::MaxPositionSizeRule::from_entry(e))),
-        "max_open_positions" => |e: &RuleEntry| Ok(Arc::new(max_open_positions::MaxOpenPositionsRule::from_entry(e))),
-        "max_daily_trades" => |e: &RuleEntry| Ok(Arc::new(max_daily_trades::MaxDailyTradesRule::from_entry(e))),
+        "news_trading" => {
+            |e: &RuleEntry| Ok(Arc::new(news_trading::NewsTradingRule::from_entry(e)))
+        }
+        "overnight_holding" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                overnight_holding::OvernightHoldingRule::from_entry(e),
+            ))
+        },
+        "weekend_holding" => {
+            |e: &RuleEntry| Ok(Arc::new(weekend_holding::WeekendHoldingRule::from_entry(e)))
+        }
+        "max_position_size" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                max_position_size::MaxPositionSizeRule::from_entry(e),
+            ))
+        },
+        "max_open_positions" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                max_open_positions::MaxOpenPositionsRule::from_entry(e),
+            ))
+        },
+        "max_daily_trades" => |e: &RuleEntry| {
+            Ok(Arc::new(max_daily_trades::MaxDailyTradesRule::from_entry(
+                e,
+            )))
+        },
         "time_limit" => |e: &RuleEntry| Ok(Arc::new(time_limit::TimeLimitRule::from_entry(e))),
         "cooldown" => |e: &RuleEntry| Ok(Arc::new(cooldown::CooldownRule::from_entry(e))),
         "hedging" => |e: &RuleEntry| Ok(Arc::new(hedging::HedgingRule::from_entry(e))),
-        "grid_trading" => |e: &RuleEntry| Ok(Arc::new(grid_trading::GridTradingRule::from_entry(e))),
-        "copy_trading" => |e: &RuleEntry| Ok(Arc::new(copy_trading::CopyTradingRule::from_entry(e))),
-        "sl_required" => |e: &RuleEntry| Ok(Arc::new(sl_required::StopLossRequiredRule::from_entry(e))),
-        "tp_required" => |e: &RuleEntry| Ok(Arc::new(tp_required::TakeProfitRequiredRule::from_entry(e))),
-        "hft_scalping" => |e: &RuleEntry| Ok(Arc::new(hft_scalping::HftScalpingRule::from_entry(e))),
-        "per_trade_max_loss" => |e: &RuleEntry| Ok(Arc::new(per_trade_max_loss::PerTradeMaxLossRule::from_entry(e))),
+        "grid_trading" => {
+            |e: &RuleEntry| Ok(Arc::new(grid_trading::GridTradingRule::from_entry(e)))
+        }
+        "copy_trading" => {
+            |e: &RuleEntry| Ok(Arc::new(copy_trading::CopyTradingRule::from_entry(e)))
+        }
+        "sl_required" => {
+            |e: &RuleEntry| Ok(Arc::new(sl_required::StopLossRequiredRule::from_entry(e)))
+        }
+        "tp_required" => {
+            |e: &RuleEntry| Ok(Arc::new(tp_required::TakeProfitRequiredRule::from_entry(e)))
+        }
+        "hft_scalping" => {
+            |e: &RuleEntry| Ok(Arc::new(hft_scalping::HftScalpingRule::from_entry(e)))
+        }
+        "per_trade_max_loss" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                per_trade_max_loss::PerTradeMaxLossRule::from_entry(e),
+            ))
+        },
         _ => return None,
     })
 }
 
 /// Default rule library (registered automatically).
+#[must_use]
 pub fn default_rules() -> Vec<Arc<dyn Rule>> {
-    use crate::rules::evaluators::*;
+    use crate::rules::evaluators::{
+        consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
+        max_daily_trades, max_drawdown, max_open_positions, max_position_size, min_trading_days,
+        news_trading, overnight_holding, per_trade_max_loss, profit_target, sl_required,
+        time_limit, tp_required, trailing_drawdown, weekend_holding,
+    };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
         Arc::new(max_drawdown::MaxDrawdownRule::default()),
@@ -101,6 +161,7 @@ impl Default for RuleRegistry {
 
 impl RuleRegistry {
     /// Builds an empty registry.
+    #[must_use]
     pub fn empty() -> Self {
         RuleRegistry {
             rules: Vec::new(),
@@ -109,6 +170,7 @@ impl RuleRegistry {
     }
 
     /// Builds a registry pre-populated with the default rule library.
+    #[must_use]
     pub fn with_default_rules() -> Self {
         let mut r = Self::empty();
         for rule in default_rules() {
@@ -163,39 +225,40 @@ impl RuleRegistry {
             if !entry.enabled {
                 continue;
             }
-            match default_factory_for_kind(&entry.kind) {
-                Some(factory) => {
-                    let rule = factory(entry)?;
-                    registry.register(rule);
-                }
-                None => {
-                    // Soft skip — unknown kind in this engine version.
-                    // In production, log this so tenant admins know
-                    // their pack references an unsupported kind.
-                }
+            if let Some(factory) = default_factory_for_kind(&entry.kind) {
+                let rule = factory(entry)?;
+                registry.register(rule);
+            } else {
+                // Soft skip — unknown kind in this engine version.
+                // In production, log this so tenant admins know
+                // their pack references an unsupported kind.
             }
         }
         Ok(registry)
     }
 
     /// Returns the rule with the given id, if any.
+    #[must_use]
     pub fn get(&self, id: RuleId) -> Option<&Arc<dyn Rule>> {
         self.by_id.get(&id).map(|&i| &self.rules[i])
     }
 
     /// Returns the list of all rules.
+    #[must_use]
     pub fn all(&self) -> &[Arc<dyn Rule>] {
         &self.rules
     }
 
     /// Returns the rules that apply to the given context kind / scope.
+    #[must_use]
     pub fn applicable(&self, kind: RuleContextKind) -> Vec<&Arc<dyn Rule>> {
         let scope = match kind {
             RuleContextKind::OnOrderSubmit => EvaluationScope::PreTrade,
             RuleContextKind::OnTradeFill => EvaluationScope::PostTrade,
             RuleContextKind::OnTick => EvaluationScope::OnTick,
-            RuleContextKind::OnDayRollover |
-            RuleContextKind::OnEndOfDay => EvaluationScope::Periodic,
+            RuleContextKind::OnDayRollover | RuleContextKind::OnEndOfDay => {
+                EvaluationScope::Periodic
+            }
             RuleContextKind::OnDemand => EvaluationScope::OnDemand,
         };
         self.rules
@@ -215,17 +278,24 @@ impl RuleRegistry {
     /// everyone's evaluation.
     pub fn evaluate(&self, ctx: &RuleContext) -> crate::Result<Vec<RuleReport>> {
         let mut reports = Vec::with_capacity(self.rules.len());
-        for rule in self.rules.iter() {
+        for rule in &self.rules {
             if !rule.is_enabled(ctx) {
                 continue;
             }
             let scope = rule.scope();
             let applicable = match ctx.kind {
-                RuleContextKind::OnOrderSubmit => scope == EvaluationScope::PreTrade || scope == EvaluationScope::OnDemand,
-                RuleContextKind::OnTradeFill => scope == EvaluationScope::PostTrade || scope == EvaluationScope::OnDemand,
-                RuleContextKind::OnTick => scope == EvaluationScope::OnTick || scope == EvaluationScope::OnDemand,
-                RuleContextKind::OnDayRollover |
-                RuleContextKind::OnEndOfDay => scope == EvaluationScope::Periodic || scope == EvaluationScope::OnDemand,
+                RuleContextKind::OnOrderSubmit => {
+                    scope == EvaluationScope::PreTrade || scope == EvaluationScope::OnDemand
+                }
+                RuleContextKind::OnTradeFill => {
+                    scope == EvaluationScope::PostTrade || scope == EvaluationScope::OnDemand
+                }
+                RuleContextKind::OnTick => {
+                    scope == EvaluationScope::OnTick || scope == EvaluationScope::OnDemand
+                }
+                RuleContextKind::OnDayRollover | RuleContextKind::OnEndOfDay => {
+                    scope == EvaluationScope::Periodic || scope == EvaluationScope::OnDemand
+                }
                 RuleContextKind::OnDemand => true,
             };
             if !applicable {
@@ -233,7 +303,8 @@ impl RuleRegistry {
             }
             // P3.20: catch panics from buggy rules. A panic is converted
             // to a Warn verdict so the process keeps running.
-            let verdict_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.evaluate(ctx)));
+            let verdict_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.evaluate(ctx)));
             let verdict = match verdict_result {
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => {
@@ -245,7 +316,8 @@ impl RuleRegistry {
                         ViolationSeverity::Warning,
                         format!("rule evaluation error: {e}"),
                         ctx.server_time.ts(),
-                    ).with_tenant(ctx.account.tenant_id);
+                    )
+                    .with_tenant(ctx.account.tenant_id);
                     RuleVerdict::Warn(v)
                 }
                 Err(panic_payload) => {
@@ -262,9 +334,12 @@ impl RuleRegistry {
                         rule.name(),
                         rule.kind(),
                         ViolationSeverity::Warning,
-                        format!("rule panicked (caught by registry, process preserved): {panic_msg}"),
+                        format!(
+                            "rule panicked (caught by registry, process preserved): {panic_msg}"
+                        ),
                         ctx.server_time.ts(),
-                    ).with_tenant(ctx.account.tenant_id);
+                    )
+                    .with_tenant(ctx.account.tenant_id);
                     RuleVerdict::Warn(v)
                 }
             };
@@ -282,7 +357,9 @@ impl RuleRegistry {
 
 impl std::fmt::Display for RuleContextKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use RuleContextKind::*;
+        use RuleContextKind::{
+            OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
+        };
         let s = match self {
             OnOrderSubmit => "on_order_submit",
             OnTradeFill => "on_trade_fill",

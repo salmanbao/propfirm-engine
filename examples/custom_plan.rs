@@ -1,12 +1,12 @@
 //! Example: build a custom challenge plan and run an evaluation.
 
-use propfirm::prelude::*;
 use propfirm::config::plan::{ChallengePhase, ChallengePlan};
 use propfirm::config::rule_config::RuleConfig;
 use propfirm::core::order::{Order, OrderKind, OrderSide, OrderStatus, OrderType, TimeInForce};
 use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Money, Price, Quantity, Symbol, dec};
+use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
 use propfirm::engine::evaluator::Evaluator;
+use propfirm::prelude::*;
 use propfirm::rules::context::RuleContext;
 
 fn main() -> anyhow::Result<()> {
@@ -48,24 +48,42 @@ fn main() -> anyhow::Result<()> {
     let mut ctx = RuleContext::for_open_order(account.clone(), &order);
     ctx.rule_config = RuleConfig::from_plan(&account.plan);
     let result = evaluator.evaluate(&ctx)?;
-    println!("Order evaluation: decision={:?} passed={}", result.decision.kind, result.passed());
+    println!(
+        "Order evaluation: decision={:?} passed={}",
+        result.decision.kind,
+        result.passed()
+    );
     for r in &result.reports {
-        println!("  rule={} verdict-kind={}", r.rule_name, match &r.verdict {
-            propfirm::rules::traits::RuleVerdict::Pass => "pass",
-            propfirm::rules::traits::RuleVerdict::Warn(_) => "warn",
-            propfirm::rules::traits::RuleVerdict::Fail(_) => "fail",
-            propfirm::rules::traits::RuleVerdict::Liquidate(_) => "liquidate",
-            propfirm::rules::traits::RuleVerdict::TargetHit(_) => "target_hit",
-            propfirm::rules::traits::RuleVerdict::Emergency(_) => "emergency",
-            propfirm::rules::traits::RuleVerdict::EarlyWarning(_) => "early_warning",
-            propfirm::rules::traits::RuleVerdict::Skip => "skip",
-        });
+        println!(
+            "  rule={} verdict-kind={}",
+            r.rule_name,
+            match &r.verdict {
+                propfirm::rules::traits::RuleVerdict::Pass => "pass",
+                propfirm::rules::traits::RuleVerdict::Warn(_) => "warn",
+                propfirm::rules::traits::RuleVerdict::Fail(_) => "fail",
+                propfirm::rules::traits::RuleVerdict::Liquidate(_) => "liquidate",
+                propfirm::rules::traits::RuleVerdict::TargetHit(_) => "target_hit",
+                propfirm::rules::traits::RuleVerdict::Emergency(_) => "emergency",
+                propfirm::rules::traits::RuleVerdict::EarlyWarning(_) => "early_warning",
+                propfirm::rules::traits::RuleVerdict::Skip => "skip",
+            }
+        );
     }
 
     // Evaluate a tick.
-    let tick = Tick::new(Symbol::new("EURUSD"), Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: chrono::Utc::now() });
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0850)),
+            ask: Price(dec!(1.0852)),
+            ts: chrono::Utc::now(),
+        },
+    );
     let result = evaluator.evaluate_tick(&account, &tick, &[], &[], Vec::new())?;
-    println!("Tick evaluation: equity={} decision={:?}", account.equity, result.decision.kind);
+    println!(
+        "Tick evaluation: equity={} decision={:?}",
+        account.equity, result.decision.kind
+    );
 
     Ok(())
 }

@@ -19,10 +19,31 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub fn is_pass(&self) -> bool { matches!(self, Outcome::Pass | Outcome::Skip) }
-    pub fn is_fail(&self) -> bool { matches!(self, Outcome::Fail(_) | Outcome::Liquidate(_) | Outcome::Emergency(_)) }
-    pub fn is_warn(&self) -> bool { matches!(self, Outcome::Warn(_)) }
-    pub fn is_target_hit(&self) -> bool { matches!(self, Outcome::TargetHit(_)) }
-    pub fn is_emergency(&self) -> bool { matches!(self, Outcome::Emergency(_)) }
-    pub fn is_early_warning(&self) -> bool { matches!(self, Outcome::EarlyWarning(_)) }
+    #[must_use]
+    pub fn is_pass(&self) -> bool {
+        matches!(self, Outcome::Pass | Outcome::Skip)
+    }
+    #[must_use]
+    pub fn is_fail(&self) -> bool {
+        matches!(
+            self,
+            Outcome::Fail(_) | Outcome::Liquidate(_) | Outcome::Emergency(_)
+        )
+    }
+    #[must_use]
+    pub fn is_warn(&self) -> bool {
+        matches!(self, Outcome::Warn(_))
+    }
+    #[must_use]
+    pub fn is_target_hit(&self) -> bool {
+        matches!(self, Outcome::TargetHit(_))
+    }
+    #[must_use]
+    pub fn is_emergency(&self) -> bool {
+        matches!(self, Outcome::Emergency(_))
+    }
+    #[must_use]
+    pub fn is_early_warning(&self) -> bool {
+        matches!(self, Outcome::EarlyWarning(_))
+    }
 }

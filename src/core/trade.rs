@@ -50,6 +50,8 @@ pub struct Trade {
 
 impl Trade {
     /// Constructs a new trade (fill).
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // broker fill metadata is inherently wide
     pub fn new(
         order_id: OrderId,
         account_id: crate::core::ids::AccountId,
@@ -80,8 +82,12 @@ impl Trade {
 
     /// Net P&L contribution of this trade (realized pnl + commission + swap
     /// for exits; for entries, zero or commission only).
+    #[must_use]
     pub fn net_pnl(&self) -> Money {
-        let gross = self.exit_info.as_ref().map(|e| e.realized_pnl).unwrap_or(Money::ZERO);
+        let gross = self
+            .exit_info
+            .as_ref()
+            .map_or(Money::ZERO, |e| e.realized_pnl);
         Money(gross.0 - self.commission.0 - self.swap.0)
     }
 }

@@ -25,11 +25,14 @@
 //! last N idempotency keys per endpoint to deduplicate retries.
 
 use crate::api::handlers::{
-    activate_rule_pack, breach_report, create_rule_pack, evaluate_internal,
-    evaluate_order, get_account, get_rule_pack, health, manual_run,
-    override_breach, supersed_rule_pack, update_rule_pack, SharedState,
+    activate_rule_pack, breach_report, create_rule_pack, evaluate_internal, evaluate_order,
+    get_account, get_rule_pack, health, manual_run, override_breach, supersed_rule_pack,
+    update_rule_pack, SharedState,
 };
-use axum::{routing::{get, patch, post}, Router};
+use axum::{
+    routing::{get, patch, post},
+    Router,
+};
 
 pub fn router(state: SharedState) -> Router {
     Router::new()

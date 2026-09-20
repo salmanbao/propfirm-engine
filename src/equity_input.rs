@@ -57,21 +57,27 @@ impl EquityInput {
     /// display / non-breach purposes. For breach decisions, prefer
     /// [`Self::broker_equity`] which returns `None` if the value is an
     /// estimate.
+    #[must_use]
     pub fn equity(self) -> Money {
         match self {
-            EquityInput::BrokerReported { equity, .. } | EquityInput::Estimated { equity, .. } => equity,
+            EquityInput::BrokerReported { equity, .. } | EquityInput::Estimated { equity, .. } => {
+                equity
+            }
         }
     }
 
     /// Returns the balance value regardless of source.
+    #[must_use]
     pub fn balance(self) -> Money {
         match self {
-            EquityInput::BrokerReported { balance, .. } | EquityInput::Estimated { balance, .. } => balance,
+            EquityInput::BrokerReported { balance, .. }
+            | EquityInput::Estimated { balance, .. } => balance,
         }
     }
 
     /// Returns `true` only if this is a broker-reported value. Breach-capable
     /// rules check this before emitting `Fail`/`Liquidate`.
+    #[must_use]
     pub fn is_broker_reported(self) -> bool {
         matches!(self, EquityInput::BrokerReported { .. })
     }
@@ -89,6 +95,7 @@ impl EquityInput {
     ///     }
     /// };
     /// ```
+    #[must_use]
     pub fn broker_equity(self) -> Option<Money> {
         match self {
             EquityInput::BrokerReported { equity, .. } => Some(equity),

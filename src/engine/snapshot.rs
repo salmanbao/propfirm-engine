@@ -16,6 +16,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    #[must_use]
     pub fn new(account: &crate::core::account::Account, decision: Decision) -> Self {
         let snap: AccountSnapshot = account.into();
         Snapshot {

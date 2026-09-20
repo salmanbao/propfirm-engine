@@ -1,8 +1,9 @@
 //! Drawdown helpers.
 
-use crate::core::types::{Decimal, Money, dec};
+use crate::core::types::{dec, Decimal, Money};
 
 /// Returns the largest peak-to-trough drawdown in money terms.
+#[must_use]
 pub fn max_drawdown(equity: &[Money]) -> Decimal {
     let mut peak = dec!(0);
     let mut mdd = dec!(0);
@@ -19,6 +20,7 @@ pub fn max_drawdown(equity: &[Money]) -> Decimal {
 }
 
 /// Returns the duration (in samples) of the longest drawdown.
+#[must_use]
 pub fn max_drawdown_duration(equity: &[Money]) -> u32 {
     let mut peak = dec!(0);
     let mut start: Option<usize> = None;

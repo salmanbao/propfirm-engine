@@ -40,17 +40,42 @@ pub enum DecisionKind {
 }
 
 impl DecisionKind {
-    pub fn is_pass(self) -> bool { matches!(self, DecisionKind::Pass) }
-    pub fn is_warn(self) -> bool { matches!(self, DecisionKind::Warn) }
-    pub fn is_early_warning(self) -> bool { matches!(self, DecisionKind::EarlyWarning) }
-    pub fn is_target_hit(self) -> bool { matches!(self, DecisionKind::TargetHit) }
-    pub fn is_fail(self) -> bool { matches!(self, DecisionKind::Fail) }
-    pub fn is_liquidate(self) -> bool { matches!(self, DecisionKind::Liquidate) }
-    pub fn is_emergency(self) -> bool { matches!(self, DecisionKind::Emergency) }
+    #[must_use]
+    pub fn is_pass(self) -> bool {
+        matches!(self, DecisionKind::Pass)
+    }
+    #[must_use]
+    pub fn is_warn(self) -> bool {
+        matches!(self, DecisionKind::Warn)
+    }
+    #[must_use]
+    pub fn is_early_warning(self) -> bool {
+        matches!(self, DecisionKind::EarlyWarning)
+    }
+    #[must_use]
+    pub fn is_target_hit(self) -> bool {
+        matches!(self, DecisionKind::TargetHit)
+    }
+    #[must_use]
+    pub fn is_fail(self) -> bool {
+        matches!(self, DecisionKind::Fail)
+    }
+    #[must_use]
+    pub fn is_liquidate(self) -> bool {
+        matches!(self, DecisionKind::Liquidate)
+    }
+    #[must_use]
+    pub fn is_emergency(self) -> bool {
+        matches!(self, DecisionKind::Emergency)
+    }
 
     /// Returns true for any verdict that should terminate the account.
+    #[must_use]
     pub fn is_terminating(self) -> bool {
-        matches!(self, DecisionKind::Fail | DecisionKind::Liquidate | DecisionKind::Emergency)
+        matches!(
+            self,
+            DecisionKind::Fail | DecisionKind::Liquidate | DecisionKind::Emergency
+        )
     }
 
     /// Returns the "weight" of this decision kind for tie-breaking when
@@ -61,9 +86,10 @@ impl DecisionKind {
     /// 1. Emergency (P1-12: short-circuits everything)
     /// 2. Liquidate (force-close + terminate)
     /// 3. Fail (terminate, no liquidation)
-    /// 4. TargetHit (positive outcome — loses to any breach)
-    /// 5. EarlyWarning / Warn (informational)
+    /// 4. `TargetHit` (positive outcome — loses to any breach)
+    /// 5. `EarlyWarning` / Warn (informational)
     /// 6. Pass (nothing happened)
+    #[allow(dead_code)] // reserved as documented tie-break extension point (see above)
     fn intrinsic_weight(self) -> u32 {
         match self {
             DecisionKind::Emergency => 10_000,
@@ -118,6 +144,7 @@ impl Decision {
     /// **P0-3 fix**: `TargetHit` is its own verdict — and it loses to any
     /// breach (Fail/Liquidate/Emergency) on the same evaluation, exactly
     /// as the binding spec requires ("breach wins, always").
+    #[must_use]
     pub fn from_reports(reports: &[RuleReport]) -> Self {
         // Collect all violations for the breach-report endpoint.
         let mut all_violations: Vec<Violation> = Vec::new();
@@ -203,10 +230,12 @@ impl Decision {
             };
         }
         if !early_warnings.is_empty() {
-            let (p, v) = pick_winner(&early_warnings).unwrap();
+            let (p, _v) = pick_winner(&early_warnings).unwrap();
             return Decision {
                 kind: DecisionKind::EarlyWarning,
-                reason: DecisionReason::EarlyWarnings(early_warnings.into_iter().map(|(_, v)| v).collect()),
+                reason: DecisionReason::EarlyWarnings(
+                    early_warnings.into_iter().map(|(_, v)| v).collect(),
+                ),
                 winning_priority: p,
                 all_violations,
             };
@@ -228,12 +257,22 @@ impl Decision {
         }
     }
 
-    pub fn is_pass(&self) -> bool { self.kind.is_pass() }
-    pub fn is_target_hit(&self) -> bool { self.kind.is_target_hit() }
-    pub fn is_terminating(&self) -> bool { self.kind.is_terminating() }
+    #[must_use]
+    pub fn is_pass(&self) -> bool {
+        self.kind.is_pass()
+    }
+    #[must_use]
+    pub fn is_target_hit(&self) -> bool {
+        self.kind.is_target_hit()
+    }
+    #[must_use]
+    pub fn is_terminating(&self) -> bool {
+        self.kind.is_terminating()
+    }
 
     /// Returns the severity level that should be applied to the account
     /// status based on this decision.
+    #[must_use]
     pub fn account_status_target(&self) -> Option<AccountStatus> {
         match self.kind {
             DecisionKind::Fail | DecisionKind::Liquidate => Some(AccountStatus::Failed),
@@ -243,12 +282,16 @@ impl Decision {
     }
 
     /// Returns the violations produced by the decision (warnings + hard).
-    #[deprecated(note = "use all_violations field directly — it carries every violation produced, not just the winner")]
+    #[deprecated(
+        note = "use all_violations field directly — it carries every violation produced, not just the winner"
+    )]
+    #[must_use]
     pub fn violations(&self) -> Vec<&Violation> {
         self.all_violations.iter().collect()
     }
 
     /// Returns the highest severity level across all violations.
+    #[must_use]
     pub fn max_severity(&self) -> Option<ViolationSeverity> {
         self.all_violations.iter().map(|v| v.severity).max()
     }

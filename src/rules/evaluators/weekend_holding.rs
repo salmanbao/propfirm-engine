@@ -8,9 +8,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 use chrono::{Datelike, Timelike, Weekday};
 
 #[derive(Debug, Clone, Default)]
@@ -24,13 +24,23 @@ pub struct WeekendHoldingRule {
 }
 
 impl Rule for WeekendHoldingRule {
-    fn id(&self) -> RuleId { RuleId::named("weekend_holding") }
-    fn name(&self) -> &str { "Weekend Holding" }
-    fn kind(&self) -> ViolationKind { ViolationKind::WeekendHolding }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("weekend_holding")
+    }
+    fn name(&self) -> &'static str {
+        "Weekend Holding"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::WeekendHolding
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids holding positions over the weekend."
     }
 
@@ -50,12 +60,13 @@ impl Rule for WeekendHoldingRule {
         let weekday = now.weekday();
         let hour = now.time().hour();
         // Friday after forbidden_from_hour → weekend starts
-        let approaching_weekend = matches!(weekday, Weekday::Fri) && hour >= cfg.forbidden_from_hour as u32;
+        let approaching_weekend =
+            matches!(weekday, Weekday::Fri) && hour >= u32::from(cfg.forbidden_from_hour);
         let on_weekend = matches!(weekday, Weekday::Sat | Weekday::Sun);
         if !approaching_weekend && !on_weekend {
             return Ok(RuleVerdict::Pass);
         }
-        if let Some(order) = &ctx.pending_order {
+        if let Some(_order) = &ctx.pending_order {
             let v = build_violation(
                 self,
                 ctx,
@@ -79,8 +90,11 @@ impl Rule for WeekendHoldingRule {
 
 impl WeekendHoldingRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        WeekendHoldingRule { params: Some(RuleParams::from_entry(entry)) }
+        WeekendHoldingRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

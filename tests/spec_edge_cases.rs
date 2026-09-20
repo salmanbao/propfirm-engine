@@ -31,7 +31,7 @@ use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::{Account, AccountStatus};
 use propfirm::core::ids::AccountId;
 use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Money, Price, Symbol, dec};
+use propfirm::core::types::{dec, Money, Price, Symbol};
 use propfirm::engine::decision::DecisionKind;
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::state::AccountState;
@@ -44,7 +44,8 @@ fn account_at(equity: i64, peak: i64, loss_ref: LossReference) -> Account {
     plan.news_trading_allowed = true;
     plan.initial_balance_money = Money(dec!(100_000));
     let mut acc = Account::new(AccountId::new(), plan)
-        .start(chrono::Utc::now()).unwrap();
+        .start(chrono::Utc::now())
+        .unwrap();
     acc.balance = Money(rust_decimal::Decimal::from(equity));
     acc.equity = Money(rust_decimal::Decimal::from(equity));
     acc.peak_balance = Money(rust_decimal::Decimal::from(peak));
@@ -57,10 +58,14 @@ fn account_at(equity: i64, peak: i64, loss_ref: LossReference) -> Account {
 }
 
 fn tick_now() -> Tick {
-    Tick::new(Symbol::new("EURUSD"), Quote {
-        bid: Price(dec!(1.0800)), ask: Price(dec!(1.0802)),
-        ts: chrono::Utc::now(),
-    })
+    Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -75,15 +80,25 @@ fn spec_3_4_edge_1_equity_exactly_at_limit_fires() {
     // So 90k equity at 90k floor → Pass (no breach), 89_999.99 → breach.
     let acc = account_at(90_000, 100_000, LossReference::Trailing);
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
     // Equity == floor exactly → no breach (with default 1¢ tolerance).
-    assert!(!result.decision.is_terminating(),
-        "equity exactly at floor with tolerance should NOT breach; got {:?}", result.decision.kind);
+    assert!(
+        !result.decision.is_terminating(),
+        "equity exactly at floor with tolerance should NOT breach; got {:?}",
+        result.decision.kind
+    );
     // 89_999.00 (1 dollar below floor) → breach.
     let acc_breach = account_at(89_999, 100_000, LossReference::Trailing);
-    let result = ev.evaluate_tick(&acc_breach, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(result.decision.is_terminating(),
-        "equity $1 below floor should breach; got {:?}", result.decision.kind);
+    let result = ev
+        .evaluate_tick(&acc_breach, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        result.decision.is_terminating(),
+        "equity $1 below floor should breach; got {:?}",
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +111,8 @@ fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
     // duplicated here as a named, permanent test-vector.)
     let plan = ftmo_phase1().with_min_days(5);
     let mut acc = Account::new(AccountId::new(), plan)
-        .start(chrono::Utc::now() - chrono::Duration::days(2)).unwrap();
+        .start(chrono::Utc::now() - chrono::Duration::days(2))
+        .unwrap();
     acc.target_reached_at = Some(chrono::Utc::now() - chrono::Duration::days(1));
     acc.target_reached_on_day = Some(0);
     acc.status = AccountStatus::TargetHitPending;
@@ -104,11 +120,18 @@ fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
     acc.equity = Money(dec!(10_500));
     acc.active_trading_days = 1;
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(acc.target_reached_at.is_some(),
-        "target_reached_at must remain set through equity dip");
-    assert!(!result.decision.is_terminating(),
-        "pending dip is NOT a breach; got {:?}", result.decision.kind);
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        acc.target_reached_at.is_some(),
+        "target_reached_at must remain set through equity dip"
+    );
+    assert!(
+        !result.decision.is_terminating(),
+        "pending dip is NOT a breach; got {:?}",
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,9 +149,14 @@ fn spec_3_4_edge_3_breach_beats_pass_on_same_tick() {
     let mut acc = acc;
     acc.balance = Money(dec!(110_000)); // 10% target reached
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(result.decision.is_terminating(),
-        "breach must beat target_hit on same tick; got {:?}", result.decision.kind);
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        result.decision.is_terminating(),
+        "breach must beat target_hit on same tick; got {:?}",
+        result.decision.kind
+    );
     assert_ne!(result.decision.kind, DecisionKind::TargetHit);
 }
 
@@ -142,10 +170,14 @@ fn spec_3_4_edge_4_static_floor_never_moves() {
     // Account at 95k (peak 200k) → 5k dd < 10k limit → no breach.
     let acc = account_at(95_000, 200_000, LossReference::Static);
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(!result.decision.is_terminating(),
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        !result.decision.is_terminating(),
         "static floor at 90k must not be tripped by 95k equity even with 200k peak; got {:?}",
-        result.decision.kind);
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +190,14 @@ fn spec_3_4_edge_5_trailing_floor_floats_up() {
     // Account at 175k → 25k dd > 20k limit → BREACH.
     let acc = account_at(175_000, 200_000, LossReference::Trailing);
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(result.decision.is_terminating(),
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        result.decision.is_terminating(),
         "trailing floor at 180k (200k - 20k trail) must be tripped by 175k equity; got {:?}",
-        result.decision.kind);
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -172,9 +208,14 @@ fn spec_3_4_edge_5_trailing_floor_floats_up() {
 fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static); // breach on static
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick_estimated(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(!result.decision.is_terminating(),
-        "estimated equity must NOT terminate; got {:?}", result.decision.kind);
+    let result = ev
+        .evaluate_tick_estimated(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        !result.decision.is_terminating(),
+        "estimated equity must NOT terminate; got {:?}",
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -185,9 +226,14 @@ fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
 fn spec_3_4_edge_8_broker_equity_can_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static);
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(result.decision.is_terminating(),
-        "broker-reported equity SHOULD terminate on real breach; got {:?}", result.decision.kind);
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        result.decision.is_terminating(),
+        "broker-reported equity SHOULD terminate on real breach; got {:?}",
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +249,14 @@ fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
     acc.balance = Money(dec!(90_000)); // exactly at floor
     acc.equity = Money(dec!(90_000));
     let ev = Evaluator::new(acc.plan.clone());
-    let result = ev.evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new()).unwrap();
-    assert!(!result.decision.is_terminating(),
+    let result = ev
+        .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
+        .unwrap();
+    assert!(
+        !result.decision.is_terminating(),
         "equity exactly at floor with tolerance 1¢ should NOT breach (uses `>` not `>=`); got {:?}",
-        result.decision.kind);
+        result.decision.kind
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +265,8 @@ fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
 
 #[test]
 fn spec_3_4_edge_11_override_clears_breach_state() {
-    use propfirm::override_engine::Override;
     use propfirm::core::ids::ViolationId;
+    use propfirm::override_engine::Override;
     let mut acc = account_at(95_000, 100_000, LossReference::Static);
     acc.status = AccountStatus::Failed;
     let override_record = Override::new(
@@ -228,8 +278,11 @@ fn spec_3_4_edge_11_override_clears_breach_state() {
     );
     let state = AccountState::new(acc);
     let new_state = state.clear_breach(&override_record).unwrap();
-    assert_eq!(new_state.account.status, AccountStatus::Active,
-        "override must transition Failed → Active");
+    assert_eq!(
+        new_state.account.status,
+        AccountStatus::Active,
+        "override must transition Failed → Active"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -241,17 +294,30 @@ fn spec_3_4_edge_12_emergency_stop_short_circuits() {
     use propfirm::persistence::traits::AccountStore;
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
-        .start(chrono::Utc::now()).unwrap();
+        .start(chrono::Utc::now())
+        .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
     store.put(account.clone()).unwrap();
     let evaluator = Evaluator::new(plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
-        evaluator, store.clone(), propfirm::notifications::log::LogNotifier::new());
-    let result = pipeline.process(account.id, propfirm::engine::pipeline::PipelineEvent::EmergencyStop {
-        reason: "Broker feed corrupted".into(),
-        actor_id: "ops-bob".into(),
-        at: chrono::Utc::now(),
-    }).unwrap();
-    assert_eq!(result.snapshot.account.status, AccountStatus::EmergencyStopped,
-        "emergency stop must transition to EmergencyStopped; got {:?}", result.snapshot.account.status);
+        evaluator,
+        store.clone(),
+        propfirm::notifications::log::LogNotifier::new(),
+    );
+    let result = pipeline
+        .process(
+            account.id,
+            propfirm::engine::pipeline::PipelineEvent::EmergencyStop {
+                reason: "Broker feed corrupted".into(),
+                actor_id: "ops-bob".into(),
+                at: chrono::Utc::now(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        result.snapshot.account.status,
+        AccountStatus::EmergencyStopped,
+        "emergency stop must transition to EmergencyStopped; got {:?}",
+        result.snapshot.account.status
+    );
 }

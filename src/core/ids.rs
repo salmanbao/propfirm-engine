@@ -102,6 +102,7 @@ id_newtype!(
 impl RuleId {
     /// Constructs a deterministic rule id from a string name (stable across
     /// runs, useful for configuration references).
+    #[must_use]
     pub fn named(name: &str) -> Self {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();

@@ -7,9 +7,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 use chrono::Timelike;
 
 #[derive(Debug, Clone, Default)]
@@ -23,13 +23,23 @@ pub struct OvernightHoldingRule {
 }
 
 impl Rule for OvernightHoldingRule {
-    fn id(&self) -> RuleId { RuleId::named("overnight_holding") }
-    fn name(&self) -> &str { "Overnight Holding" }
-    fn kind(&self) -> ViolationKind { ViolationKind::OvernightHolding }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("overnight_holding")
+    }
+    fn name(&self) -> &'static str {
+        "Overnight Holding"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::OvernightHolding
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids holding positions during specified overnight hours."
     }
 
@@ -47,8 +57,8 @@ impl Rule for OvernightHoldingRule {
         };
         let now = ctx.server_time.ts();
         let hour = now.time().hour();
-        let from = cfg.forbidden_from_hour as u32;
-        let to = cfg.forbidden_to_hour as u32;
+        let from = u32::from(cfg.forbidden_from_hour);
+        let to = u32::from(cfg.forbidden_to_hour);
         let in_forbidden = if from < to {
             hour >= from && hour < to
         } else {
@@ -91,8 +101,11 @@ impl Rule for OvernightHoldingRule {
 
 impl OvernightHoldingRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        OvernightHoldingRule { params: Some(RuleParams::from_entry(entry)) }
+        OvernightHoldingRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

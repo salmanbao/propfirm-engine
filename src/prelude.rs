@@ -4,44 +4,44 @@
 //! downstream code can avoid long paths.
 
 pub use crate::core::{
-    account::{Account, AccountStatus, AccountType, AccountSnapshot},
-    ids::{RuleId, TradeId, OrderId, PositionId, AccountId, ChallengeId, EventId, ViolationId, SessionId},
+    account::{Account, AccountSnapshot, AccountStatus, AccountType},
+    ids::{
+        AccountId, ChallengeId, EventId, OrderId, PositionId, RuleId, SessionId, TradeId,
+        ViolationId,
+    },
     order::{Order, OrderKind, OrderSide, OrderStatus, OrderType, TimeInForce},
-    position::{Position, PositionSide, PositionStatus, unrealized_pnl},
-    tick::{Tick, Quote},
-    trade::{Trade, TradeSide, TradeExit},
+    position::{unrealized_pnl, Position, PositionSide, PositionStatus},
+    tick::{Quote, Tick},
+    trade::{Trade, TradeExit, TradeSide},
     types::{
-        Decimal, Money, Price, Quantity, Lots, Pct, Timestamp, Duration,
-        Symbol, Leverage, ServerTime, Date, Time, dec,
+        dec, Date, Decimal, Duration, Leverage, Lots, Money, Pct, Price, Quantity, ServerTime,
+        Symbol, Time, Timestamp,
     },
     violation::{Violation, ViolationKind, ViolationSeverity},
     Error,
 };
 
 pub use crate::config::{
-    plan::{ChallengePlan, ChallengePhase, PlanMeta},
+    plan::{ChallengePhase, ChallengePlan, PlanMeta},
     rule_config::RuleConfig,
 };
 
 pub use crate::rules::{
-    context::{RuleContext, RuleContextKind, EvaluationScope},
-    registry::RuleRegistry,
-    traits::{Rule, RuleOutcome, RuleVerdict, RuleReport},
+    context::{EvaluationScope, RuleContext, RuleContextKind},
     outcome::Outcome,
+    registry::RuleRegistry,
+    traits::{Rule, RuleOutcome, RuleReport, RuleVerdict},
 };
 
 pub use crate::engine::{
+    decision::{Decision, DecisionKind, DecisionReason},
     evaluator::Evaluator,
     pipeline::{Pipeline, PipelineEvent, PipelineResult},
     snapshot::Snapshot,
-    decision::{Decision, DecisionKind, DecisionReason},
     state::{AccountState, StateDelta},
 };
 
-pub use crate::risk::metrics::RiskMetrics;
 pub use crate::events::types::{DomainEvent, DomainEventKind, EventId as EventIdT};
 pub use crate::notifications::traits::Notifier;
 pub use crate::reporting::report::PerformanceReport;
-
-#[doc(hidden)]
-pub use rust_decimal_macros::*;
+pub use crate::risk::metrics::RiskMetrics;

@@ -5,7 +5,7 @@
 //! in a testable, side-effect-free way.
 
 use crate::core::account::Account;
-use crate::core::types::{Money, Timestamp, dec};
+use crate::core::types::{Money, Timestamp};
 use crate::core::Error;
 
 /// A working copy of an account with mutation methods that return new
@@ -16,11 +16,14 @@ pub struct AccountState {
 }
 
 impl AccountState {
-    pub fn new(account: Account) -> Self { AccountState { account } }
+    #[must_use]
+    pub fn new(account: Account) -> Self {
+        AccountState { account }
+    }
 
     /// Applies a realized P&L change (positive or negative) and updates
-    /// balance, peak balance, today_realized_pnl, total_realized_pnl,
-    /// largest_day_profit/loss.
+    /// balance, peak balance, `today_realized_pnl`, `total_realized_pnl`,
+    /// `largest_day_profit/loss`.
     ///
     /// **P1.7 fix**: `largest_day_profit` / `largest_day_loss` are now
     /// tracked per-DAY, not per-trade. The previous implementation
@@ -30,7 +33,14 @@ impl AccountState {
     /// day's net into `today_realized_pnl`, and `largest_day_profit` is
     /// updated only at day rollover (where `today_realized_pnl` is
     /// frozen and reset).
-    pub fn apply_realized_pnl(mut self, pnl: Money, commission: Money, swap: Money, at: Timestamp) -> Self {
+    #[must_use]
+    pub fn apply_realized_pnl(
+        mut self,
+        pnl: Money,
+        commission: Money,
+        swap: Money,
+        at: Timestamp,
+    ) -> Self {
         let net = Money(pnl.0 - commission.0 - swap.0);
         self.account.balance = Money(self.account.balance.0 + net.0);
         self.account.equity = self.account.balance; // assume no open positions; will be recomputed on next tick
@@ -49,6 +59,7 @@ impl AccountState {
     }
 
     /// Updates the equity (from unrealized P&L) and tracks peak equity.
+    #[must_use]
     pub fn update_equity(mut self, equity: Money) -> Self {
         self.account.equity = equity;
         if equity.0 > self.account.peak_equity.0 {
@@ -59,6 +70,7 @@ impl AccountState {
 
     /// **P1-5 fix**: updates the broker-reported balance. Only called
     /// from the broker-is-truth tick path; never derived by the engine.
+    #[must_use]
     pub fn update_balance(mut self, balance: Money) -> Self {
         self.account.balance = balance;
         if balance.0 > self.account.peak_balance.0 {
@@ -67,14 +79,15 @@ impl AccountState {
         self
     }
 
-    /// Rolls over a new trading day. Resets today_realized_pnl, updates
-    /// day_start_balance to the current balance, bumps day index, and
-    /// increments active_trading_days if the previous day had any trades.
+    /// Rolls over a new trading day. Resets `today_realized_pnl`, updates
+    /// `day_start_balance` to the current balance, bumps day index, and
+    /// increments `active_trading_days` if the previous day had any trades.
     ///
     /// **P1.7 fix**: also stamps `largest_day_profit` / `largest_day_loss`
     /// from the frozen `today_realized_pnl` (per-DAY tracking, not
     /// per-trade). This is the value the consistency rule checks
     /// against.
+    #[must_use]
     pub fn rollover_day(mut self, had_trades_today: bool) -> Self {
         // P1.7: before resetting today_realized_pnl, freeze it into
         // largest_day_profit / largest_day_loss (per-day, not per-trade).
@@ -95,6 +108,7 @@ impl AccountState {
     }
 
     /// Marks an active trading day (called on the first trade of a day).
+    #[must_use]
     pub fn mark_active_trading_day(mut self) -> Self {
         // active_trading_days is incremented at rollover if had_trades_today;
         // here we just ensure today counts. The increment happens at rollover.
@@ -104,7 +118,7 @@ impl AccountState {
 
     /// Upgrades the account to a new phase (e.g. Phase1 → Phase2).
     pub fn upgrade_phase(mut self, to: crate::config::plan::ChallengePhase) -> Result<Self, Error> {
-        use crate::config::plan::ChallengePhase::*;
+        use crate::config::plan::ChallengePhase::{Funded, Phase1, Phase2};
         let from = self.account.plan.phase;
         match (from, to) {
             (Phase1, Phase2) | (Phase2, Funded) => {
@@ -117,8 +131,7 @@ impl AccountState {
                 Ok(self)
             }
             _ => Err(Error::InvalidState(format!(
-                "invalid phase transition: {:?} -> {:?}",
-                from, to
+                "invalid phase transition: {from:?} -> {to:?}"
             ))),
         }
     }
@@ -128,6 +141,7 @@ impl AccountState {
     /// timestamp is *never cleared*, even if equity subsequently dips
     /// below target before `min_trading_days` is satisfied. Transitions
     /// the account status to `TargetHitPending`.
+    #[must_use]
     pub fn mark_target_reached(mut self, at: Timestamp) -> Self {
         if self.account.target_reached_at.is_none() {
             self.account.target_reached_at = Some(at);
@@ -142,6 +156,7 @@ impl AccountState {
     /// **P1-12 fix**: marks the account as emergency-stopped. Only valid
     /// from active/pending states. Once stopped, the account can only be
     /// restored via an explicit, audited [`Override`] record (P1-11).
+    #[must_use]
     pub fn emergency_stop(mut self, reason: &str, actor_id: &str, at: Timestamp) -> Self {
         let _ = (reason, actor_id, at);
         self.account.status = crate::core::account::AccountStatus::EmergencyStopped;
@@ -153,8 +168,11 @@ impl AccountState {
     /// itself is part of the permanent record; this method just transitions
     /// the account back to `Active`. The `Override` record is created by
     /// the caller and persisted to the event log alongside this transition.
-    pub fn clear_breach(mut self, _override: &crate::override_engine::Override) -> Result<Self, Error> {
-        use crate::core::account::AccountStatus::*;
+    pub fn clear_breach(
+        mut self,
+        _override: &crate::override_engine::Override,
+    ) -> Result<Self, Error> {
+        use crate::core::account::AccountStatus::{Active, EmergencyStopped, Failed};
         match self.account.status {
             Failed | EmergencyStopped => {
                 self.account.status = Active;
@@ -167,12 +185,14 @@ impl AccountState {
     }
 
     /// Terminates the account with the given status.
+    #[must_use]
     pub fn terminate(mut self, status: crate::core::account::AccountStatus) -> Self {
         self.account.status = status;
         self
     }
 
     /// Delta description (used by the pipeline to emit events).
+    #[must_use]
     pub fn delta(&self) -> StateDelta {
         StateDelta {
             balance: self.account.balance,
@@ -195,6 +215,7 @@ pub struct StateDelta {
 }
 
 impl StateDelta {
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             balance: Money::ZERO,
@@ -209,8 +230,17 @@ impl StateDelta {
 /// Helper: applies a tick revaluation to equity given open positions.
 /// (Single-symbol variant — used by the broker-reported path where the
 /// engine does NOT recompute equity; kept for backwards compatibility.)
-pub fn equity_after_tick(balance: Money, positions: &[crate::core::position::Position], quote: &crate::core::tick::Quote) -> Money {
-    let unreal: Money = positions.iter().filter(|p| p.is_open()).map(|p| p.unrealized_pnl(quote)).fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
+#[must_use]
+pub fn equity_after_tick(
+    balance: Money,
+    positions: &[crate::core::position::Position],
+    quote: &crate::core::tick::Quote,
+) -> Money {
+    let unreal: Money = positions
+        .iter()
+        .filter(|p| p.is_open())
+        .map(|p| p.unrealized_pnl(quote))
+        .fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
     Money(balance.0 + unreal.0)
 }
 
@@ -221,6 +251,7 @@ pub fn equity_after_tick(balance: Money, positions: &[crate::core::position::Pos
 /// Positions whose symbol is missing from the quote map contribute zero
 /// unrealized P&L (display-only path; broker-reported equity is the
 /// source of truth for breach decisions per P1-5).
+#[must_use]
 pub fn equity_after_tick_multi(
     balance: Money,
     positions: &[crate::core::position::Position],

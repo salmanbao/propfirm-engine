@@ -12,9 +12,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct CopyTradingRule {
@@ -27,13 +27,23 @@ pub struct CopyTradingRule {
 }
 
 impl Rule for CopyTradingRule {
-    fn id(&self) -> RuleId { RuleId::named("copy_trading") }
-    fn name(&self) -> &str { "Copy Trading" }
-    fn kind(&self) -> ViolationKind { ViolationKind::CopyTrading }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PostTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("copy_trading")
+    }
+    fn name(&self) -> &'static str {
+        "Copy Trading"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::CopyTrading
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PostTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Detects potential copy-trading patterns from another account."
     }
 
@@ -52,14 +62,20 @@ impl Rule for CopyTradingRule {
         let threshold = chrono::Duration::seconds(5);
         let mut hits = 0;
         for event in &ctx.recent_events {
-            if let crate::core::events::DomainEventKind::TradeFilled { trade: ref_trade } = &event.kind {
+            if let crate::core::events::DomainEventKind::TradeFilled { trade: ref_trade } =
+                &event.kind
+            {
                 if ref_trade.symbol != trade.symbol {
                     continue;
                 }
                 if ref_trade.side != trade.side {
                     continue;
                 }
-                if (ref_trade.executed_at - trade.executed_at).num_seconds().abs() <= threshold.num_seconds() {
+                if (ref_trade.executed_at - trade.executed_at)
+                    .num_seconds()
+                    .abs()
+                    <= threshold.num_seconds()
+                {
                     hits += 1;
                 }
             }
@@ -88,8 +104,11 @@ impl Rule for CopyTradingRule {
 
 impl CopyTradingRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        CopyTradingRule { params: Some(RuleParams::from_entry(entry)) }
+        CopyTradingRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

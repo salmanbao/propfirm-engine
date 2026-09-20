@@ -37,13 +37,20 @@ pub struct RuleParams {
 impl RuleParams {
     /// Constructs params from a `RuleEntry`. Each field is read from
     /// the entry; missing fields stay `None` (rule falls back to plan).
+    #[must_use]
     pub fn from_entry(e: &RuleEntry) -> Self {
         RuleParams {
             value: Some(e.value),
             basis: match e.basis {
-                crate::rulepack::RuleBasis::Static => Some(crate::config::plan::LossReference::Static),
-                crate::rulepack::RuleBasis::Trailing => Some(crate::config::plan::LossReference::Trailing),
-                crate::rulepack::RuleBasis::EodTrailing => Some(crate::config::plan::LossReference::EodTrailing),
+                crate::rulepack::RuleBasis::Static => {
+                    Some(crate::config::plan::LossReference::Static)
+                }
+                crate::rulepack::RuleBasis::Trailing => {
+                    Some(crate::config::plan::LossReference::Trailing)
+                }
+                crate::rulepack::RuleBasis::EodTrailing => {
+                    Some(crate::config::plan::LossReference::EodTrailing)
+                }
             },
             tolerance_cents: e.tolerance_cents,
             priority: Some(e.priority),
@@ -54,19 +61,34 @@ impl RuleParams {
     }
     /// Returns the entry's `value` if this params was populated from a
     /// pack entry; otherwise `None` (rule must fall back to plan).
-    pub fn value(&self) -> Option<rust_decimal::Decimal> { self.value }
+    #[must_use]
+    pub fn value(&self) -> Option<rust_decimal::Decimal> {
+        self.value
+    }
 
     /// Returns the entry's `basis` if populated; otherwise `None`.
-    pub fn basis(&self) -> Option<crate::config::plan::LossReference> { self.basis }
+    #[must_use]
+    pub fn basis(&self) -> Option<crate::config::plan::LossReference> {
+        self.basis
+    }
 
     /// Returns the entry's `tolerance_cents` if populated; otherwise `None`.
-    pub fn tolerance_cents(&self) -> Option<i64> { self.tolerance_cents }
+    #[must_use]
+    pub fn tolerance_cents(&self) -> Option<i64> {
+        self.tolerance_cents
+    }
 
     /// Returns the entry's `priority` if populated; otherwise `None`.
-    pub fn priority(&self) -> Option<u32> { self.priority }
+    #[must_use]
+    pub fn priority(&self) -> Option<u32> {
+        self.priority
+    }
 
     /// Returns the entry's `early_warning_pct` if populated; otherwise `None`.
-    pub fn early_warning_pct(&self) -> Option<rust_decimal::Decimal> { self.early_warning_pct }
+    #[must_use]
+    pub fn early_warning_pct(&self) -> Option<rust_decimal::Decimal> {
+        self.early_warning_pct
+    }
 }
 
 /// Trait for rules that can be constructed from a `RuleEntry`.

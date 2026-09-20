@@ -18,17 +18,17 @@
 //! replay.
 
 use crate::core::account::Account;
+use crate::core::events::DomainEvent;
 use crate::core::order::Order;
 use crate::core::position::Position;
 use crate::core::tick::Tick;
 use crate::core::trade::Trade;
-use crate::core::events::DomainEvent;
 use crate::core::types::ServerTime;
 use crate::engine::decision::Decision;
 use crate::engine::evaluator::EvaluationResult;
+use crate::rulepack::RulePack;
 use crate::rules::context::{RuleContext, RuleContextKind};
 use crate::rules::registry::RuleRegistry;
-use crate::rulepack::RulePack;
 use crate::sha256_helper::Sha256Hasher;
 
 /// The pure stateless evaluate function.
@@ -60,19 +60,14 @@ pub fn evaluate(
     registry: &RuleRegistry,
     ctx_kind: RuleContextKind,
     server_time: ServerTime,
-    open_positions: &[Position],
-    today_trades: &[Trade],
-    recent_events: Vec<DomainEvent>,
-    pending_order: Option<&Order>,
-    latest_trade: Option<&Trade>,
-    latest_tick: Option<&Tick>,
+    inputs: EvaluateInputs<'_>,
 ) -> crate::Result<PureVerdict> {
     // 1. Build the context.
     let mut ctx = RuleContext::new(account.clone());
     ctx.kind = ctx_kind;
-    ctx.open_positions = open_positions.to_vec();
-    ctx.today_trades = today_trades.to_vec();
-    ctx.recent_events = recent_events;
+    ctx.open_positions = inputs.open_positions.to_vec();
+    ctx.today_trades = inputs.today_trades.to_vec();
+    ctx.recent_events = inputs.recent_events;
     ctx.rule_config = crate::config::rule_config::RuleConfig::from_plan(&account.plan);
     // P0-C: explicit server_time — rules read this instead of `Utc::now()`.
     ctx.server_time = server_time;
@@ -82,13 +77,13 @@ pub fn evaluate(
     // estimate-only paths, the caller should construct the context
     // directly via `RuleContext::with_estimated_equity`.
     ctx = ctx.with_broker_equity(account.equity, account.balance);
-    if let Some(o) = pending_order {
+    if let Some(o) = inputs.pending_order {
         ctx.pending_order = Some(o.clone());
     }
-    if let Some(t) = latest_trade {
+    if let Some(t) = inputs.latest_trade {
         ctx.latest_trade = Some(t.clone());
     }
-    if let Some(t) = latest_tick {
+    if let Some(t) = inputs.latest_tick {
         ctx.latest_tick = Some(t.clone());
     }
 
@@ -99,9 +94,15 @@ pub fn evaluate(
     //    tuple always hashes to the same value, and always produces
     //    the same decision.
     let input_hash = compute_input_hash(
-        account, pack, ctx_kind, server_time,
-        open_positions, today_trades,
-        pending_order, latest_trade, latest_tick,
+        account,
+        pack,
+        ctx_kind,
+        server_time,
+        inputs.open_positions,
+        inputs.today_trades,
+        inputs.pending_order,
+        inputs.latest_trade,
+        inputs.latest_tick,
     );
 
     // 3. Run the registry's rule evaluation.
@@ -137,6 +138,7 @@ pub struct PureVerdict {
 
 impl PureVerdict {
     /// Returns true if this verdict would terminate the account.
+    #[must_use]
     pub fn is_terminating(&self) -> bool {
         self.decision.is_terminating()
     }
@@ -152,7 +154,49 @@ impl PureVerdict {
 /// decision can be recomputed byte-for-byte from its recorded inputs.
 ///
 /// Implementation: uses the real `sha2::Sha256` (256-bit, 64 hex chars).
-/// Previously this was mislabeled SipHash truncated to 16 hex chars.
+/// Previously this was mislabeled `SipHash` truncated to 16 hex chars.
+#[must_use]
+/// The per-call inputs to [`evaluate`] beyond the core
+/// `(account, pack, registry, ctx_kind, server_time)` tuple. Grouped into
+/// one struct so the signature stays readable and callers can pass `Default`.
+#[derive(Debug, Clone, Default)]
+pub struct EvaluateInputs<'a> {
+    /// Open positions at evaluation time.
+    pub open_positions: &'a [Position],
+    /// Trades executed in the current trading day.
+    pub today_trades: &'a [Trade],
+    /// Recent domain events (for event-scanning rules).
+    pub recent_events: Vec<DomainEvent>,
+    /// Pending (pre-trade) order, if evaluating an order.
+    pub pending_order: Option<&'a Order>,
+    /// Most recent fill, if evaluating a trade.
+    pub latest_trade: Option<&'a Trade>,
+    /// The tick being evaluated, if evaluating a tick.
+    pub latest_tick: Option<&'a Tick>,
+}
+
+impl<'a> EvaluateInputs<'a> {
+    /// Convenience constructor: tick evaluation with only positions and
+    /// today's trades (the common `/internal/v1/evaluate` shape).
+    pub fn for_tick(
+        open_positions: &'a [Position],
+        today_trades: &'a [Trade],
+        latest_tick: &'a Tick,
+    ) -> Self {
+        EvaluateInputs {
+            open_positions,
+            today_trades,
+            latest_tick: Some(latest_tick),
+            ..Default::default()
+        }
+    }
+}
+
+/// Computes the `input_hash` (P0-B + P0-C fix). Real sha256 of every
+/// input that affects the verdict — including `server_time`, so the
+/// same recorded inputs at different wall-clock times produce different
+/// hashes (and potentially different verdicts from time-aware rules).
+#[allow(clippy::too_many_arguments)] // hash covers every evaluation input
 pub fn compute_input_hash(
     account: &Account,
     pack: &RulePack,
@@ -164,7 +208,7 @@ pub fn compute_input_hash(
     latest_trade: Option<&Trade>,
     latest_tick: Option<&Tick>,
 ) -> String {
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hash;
     let mut h = Sha256Hasher::new();
 
     // Hash account state — the bits that affect rule evaluation.

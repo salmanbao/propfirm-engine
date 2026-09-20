@@ -6,7 +6,7 @@
 //! evaluations can be reproduced even after the firm changes its rule set.
 
 use crate::core::ids::{ChallengeId, RuleId};
-use crate::core::types::{Money, Pct, Timestamp, dec};
+use crate::core::types::{dec, Money, Pct, Timestamp};
 use crate::core::Error;
 
 /// Phase of the challenge lifecycle.
@@ -68,7 +68,7 @@ pub enum LossReference {
     /// does not float intraday; intraday drawdown against the
     /// session-opening floor is allowed up to the daily DD limit.
     ///
-    /// Used by FTMO 1-Step, FundedNext, and several 2026 programs.
+    /// Used by FTMO 1-Step, `FundedNext`, and several 2026 programs.
     EodTrailing,
 }
 
@@ -181,7 +181,7 @@ pub struct ChallengePlan {
     pub refundable: bool,
     /// Maximum account leverage (e.g. 1:100).
     pub leverage: u32,
-    /// Allowed trading hours (server time) as (start_hour, end_hour), 24h format.
+    /// Allowed trading hours (server time) as (`start_hour`, `end_hour`), 24h format.
     pub trading_hours: Option<(u8, u8)>,
     /// Effective timestamp of the plan.
     pub effective_at: Timestamp,
@@ -189,11 +189,13 @@ pub struct ChallengePlan {
 
 impl ChallengePlan {
     /// Returns the initial balance as a [`Money`] value.
+    #[must_use]
     pub fn initial_balance(&self) -> Money {
         self.initial_balance_money
     }
 
     /// Returns the profit target as a percentage.
+    #[must_use]
     pub fn profit_target(&self) -> Pct {
         self.profit_target_pct
     }
@@ -202,55 +204,72 @@ impl ChallengePlan {
     /// constraint is violated.
     pub fn validate(&self) -> Result<(), Error> {
         if self.initial_balance_money.0 <= dec!(0) {
-            return Err(Error::InvalidConfig("initial_balance must be positive".into()));
+            return Err(Error::InvalidConfig(
+                "initial_balance must be positive".into(),
+            ));
         }
         if self.profit_target_pct.0 < dec!(0) {
-            return Err(Error::InvalidConfig("profit_target_pct must be non-negative".into()));
+            return Err(Error::InvalidConfig(
+                "profit_target_pct must be non-negative".into(),
+            ));
         }
         if self.max_daily_drawdown_pct.0 < dec!(0) || self.max_daily_drawdown_pct.0 > dec!(1) {
-            return Err(Error::InvalidConfig("max_daily_drawdown_pct must be in [0, 1]".into()));
+            return Err(Error::InvalidConfig(
+                "max_daily_drawdown_pct must be in [0, 1]".into(),
+            ));
         }
         if self.max_total_drawdown_pct.0 < dec!(0) || self.max_total_drawdown_pct.0 > dec!(1) {
-            return Err(Error::InvalidConfig("max_total_drawdown_pct must be in [0, 1]".into()));
+            return Err(Error::InvalidConfig(
+                "max_total_drawdown_pct must be in [0, 1]".into(),
+            ));
         }
         if let Some(c) = self.consistency_pct {
             if c.0 < dec!(0) || c.0 > dec!(1) {
-                return Err(Error::InvalidConfig("consistency_pct must be in [0, 1]".into()));
+                return Err(Error::InvalidConfig(
+                    "consistency_pct must be in [0, 1]".into(),
+                ));
             }
         }
         if let Some((s, e)) = self.trading_hours {
             if s > 24 || e > 24 {
-                return Err(Error::InvalidConfig("trading_hours must be in [0, 24]".into()));
+                return Err(Error::InvalidConfig(
+                    "trading_hours must be in [0, 24]".into(),
+                ));
             }
         }
         Ok(())
     }
 
     /// Builder-style setter for initial balance.
+    #[must_use]
     pub fn with_balance(mut self, balance: Money) -> Self {
         self.initial_balance_money = balance;
         self
     }
 
     /// Builder-style setter for phase.
+    #[must_use]
     pub fn with_phase(mut self, phase: ChallengePhase) -> Self {
         self.phase = phase;
         self
     }
 
     /// Builder-style setter for profit target.
+    #[must_use]
     pub fn with_profit_target(mut self, pct: Pct) -> Self {
         self.profit_target_pct = pct;
         self
     }
 
     /// Builder-style setter for daily drawdown.
+    #[must_use]
     pub fn with_daily_dd(mut self, pct: Pct) -> Self {
         self.max_daily_drawdown_pct = pct;
         self
     }
 
     /// Builder-style setter for total drawdown.
+    #[must_use]
     pub fn with_total_dd(mut self, pct: Pct) -> Self {
         self.max_total_drawdown_pct = pct;
         self
@@ -258,24 +277,28 @@ impl ChallengePlan {
 
     /// Builder-style setter for the maximum-loss reference mode
     /// (static vs trailing). See [`LossReference`] for semantics.
+    #[must_use]
     pub fn with_loss_reference(mut self, mode: LossReference) -> Self {
         self.max_loss_reference = mode;
         self
     }
 
     /// Builder-style setter for min trading days.
+    #[must_use]
     pub fn with_min_days(mut self, days: u32) -> Self {
         self.min_trading_days = days;
         self
     }
 
     /// Builder-style setter for time limit.
+    #[must_use]
     pub fn with_time_limit_days(mut self, days: u32) -> Self {
         self.time_limit_days = Some(days);
         self
     }
 
     /// Builder-style setter for trailing drawdown.
+    #[must_use]
     pub fn with_trailing_dd(mut self, pct: Pct) -> Self {
         self.trailing_drawdown_enabled = true;
         self.trailing_drawdown_pct = pct;
@@ -283,12 +306,14 @@ impl ChallengePlan {
     }
 
     /// Builder-style setter for consistency.
+    #[must_use]
     pub fn with_consistency(mut self, pct: Pct) -> Self {
         self.consistency_pct = Some(pct);
         self
     }
 
     /// Returns the rule id for a named rule (stable across runs).
+    #[must_use]
     pub fn rule_id(name: &str) -> RuleId {
         RuleId::named(name)
     }

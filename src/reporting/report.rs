@@ -17,6 +17,7 @@ pub struct PerformanceReport {
 }
 
 impl PerformanceReport {
+    #[must_use]
     pub fn new(snapshot: &Snapshot, risk: RiskMetrics) -> Self {
         PerformanceReport {
             account: snapshot.account.clone(),
@@ -27,6 +28,7 @@ impl PerformanceReport {
     }
 
     /// One-line executive summary.
+    #[must_use]
     pub fn summary_line(&self) -> String {
         let profit = self.account.net_profit;
         let dd = self.account.total_drawdown;
@@ -44,6 +46,7 @@ impl PerformanceReport {
     }
 
     /// Estimated payout amount (only if account is funded and profitable).
+    #[must_use]
     pub fn estimated_payout(&self, split_pct: rust_decimal::Decimal) -> Money {
         let net = self.account.net_profit;
         if net.0.is_sign_negative() {

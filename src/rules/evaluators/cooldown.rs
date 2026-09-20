@@ -6,9 +6,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct CooldownRule {
@@ -21,13 +21,23 @@ pub struct CooldownRule {
 }
 
 impl Rule for CooldownRule {
-    fn id(&self) -> RuleId { RuleId::named("cooldown") }
-    fn name(&self) -> &str { "Cooldown" }
-    fn kind(&self) -> ViolationKind { ViolationKind::Cooldown }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Warning }
+    fn id(&self) -> RuleId {
+        RuleId::named("cooldown")
+    }
+    fn name(&self) -> &'static str {
+        "Cooldown"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::Cooldown
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Warning
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Enforces a minimum interval between consecutive trades."
     }
 
@@ -63,8 +73,11 @@ impl Rule for CooldownRule {
 
 impl CooldownRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        CooldownRule { params: Some(RuleParams::from_entry(entry)) }
+        CooldownRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

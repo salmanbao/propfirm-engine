@@ -4,8 +4,8 @@
 //! [`Violation`] describing what happened, why, and how severe it is. The
 //! violation is also persisted in the event log for auditability.
 
-use crate::core::ids::{RuleId, ViolationId, AccountId};
-use crate::core::types::{Decimal, Money, Timestamp, dec};
+use crate::core::ids::{AccountId, RuleId, ViolationId};
+use crate::core::types::{dec, Decimal, Money, Timestamp};
 use crate::core::Error;
 
 /// Severity of a violation – determines whether it terminates the account
@@ -82,7 +82,12 @@ pub enum ViolationKind {
 
 impl std::fmt::Display for ViolationKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use ViolationKind::*;
+        use ViolationKind::{
+            Consistency, Cooldown, CopyTrading, Custom, DailyDrawdown, GridTrading, Hedging,
+            MaxDailyTrades, MaxDrawdown, MaxLotSize, MaxOpenPositions, MaxPositionSize,
+            MinTradingDays, MissingStopLoss, MissingTakeProfit, NewsTrading, OvernightHolding,
+            ProfitTargetMissed, TimeLimit, TrailingDrawdown, WeekendHolding,
+        };
         let s = match self {
             DailyDrawdown => "daily_drawdown",
             MaxDrawdown => "max_drawdown",
@@ -163,12 +168,14 @@ impl Violation {
     /// **P1-9 fix**: builder-style setter for tenant id. Called by the
     /// rule registry when constructing a violation, so the violation
     /// inherits the account's tenant.
+    #[must_use]
     pub fn with_tenant(mut self, tenant_id: crate::tenant::TenantId) -> Self {
         self.tenant_id = tenant_id;
         self
     }
 
     /// Builder-style setter for breach value.
+    #[must_use]
     pub fn with_breach(mut self, breach: Money, threshold: Money) -> Self {
         self.breach_value = Some(breach);
         self.threshold_value = Some(threshold);
@@ -179,18 +186,26 @@ impl Violation {
     }
 
     /// Returns true if this violation should terminate the account.
+    #[must_use]
     pub fn is_terminating(&self) -> bool {
-        matches!(self.severity, ViolationSeverity::Hard | ViolationSeverity::Liquidate)
+        matches!(
+            self.severity,
+            ViolationSeverity::Hard | ViolationSeverity::Liquidate
+        )
     }
 
     /// Validates the violation is internally consistent.
     pub fn validate(&self) -> Result<(), Error> {
         if self.rule_name.is_empty() {
-            return Err(Error::InvalidState("violation rule_name cannot be empty".into()));
+            return Err(Error::InvalidState(
+                "violation rule_name cannot be empty".into(),
+            ));
         }
         if let Some(util) = self.utilization {
             if util < dec!(0) {
-                return Err(Error::InvalidState("violation utilization cannot be negative".into()));
+                return Err(Error::InvalidState(
+                    "violation utilization cannot be negative".into(),
+                ));
             }
         }
         Ok(())

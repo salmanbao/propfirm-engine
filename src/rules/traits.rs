@@ -46,19 +46,42 @@ pub enum RuleVerdict {
 }
 
 impl RuleVerdict {
-    pub fn is_pass(&self) -> bool { matches!(self, RuleVerdict::Pass) }
-    pub fn is_fail(&self) -> bool { matches!(self, RuleVerdict::Fail(_)) }
-    pub fn is_liquidate(&self) -> bool { matches!(self, RuleVerdict::Liquidate(_)) }
-    pub fn is_target_hit(&self) -> bool { matches!(self, RuleVerdict::TargetHit(_)) }
-    pub fn is_emergency(&self) -> bool { matches!(self, RuleVerdict::Emergency(_)) }
-    pub fn is_early_warning(&self) -> bool { matches!(self, RuleVerdict::EarlyWarning(_)) }
+    #[must_use]
+    pub fn is_pass(&self) -> bool {
+        matches!(self, RuleVerdict::Pass)
+    }
+    #[must_use]
+    pub fn is_fail(&self) -> bool {
+        matches!(self, RuleVerdict::Fail(_))
+    }
+    #[must_use]
+    pub fn is_liquidate(&self) -> bool {
+        matches!(self, RuleVerdict::Liquidate(_))
+    }
+    #[must_use]
+    pub fn is_target_hit(&self) -> bool {
+        matches!(self, RuleVerdict::TargetHit(_))
+    }
+    #[must_use]
+    pub fn is_emergency(&self) -> bool {
+        matches!(self, RuleVerdict::Emergency(_))
+    }
+    #[must_use]
+    pub fn is_early_warning(&self) -> bool {
+        matches!(self, RuleVerdict::EarlyWarning(_))
+    }
 
     /// Returns true if this verdict represents a *terminating* outcome —
     /// i.e. one that should mark the account as failed.
+    #[must_use]
     pub fn is_terminating(&self) -> bool {
-        matches!(self, RuleVerdict::Fail(_) | RuleVerdict::Liquidate(_) | RuleVerdict::Emergency(_))
+        matches!(
+            self,
+            RuleVerdict::Fail(_) | RuleVerdict::Liquidate(_) | RuleVerdict::Emergency(_)
+        )
     }
 
+    #[must_use]
     pub fn violation(&self) -> Option<&Violation> {
         match self {
             RuleVerdict::Warn(v)
@@ -71,10 +94,12 @@ impl RuleVerdict {
         }
     }
 
+    #[must_use]
     pub fn severity(&self) -> Option<ViolationSeverity> {
         self.violation().map(|v| v.severity)
     }
 
+    #[must_use]
     pub fn into_outcome(self) -> Outcome {
         match self {
             RuleVerdict::Pass => Outcome::Pass,
@@ -108,7 +133,12 @@ pub struct RuleReport {
 }
 
 impl RuleReport {
-    pub fn new(rule_id: RuleId, rule_name: impl Into<String>, verdict: RuleVerdict, scope: EvaluationScope) -> Self {
+    pub fn new(
+        rule_id: RuleId,
+        rule_name: impl Into<String>,
+        verdict: RuleVerdict,
+        scope: EvaluationScope,
+    ) -> Self {
         RuleReport {
             rule_id,
             rule_name: rule_name.into(),
@@ -120,6 +150,7 @@ impl RuleReport {
         }
     }
 
+    #[must_use]
     pub fn with_priority(mut self, p: u32) -> Self {
         self.priority = p;
         self
@@ -156,11 +187,13 @@ pub trait Rule: Send + Sync {
     /// on the same evaluation. Higher number = wins. Defaults to 100 (the
     /// "standard" priority for most rules). Override to declare a higher
     /// priority for rules whose verdict must win in a dispute — e.g.
-    /// `MaxDrawdownRule` returns 1000, `EmergencyStop` returns 10_000.
+    /// `MaxDrawdownRule` returns 1000, `EmergencyStop` returns `10_000`.
     /// The engine uses this to produce *one* defensible answer rather than
     /// relying on registration order (which would silently change if
     /// someone reordered `default_rules()`).
-    fn priority(&self) -> u32 { 100 }
+    fn priority(&self) -> u32 {
+        100
+    }
 
     /// **P2 fix**: per-rule tolerance, in cents, to absorb broker rounding
     /// noise at the exact breach boundary. The binding spec calls for a
@@ -171,13 +204,17 @@ pub trait Rule: Send + Sync {
     /// assets where 5¢ of slippage is normal).
     ///
     /// Returning 0 disables tolerance — exact `>=`/`>` comparisons are used.
-    fn tolerance_cents(&self) -> i64 { 1 }
+    fn tolerance_cents(&self) -> i64 {
+        1
+    }
 
     /// Evaluate the rule against the given context.
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict>;
 
     /// Optional human-readable description of the rule.
-    fn description(&self) -> &str { "" }
+    fn description(&self) -> &'static str {
+        ""
+    }
 
     /// Whether the rule is enabled in the current plan. Default: true.
     fn is_enabled(&self, ctx: &RuleContext) -> bool {

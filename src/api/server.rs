@@ -37,6 +37,7 @@ impl Clone for ServerState {
 }
 
 impl ServerState {
+    #[must_use]
     pub fn new(plan: ChallengePlan) -> Self {
         ServerState {
             evaluator: Evaluator::new(plan),
@@ -46,8 +47,13 @@ impl ServerState {
         }
     }
 
+    #[must_use]
     pub fn pipeline(&self) -> crate::engine::pipeline::Pipeline<InMemoryStore, LogNotifier> {
-        let mut p = crate::engine::pipeline::Pipeline::new(self.evaluator.clone(), self.store.clone(), self.notifier.clone());
+        let mut p = crate::engine::pipeline::Pipeline::new(
+            self.evaluator.clone(),
+            self.store.clone(),
+            self.notifier.clone(),
+        );
         // Replace the pipeline's default event store with our shared one.
         p.event_store = self.event_store.clone();
         p

@@ -21,6 +21,7 @@ pub struct Evaluator {
 
 impl Evaluator {
     /// Constructs a new evaluator with the default rule library.
+    #[must_use]
     pub fn new(_plan: crate::config::plan::ChallengePlan) -> Self {
         Evaluator {
             registry: RuleRegistry::with_default_rules(),
@@ -29,6 +30,7 @@ impl Evaluator {
     }
 
     /// Constructs an evaluator with a custom registry.
+    #[must_use]
     pub fn with_registry(registry: RuleRegistry) -> Self {
         Evaluator {
             registry,
@@ -37,6 +39,7 @@ impl Evaluator {
     }
 
     /// Associates a specific account id with this evaluator.
+    #[must_use]
     pub fn for_account(mut self, id: AccountId) -> Self {
         self.account_id = id;
         self
@@ -51,7 +54,14 @@ impl Evaluator {
     }
 
     /// Convenience: evaluate a pending order (pre-trade).
-    pub fn evaluate_order(&self, account: &Account, order: &Order, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
+    pub fn evaluate_order(
+        &self,
+        account: &Account,
+        order: &Order,
+        open_positions: &[crate::core::position::Position],
+        today_trades: &[Trade],
+        recent_events: Vec<DomainEvent>,
+    ) -> crate::Result<EvaluationResult> {
         let mut ctx = RuleContext::for_open_order(account.clone(), order);
         ctx.open_positions = open_positions.to_vec();
         ctx.today_trades = today_trades.to_vec();
@@ -60,7 +70,14 @@ impl Evaluator {
     }
 
     /// Convenience: evaluate a trade fill.
-    pub fn evaluate_trade(&self, account: &Account, trade: &Trade, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
+    pub fn evaluate_trade(
+        &self,
+        account: &Account,
+        trade: &Trade,
+        open_positions: &[crate::core::position::Position],
+        today_trades: &[Trade],
+        recent_events: Vec<DomainEvent>,
+    ) -> crate::Result<EvaluationResult> {
         let mut ctx = RuleContext::for_trade_fill(account.clone(), trade);
         ctx.open_positions = open_positions.to_vec();
         ctx.today_trades = today_trades.to_vec();
@@ -72,7 +89,14 @@ impl Evaluator {
     /// `account` are treated as broker-reported (P1-5) — only call this
     /// helper when you're providing the broker's actual equity. For
     /// estimate-only paths, use `evaluate_tick_estimated` instead.
-    pub fn evaluate_tick(&self, account: &Account, tick: &Tick, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
+    pub fn evaluate_tick(
+        &self,
+        account: &Account,
+        tick: &Tick,
+        open_positions: &[crate::core::position::Position],
+        today_trades: &[Trade],
+        recent_events: Vec<DomainEvent>,
+    ) -> crate::Result<EvaluationResult> {
         let mut ctx = RuleContext::for_tick(account.clone(), tick);
         ctx.open_positions = open_positions.to_vec();
         ctx.today_trades = today_trades.to_vec();
@@ -85,7 +109,14 @@ impl Evaluator {
     /// Convenience: evaluate a market tick where the equity is an
     /// *estimate* (not broker-reported). Breach-capable rules will refuse
     /// to terminate on this context (P1-5).
-    pub fn evaluate_tick_estimated(&self, account: &Account, tick: &Tick, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
+    pub fn evaluate_tick_estimated(
+        &self,
+        account: &Account,
+        tick: &Tick,
+        open_positions: &[crate::core::position::Position],
+        today_trades: &[Trade],
+        recent_events: Vec<DomainEvent>,
+    ) -> crate::Result<EvaluationResult> {
         let mut ctx = RuleContext::for_tick(account.clone(), tick);
         ctx.open_positions = open_positions.to_vec();
         ctx.today_trades = today_trades.to_vec();
@@ -109,22 +140,35 @@ pub struct EvaluationResult {
 }
 
 impl EvaluationResult {
+    #[must_use]
     pub fn passed(&self) -> bool {
         self.decision.is_pass()
     }
+    #[must_use]
     pub fn failed(&self) -> bool {
         self.decision.is_terminating()
     }
+    #[must_use]
     pub fn violations(&self) -> Vec<&crate::core::violation::Violation> {
-        self.reports.iter().filter_map(|r| r.verdict.violation()).collect()
+        self.reports
+            .iter()
+            .filter_map(|r| r.verdict.violation())
+            .collect()
     }
 }
 
 /// Builds a domain event for a rule violation, suitable for the audit log.
-pub fn make_violation_event(account_id: AccountId, violation: &crate::core::violation::Violation, causation: Option<EventId>) -> DomainEvent {
+#[must_use]
+pub fn make_violation_event(
+    account_id: AccountId,
+    violation: &crate::core::violation::Violation,
+    causation: Option<EventId>,
+) -> DomainEvent {
     let mut ev = DomainEvent::new(
         account_id,
-        DomainEventKind::RuleViolated { violation: violation.clone() },
+        DomainEventKind::RuleViolated {
+            violation: violation.clone(),
+        },
         violation.occurred_at,
     );
     if let Some(c) = causation {
@@ -134,8 +178,11 @@ pub fn make_violation_event(account_id: AccountId, violation: &crate::core::viol
 }
 
 /// Converts a context kind into a string label for logging.
+#[must_use]
 pub fn context_label(kind: RuleContextKind) -> &'static str {
-    use RuleContextKind::*;
+    use RuleContextKind::{
+        OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
+    };
     match kind {
         OnOrderSubmit => "order_submit",
         OnTradeFill => "trade_fill",

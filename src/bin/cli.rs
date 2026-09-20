@@ -1,15 +1,15 @@
 //! CLI entry point: demonstrates a full evaluation cycle.
 
-use propfirm::prelude::*;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
 use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Money, Price, Quantity, Symbol, dec};
+use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
 use propfirm::notifications::log::LogNotifier;
 use propfirm::persistence::memory::InMemoryStore;
 use propfirm::persistence::traits::AccountStore;
+use propfirm::prelude::*;
 
 fn main() -> anyhow::Result<()> {
     println!("=== Prop Firm Engine – CLI Demo ===\n");
@@ -17,10 +17,18 @@ fn main() -> anyhow::Result<()> {
     // 1. Build the challenge plan and account.
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
-    println!("Account: id={} type={} phase={} initial={}", account.id, account.account_type, plan.phase, account.initial_balance);
-    println!("Plan: profit_target={} daily_dd={} max_dd={} min_days={:?} time_limit_days={:?}",
-        plan.profit_target_pct, plan.max_daily_drawdown_pct, plan.max_total_drawdown_pct,
-        plan.min_trading_days, plan.time_limit_days);
+    println!(
+        "Account: id={} type={} phase={} initial={}",
+        account.id, account.account_type, plan.phase, account.initial_balance
+    );
+    println!(
+        "Plan: profit_target={} daily_dd={} max_dd={} min_days={:?} time_limit_days={:?}",
+        plan.profit_target_pct,
+        plan.max_daily_drawdown_pct,
+        plan.max_total_drawdown_pct,
+        plan.min_trading_days,
+        plan.time_limit_days
+    );
 
     // 2. Build the pipeline.
     let evaluator = Evaluator::new(plan.clone());
@@ -32,7 +40,11 @@ fn main() -> anyhow::Result<()> {
     // 3. Start the account.
     let now = chrono::Utc::now();
     let result = pipeline.process(account.id, PipelineEvent::AccountStarted { at: now })?;
-    println!("\n[Started] decision={:?} events={}", result.snapshot.decision.kind, result.events.len());
+    println!(
+        "\n[Started] decision={:?} events={}",
+        result.snapshot.decision.kind,
+        result.events.len()
+    );
 
     // 4. Open a long EURUSD position.
     let order = Order {
@@ -53,30 +65,62 @@ fn main() -> anyhow::Result<()> {
         avg_fill_price: None,
     };
     let result = pipeline.process(account.id, PipelineEvent::OrderSubmitted { order })?;
-    println!("[Order] decision={:?} passed={} violations={}", result.snapshot.decision.kind, result.result.passed(), result.result.violations().len());
+    println!(
+        "[Order] decision={:?} passed={} violations={}",
+        result.snapshot.decision.kind,
+        result.result.passed(),
+        result.result.violations().len()
+    );
 
     // 5. A broker-reported tick comes in (positive move). P1-5: the engine
     //    does NOT recompute equity — it trusts the broker's number.
     let tick = Tick::new(
         Symbol::new("EURUSD"),
-        Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: now },
+        Quote {
+            bid: Price(dec!(1.0850)),
+            ask: Price(dec!(1.0852)),
+            ts: now,
+        },
     );
     // In a real deployment this comes from the bridge/BRG module. Here we
     // synthesize a broker-reported equity that matches our expected value.
     let broker_equity = Money(dec!(10_200));
     let broker_balance = Money(dec!(10_000));
-    let result = pipeline.process(account.id, PipelineEvent::Tick { tick, broker_equity, broker_balance })?;
-    println!("[Tick] equity={} balance={} daily_dd={}/{}",
+    let result = pipeline.process(
+        account.id,
+        PipelineEvent::Tick {
+            tick,
+            broker_equity,
+            broker_balance,
+        },
+    )?;
+    println!(
+        "[Tick] equity={} balance={} daily_dd={}/{}",
         result.snapshot.account.equity,
         result.snapshot.account.balance,
         result.snapshot.account.daily_drawdown,
-        account.daily_dd_limit());
+        account.daily_dd_limit()
+    );
 
     // 6. Risk metrics computation.
-    let equity_curve = vec![Money(dec!(10_000)), Money(dec!(10_200)), Money(dec!(10_150)), Money(dec!(10_300))];
-    let risk = propfirm::risk::metrics::RiskMetrics::compute(&equity_curve, &[Money(dec!(100)), Money(dec!(-50)), Money(dec!(150))]);
-    println!("\n[Risk] sharpe={:.4} sortino={:.4} max_dd={:.4} profit_factor={:.4} win_rate={:.2}%",
-        risk.sharpe, risk.sortino, risk.max_drawdown, risk.profit_factor, risk.win_rate * dec!(100));
+    let equity_curve = vec![
+        Money(dec!(10_000)),
+        Money(dec!(10_200)),
+        Money(dec!(10_150)),
+        Money(dec!(10_300)),
+    ];
+    let risk = propfirm::risk::metrics::RiskMetrics::compute(
+        &equity_curve,
+        &[Money(dec!(100)), Money(dec!(-50)), Money(dec!(150))],
+    );
+    println!(
+        "\n[Risk] sharpe={:.4} sortino={:.4} max_dd={:.4} profit_factor={:.4} win_rate={:.2}%",
+        risk.sharpe,
+        risk.sortino,
+        risk.max_drawdown,
+        risk.profit_factor,
+        risk.win_rate * dec!(100)
+    );
 
     println!("\nDone. Engine worked end-to-end. ✓");
     Ok(())

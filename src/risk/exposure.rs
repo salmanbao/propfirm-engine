@@ -2,7 +2,7 @@
 
 use crate::core::position::Position;
 use crate::core::tick::Quote;
-use crate::core::types::{Decimal, Money, dec};
+use crate::core::types::{dec, Decimal, Money};
 use std::collections::HashMap;
 
 /// Aggregated exposure metrics for a portfolio of open positions.
@@ -21,6 +21,7 @@ pub struct Exposure {
 impl Exposure {
     /// Computes exposure for a slice of open positions using a per-symbol
     /// quote map.
+    #[must_use]
     pub fn compute(positions: &[Position], quotes: &HashMap<String, Quote>) -> Self {
         let mut gross = dec!(0);
         let mut net = dec!(0);
@@ -68,6 +69,7 @@ impl Exposure {
     }
 
     /// Returns the most concentrated symbol and its share of total gross.
+    #[must_use]
     pub fn top_symbol(&self) -> Option<(&str, Decimal)> {
         if self.gross.0.is_zero() {
             return None;

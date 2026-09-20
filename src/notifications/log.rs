@@ -15,12 +15,17 @@ pub struct LogNotifier {
 }
 
 impl LogNotifier {
-    pub fn new() -> Self { Self::default() }
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
 
+    #[must_use]
     pub fn drain(&self) -> Vec<String> {
         std::mem::take(&mut *self.buf.lock())
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> Vec<String> {
         self.buf.lock().clone()
     }
@@ -29,7 +34,9 @@ impl LogNotifier {
 impl Notifier for LogNotifier {
     fn notify_violation(&self, v: &Violation) -> Result<(), Error> {
         let mut s = String::new();
-        let _ = write!(s, "[{}] account={} rule={} kind={} severity={} msg={}",
+        let _ = write!(
+            s,
+            "[{}] account={} rule={} kind={} severity={} msg={}",
             v.occurred_at.to_rfc3339(),
             v.account_id,
             v.rule_name,
@@ -38,15 +45,30 @@ impl Notifier for LogNotifier {
             v.message,
         );
         if let Some(breach) = v.breach_value {
-            let _ = write!(s, " breach={} threshold={}", breach,
-                v.threshold_value.unwrap_or(crate::core::types::Money::ZERO));
+            let _ = write!(
+                s,
+                " breach={} threshold={}",
+                breach,
+                v.threshold_value.unwrap_or(crate::core::types::Money::ZERO)
+            );
         }
         self.buf.lock().push(s);
         Ok(())
     }
 
-    fn notify_account_event(&self, account_id: AccountId, kind: &str, msg: &str) -> Result<(), Error> {
-        let s = format!("[{}] account={} kind={} msg={}", chrono::Utc::now().to_rfc3339(), account_id, kind, msg);
+    fn notify_account_event(
+        &self,
+        account_id: AccountId,
+        kind: &str,
+        msg: &str,
+    ) -> Result<(), Error> {
+        let s = format!(
+            "[{}] account={} kind={} msg={}",
+            chrono::Utc::now().to_rfc3339(),
+            account_id,
+            kind,
+            msg
+        );
         self.buf.lock().push(s);
         Ok(())
     }

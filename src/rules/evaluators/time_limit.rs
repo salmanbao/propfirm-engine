@@ -6,9 +6,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct TimeLimitRule {
@@ -21,13 +21,23 @@ pub struct TimeLimitRule {
 }
 
 impl Rule for TimeLimitRule {
-    fn id(&self) -> RuleId { RuleId::named("time_limit") }
-    fn name(&self) -> &str { "Time Limit" }
-    fn kind(&self) -> ViolationKind { ViolationKind::TimeLimit }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("time_limit")
+    }
+    fn name(&self) -> &'static str {
+        "Time Limit"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::TimeLimit
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::OnTick
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Fails the account when the evaluation time window has elapsed."
     }
 
@@ -69,8 +79,11 @@ impl Rule for TimeLimitRule {
 
 impl TimeLimitRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        TimeLimitRule { params: Some(RuleParams::from_entry(entry)) }
+        TimeLimitRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

@@ -68,7 +68,8 @@ impl Override {
     pub fn validate(&self) -> crate::Result<()> {
         if self.reason.trim().is_empty() {
             return Err(crate::Error::InvalidState(
-                "override reason cannot be empty — must explain why the breach is a false positive".into(),
+                "override reason cannot be empty — must explain why the breach is a false positive"
+                    .into(),
             ));
         }
         if self.actor_id.trim().is_empty() {

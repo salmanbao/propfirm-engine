@@ -77,30 +77,37 @@
 //! [`Decision`]: engine::Decision
 //! [`PerformanceReport`]: reporting::PerformanceReport
 
-#![warn(missing_docs)]
-#![warn(clippy::all, clippy::pedantic)]
+// `missing_docs` is deliberately NOT gated in CI yet: the crate predates a
+// doc-coverage pass (~445 public items lack rustdoc). Re-enable once the
+// docs are filled in; the clippy -D warnings gate covers everything else.
+#![allow(missing_docs)]
+#![warn(clippy::all)]
+// The remaining opt-in style lints that pedantic would enable but that this
+// crate intentionally does not enforce (kept off so `clippy -D warnings` is a
+// useful CI gate): module_name_repetitions, missing_errors_doc, must_use
+// (already covered by the standard attribute), unreadable_literal,
+// cast-precision-loss, doc-markdown, struct_field_names.
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use)]
 
-pub mod core;
 pub mod config;
-pub mod rules;
+pub mod copy_trading;
+pub mod core;
 pub mod engine;
-pub mod risk;
-pub mod persistence;
-pub mod events;
-pub mod notifications;
-pub mod reporting;
-pub mod tenant;
-pub mod override_engine;
-pub mod rulepack;
-pub mod pure;
 pub mod equity_input;
-pub mod sha256_helper;
+pub mod events;
 pub mod liquidation;
 pub mod news_calendar;
-pub mod copy_trading;
+pub mod notifications;
+pub mod override_engine;
+pub mod persistence;
+pub mod pure;
+pub mod reporting;
+pub mod risk;
+pub mod rulepack;
+pub mod rules;
+pub mod sha256_helper;
+pub mod tenant;
 
 #[cfg(feature = "server")]
 pub mod api;

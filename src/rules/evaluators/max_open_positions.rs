@@ -6,9 +6,9 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
-use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
 pub struct MaxOpenPositionsRule {
@@ -21,13 +21,23 @@ pub struct MaxOpenPositionsRule {
 }
 
 impl Rule for MaxOpenPositionsRule {
-    fn id(&self) -> RuleId { RuleId::named("max_open_positions") }
-    fn name(&self) -> &str { "Max Open Positions" }
-    fn kind(&self) -> ViolationKind { ViolationKind::MaxOpenPositions }
-    fn scope(&self) -> EvaluationScope { EvaluationScope::PreTrade }
-    fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
+    fn id(&self) -> RuleId {
+        RuleId::named("max_open_positions")
+    }
+    fn name(&self) -> &'static str {
+        "Max Open Positions"
+    }
+    fn kind(&self) -> ViolationKind {
+        ViolationKind::MaxOpenPositions
+    }
+    fn scope(&self) -> EvaluationScope {
+        EvaluationScope::PreTrade
+    }
+    fn severity(&self) -> ViolationSeverity {
+        ViolationSeverity::Hard
+    }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Forbids opening a new position when the number of currently open positions is at the cap."
     }
 
@@ -62,8 +72,11 @@ impl Rule for MaxOpenPositionsRule {
 
 impl MaxOpenPositionsRule {
     /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
     pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        MaxOpenPositionsRule { params: Some(RuleParams::from_entry(entry)) }
+        MaxOpenPositionsRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
     }
 }
 

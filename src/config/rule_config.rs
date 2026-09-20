@@ -1,7 +1,7 @@
 //! Per-rule configuration. Each rule carries its own config struct so custom
 //! overrides can be applied without mutating the global plan.
 
-use crate::core::types::{Pct, dec};
+use crate::core::types::{dec, Pct};
 
 /// Override flags for individual rules.
 #[derive(Debug, Clone, Default)]
@@ -136,8 +136,12 @@ pub struct TakeProfitRequiredConfig {
 }
 
 impl RuleConfig {
-    pub fn empty() -> Self { Self::default() }
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
 
+    #[must_use]
     pub fn from_plan(plan: &crate::config::plan::ChallengePlan) -> Self {
         let mut cfg = Self::empty();
         cfg.daily_drawdown = Some(DailyDrawdownConfig {
@@ -154,16 +158,33 @@ impl RuleConfig {
                 start_at_pct: dec!(0).into(),
             });
         }
-        cfg.profit_target = Some(ProfitTargetConfig { pct: plan.profit_target_pct });
-        cfg.min_trading_days = Some(MinTradingDaysConfig { days: plan.min_trading_days });
+        cfg.profit_target = Some(ProfitTargetConfig {
+            pct: plan.profit_target_pct,
+        });
+        cfg.min_trading_days = Some(MinTradingDaysConfig {
+            days: plan.min_trading_days,
+        });
         if let Some(c) = plan.consistency_pct {
-            cfg.consistency = Some(ConsistencyConfig { max_day_profit_share: c });
+            cfg.consistency = Some(ConsistencyConfig {
+                max_day_profit_share: c,
+            });
         }
-        cfg.news_trading = Some(NewsTradingConfig { window_minutes: 2, allow_closes: true });
-        cfg.overnight_holding = Some(OvernightConfig { forbidden_from_hour: 22, forbidden_to_hour: 7 });
-        cfg.weekend_holding = Some(WeekendConfig { forbidden_from_hour: 21, weekend_starts_hour: 21 });
+        cfg.news_trading = Some(NewsTradingConfig {
+            window_minutes: 2,
+            allow_closes: true,
+        });
+        cfg.overnight_holding = Some(OvernightConfig {
+            forbidden_from_hour: 22,
+            forbidden_to_hour: 7,
+        });
+        cfg.weekend_holding = Some(WeekendConfig {
+            forbidden_from_hour: 21,
+            weekend_starts_hour: 21,
+        });
         if let Some(l) = plan.max_position_lots {
-            cfg.max_position_size = Some(MaxPositionSizeConfig { max_lots_per_order: l });
+            cfg.max_position_size = Some(MaxPositionSizeConfig {
+                max_lots_per_order: l,
+            });
         }
         if let Some(c) = plan.max_open_positions {
             cfg.max_open_positions = Some(MaxOpenPositionsConfig { max_count: c });
@@ -175,19 +196,27 @@ impl RuleConfig {
             cfg.time_limit = Some(TimeLimitConfig { days: d });
         }
         if plan.cooldown_seconds > 0 {
-            cfg.cooldown = Some(CooldownConfig { seconds_between_trades: plan.cooldown_seconds });
+            cfg.cooldown = Some(CooldownConfig {
+                seconds_between_trades: plan.cooldown_seconds,
+            });
         }
-        cfg.hedging = Some(HedgingConfig { allowed: plan.hedging_allowed });
+        cfg.hedging = Some(HedgingConfig {
+            allowed: plan.hedging_allowed,
+        });
         cfg.grid_trading = Some(GridTradingConfig {
             allowed: plan.grid_trading_allowed,
             min_grid_spacing_pips: 50,
         });
-        cfg.copy_trading = Some(CopyTradingConfig { allowed: plan.copy_trading_allowed });
+        cfg.copy_trading = Some(CopyTradingConfig {
+            allowed: plan.copy_trading_allowed,
+        });
         cfg.sl_required = Some(StopLossRequiredConfig {
             required: plan.require_stop_loss,
             min_distance_pips: None,
         });
-        cfg.tp_required = Some(TakeProfitRequiredConfig { required: plan.require_take_profit });
+        cfg.tp_required = Some(TakeProfitRequiredConfig {
+            required: plan.require_take_profit,
+        });
         cfg
     }
 }

@@ -5,7 +5,7 @@
 //! transitions are modeled via [`OrderStatus`].
 
 use crate::core::ids::OrderId;
-use crate::core::types::{Decimal, Price, Quantity, Symbol, Timestamp, dec};
+use crate::core::types::{dec, Decimal, Price, Quantity, Symbol, Timestamp};
 use crate::core::Error;
 
 /// Side of an order/position.
@@ -19,6 +19,7 @@ pub enum OrderSide {
 
 impl OrderSide {
     /// Returns the opposite side.
+    #[must_use]
     pub fn opposite(self) -> Self {
         match self {
             OrderSide::Buy => OrderSide::Sell,
@@ -27,6 +28,7 @@ impl OrderSide {
     }
 
     /// Sign multiplier: +1 for buy, -1 for sell.
+    #[must_use]
     pub fn sign(self) -> Decimal {
         match self {
             OrderSide::Buy => dec!(1),
@@ -76,7 +78,10 @@ pub enum OrderKind {
     /// Open a new position.
     Open,
     /// Close an existing position (full or partial).
-    Close { position_id: crate::core::ids::PositionId, partial_quantity: Option<Quantity> },
+    Close {
+        position_id: crate::core::ids::PositionId,
+        partial_quantity: Option<Quantity>,
+    },
     /// Reverse an existing position (close + open opposite).
     Reverse,
 }
@@ -101,8 +106,15 @@ pub enum OrderStatus {
 }
 
 impl OrderStatus {
+    #[must_use]
     pub fn is_terminal(self) -> bool {
-        matches!(self, OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Rejected | OrderStatus::Expired)
+        matches!(
+            self,
+            OrderStatus::Filled
+                | OrderStatus::Cancelled
+                | OrderStatus::Rejected
+                | OrderStatus::Expired
+        )
     }
 }
 
@@ -143,6 +155,7 @@ pub struct Order {
 
 impl Order {
     /// Builds a market order to open a new position.
+    #[must_use]
     pub fn market_open(
         account_id: crate::core::ids::AccountId,
         symbol: Symbol,
@@ -172,6 +185,7 @@ impl Order {
     }
 
     /// Builds a market order to close a position (full or partial).
+    #[must_use]
     pub fn market_close(
         account_id: crate::core::ids::AccountId,
         position_id: crate::core::ids::PositionId,
@@ -182,8 +196,11 @@ impl Order {
             id: OrderId::new(),
             account_id,
             symbol: Symbol::new("UNKNOWN"), // will be derived from position
-            side: OrderSide::Buy, // will be overridden by caller
-            kind: OrderKind::Close { position_id, partial_quantity },
+            side: OrderSide::Buy,           // will be overridden by caller
+            kind: OrderKind::Close {
+                position_id,
+                partial_quantity,
+            },
             order_type: OrderType::Market,
             quantity: partial_quantity.unwrap_or(Quantity::ZERO),
             tif: TimeInForce::Ioc,
@@ -198,11 +215,13 @@ impl Order {
     }
 
     /// Returns true if the order requires SL to be set on submission.
+    #[must_use]
     pub fn requires_sl(&self) -> bool {
         self.stop_loss.is_none() && self.kind == OrderKind::Open
     }
 
     /// Returns true if the order requires TP to be set on submission.
+    #[must_use]
     pub fn requires_tp(&self) -> bool {
         self.take_profit.is_none() && self.kind == OrderKind::Open
     }
@@ -216,7 +235,10 @@ impl Order {
                 self.id, self.status
             )));
         }
-        Ok(Order { status: OrderStatus::Accepted, ..self })
+        Ok(Order {
+            status: OrderStatus::Accepted,
+            ..self
+        })
     }
 
     /// Marks the order as rejected with a reason.
