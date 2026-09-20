@@ -1,0 +1,45 @@
+//! Tick / quote model.
+//!
+//! A [`Tick`] is a single market-data update for a symbol. A [`Quote`] is the
+//! bid/ask pair used for valuation and order fills.
+
+use crate::core::types::{Price, Symbol, Timestamp};
+
+/// Bid/ask quote for a single symbol at a point in time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quote {
+    /// Bid price (where the market buys from you).
+    pub bid: Price,
+    /// Ask price (where the market sells to you).
+    pub ask: Price,
+    /// Server timestamp.
+    pub ts: Timestamp,
+}
+
+impl Quote {
+    /// Mid-market price.
+    pub fn mid(self) -> Price {
+        Price((self.bid.0 + self.ask.0) / rust_decimal::Decimal::TWO)
+    }
+
+    /// Spread (ask - bid). Always non-negative.
+    pub fn spread(self) -> Price {
+        Price(self.ask.0 - self.bid.0)
+    }
+}
+
+/// A market-data tick carrying symbol, quote, and optional last-traded price.
+#[derive(Debug, Clone)]
+pub struct Tick {
+    pub symbol: Symbol,
+    pub quote: Quote,
+    pub last: Option<Price>,
+    pub bid_volume: Option<rust_decimal::Decimal>,
+    pub ask_volume: Option<rust_decimal::Decimal>,
+}
+
+impl Tick {
+    pub fn new(symbol: Symbol, quote: Quote) -> Self {
+        Tick { symbol, quote, last: None, bid_volume: None, ask_volume: None }
+    }
+}
