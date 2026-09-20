@@ -71,12 +71,18 @@ pub fn evaluate(
     ctx.rule_config = crate::config::rule_config::RuleConfig::from_plan(&account.plan);
     // P0-C: explicit server_time — rules read this instead of `Utc::now()`.
     ctx.server_time = server_time;
-    // P1-5: the caller of pure::evaluate has loaded the account from a
-    // trusted source (broker bridge, replay log, etc.). Mark equity as
-    // broker-reported so breach-capable rules CAN terminate. For
-    // estimate-only paths, the caller should construct the context
-    // directly via `RuleContext::with_estimated_equity`.
-    ctx = ctx.with_broker_equity(account.equity, account.balance);
+    // **P0.5 fix**: equity provenance is now EXPLICIT. The previous code
+    // unconditionally stamped `with_broker_equity(...)`, letting any
+    // caller have arbitrary equity treated as broker truth — which
+    // bypassed the P1-5 "estimates cannot terminate" guard entirely
+    // (and /internal/v1/evaluate took account state from the request
+    // body). Callers must now state the source via
+    // `EquitySource::BrokerReported` or `EquitySource::Estimated`;
+    // the HTTP DTO defaults to the safe option (`estimated`).
+    ctx = match inputs.equity_source {
+        EquitySource::BrokerReported => ctx.with_broker_equity(account.equity, account.balance),
+        EquitySource::Estimated => ctx.with_estimated_equity(account.equity, account.balance),
+    };
     if let Some(o) = inputs.pending_order {
         ctx.pending_order = Some(o.clone());
     }
@@ -144,21 +150,39 @@ impl PureVerdict {
     }
 }
 
-/// Computes the `input_hash` (P0-B + P0-C fix). Real sha256 of every
-/// input that affects the verdict — including `server_time`, so the
-/// same recorded inputs at different wall-clock times produce different
-/// hashes (and potentially different verdicts from time-aware rules).
-///
-/// This is the cryptographic fingerprint that makes verdicts
-/// reproducible: persist it alongside the verdict record, and any past
-/// decision can be recomputed byte-for-byte from its recorded inputs.
-///
-/// Implementation: uses the real `sha2::Sha256` (256-bit, 64 hex chars).
-/// Previously this was mislabeled `SipHash` truncated to 16 hex chars.
-#[must_use]
+/// **P0.5 fix**: who vouches for the equity/balance numbers on the
+/// account state. Mirrors [`EquityInput`] at the API boundary so a
+/// caller must *state* provenance instead of the engine assuming it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EquitySource {
+    /// Equity came from the broker bridge. Breach-capable rules may
+    /// terminate on it (P1-5). Only pass this from trusted paths.
+    BrokerReported,
+    /// Equity is an engine estimate. Breach-capable rules downgrade to
+    /// Warn and never terminate. **The safe default.**
+    #[default]
+    Estimated,
+}
+
+impl EquitySource {
+    /// Parses the wire form used by the evaluate request DTO.
+    pub fn parse(s: &str) -> Result<Self, crate::core::Error> {
+        match s.to_ascii_lowercase().as_str() {
+            "broker_reported" | "broker" => Ok(EquitySource::BrokerReported),
+            "estimated" | "estimate" => Ok(EquitySource::Estimated),
+            other => Err(crate::core::Error::invalid_config(format!(
+                "unknown equity_source '{other}' (expected broker_reported | estimated)"
+            ))),
+        }
+    }
+}
+
 /// The per-call inputs to [`evaluate`] beyond the core
 /// `(account, pack, registry, ctx_kind, server_time)` tuple. Grouped into
 /// one struct so the signature stays readable and callers can pass `Default`.
+///
+/// **P0.5 fix**: `Default` yields `EquitySource::Estimated` — the safe
+/// option. Termination requires explicitly claiming broker provenance.
 #[derive(Debug, Clone, Default)]
 pub struct EvaluateInputs<'a> {
     /// Open positions at evaluation time.
@@ -173,11 +197,18 @@ pub struct EvaluateInputs<'a> {
     pub latest_trade: Option<&'a Trade>,
     /// The tick being evaluated, if evaluating a tick.
     pub latest_tick: Option<&'a Tick>,
+    /// **P0.5 fix**: who vouches for the account's equity/balance.
+    /// Defaults to [`EquitySource::Estimated`] — never terminates.
+    pub equity_source: EquitySource,
 }
 
 impl<'a> EvaluateInputs<'a> {
     /// Convenience constructor: tick evaluation with only positions and
     /// today's trades (the common `/internal/v1/evaluate` shape).
+    ///
+    /// **P0.5 fix**: equity provenance defaults to
+    /// [`EquitySource::Estimated`]. Use [`Self::with_equity_source`] to
+    /// claim broker truth explicitly.
     pub fn for_tick(
         open_positions: &'a [Position],
         today_trades: &'a [Trade],
@@ -190,8 +221,27 @@ impl<'a> EvaluateInputs<'a> {
             ..Default::default()
         }
     }
+
+    /// Overrides the equity provenance (P0.5). Chain after `for_tick`
+    /// when the caller is a trusted broker-bridge path.
+    #[must_use]
+    pub fn with_equity_source(mut self, src: EquitySource) -> Self {
+        self.equity_source = src;
+        self
+    }
 }
 
+/// Computes the `input_hash` (P0-B + P0-C fix). Real sha256 of every
+/// input that affects the verdict — including `server_time`, so the
+/// same recorded inputs at different wall-clock times produce different
+/// hashes (and potentially different verdicts from time-aware rules).
+///
+/// This is the cryptographic fingerprint that makes verdicts
+/// reproducible: persist it alongside the verdict record, and any past
+/// decision can be recomputed byte-for-byte from its recorded inputs.
+///
+/// Implementation: uses the real `sha2::Sha256` (256-bit, 64 hex chars).
+/// Previously this was mislabeled `SipHash` truncated to 16 hex chars.
 /// Computes the `input_hash` (P0-B + P0-C fix). Real sha256 of every
 /// input that affects the verdict — including `server_time`, so the
 /// same recorded inputs at different wall-clock times produce different

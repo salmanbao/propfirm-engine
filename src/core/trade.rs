@@ -8,6 +8,11 @@ use crate::core::order::OrderSide;
 use crate::core::types::{Money, Price, Quantity, Symbol, Timestamp};
 
 /// Direction of a trade from the perspective of the position it affects.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TradeSide {
     /// Trade increases an open position (or opens a new one).
@@ -19,6 +24,10 @@ pub enum TradeSide {
 }
 
 /// Information about an exit, including the position closed and realized P&L.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct TradeExit {
     pub position_id: PositionId,
@@ -29,6 +38,10 @@ pub struct TradeExit {
 }
 
 /// Immutable trade / fill record.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct Trade {
     pub id: TradeId,

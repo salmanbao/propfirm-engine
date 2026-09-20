@@ -1,10 +1,12 @@
 //! HTTP server.
 
 use crate::api::handlers::SharedState;
+use crate::api::idempotency::IdempotencyStore;
 use crate::config::plan::ChallengePlan;
 use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
 use crate::persistence::memory::InMemoryStore;
+use crate::persistence::rulepack_store::InMemoryRulePackStore;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
@@ -13,6 +15,12 @@ pub struct ServerState {
     pub store: InMemoryStore,
     pub notifier: LogNotifier,
     pub event_store: crate::events::store::EventStore,
+    /// **P0.7 fix**: real rule-pack storage backing the rule-pack CRUD
+    /// endpoints (previously 404/501 stubs).
+    pub rule_pack_store: InMemoryRulePackStore,
+    /// **P0.8 fix**: per-endpoint idempotency store backing the
+    /// `Idempotency-Key` handling (previously read-and-discarded).
+    pub idempotency: IdempotencyStore,
 }
 
 impl Clone for ServerState {
@@ -21,17 +29,18 @@ impl Clone for ServerState {
     /// `state.read().clone()` in a handler discarded all in-memory state,
     /// making every endpoint other than `/health` return 404.
     ///
-    /// `InMemoryStore`, `LogNotifier`, and `EventStore` are all
-    /// `Arc<RwLock<...>>`-backed, so cloning them is cheap (bumps a refcount)
-    /// and shares the underlying state — exactly what we want for a
-    /// stateful server handler that does `state.read().clone()` to grab a
-    /// snapshot of the shared server state.
+    /// `InMemoryStore`, `LogNotifier`, `EventStore`,
+    /// `InMemoryRulePackStore`, and `IdempotencyStore` are all
+    /// `Arc`-backed, so cloning them is cheap (bumps a refcount)
+    /// and shares the underlying state.
     fn clone(&self) -> Self {
         ServerState {
             evaluator: self.evaluator.clone(),
             store: self.store.clone(),
             notifier: self.notifier.clone(),
             event_store: self.event_store.clone(),
+            rule_pack_store: self.rule_pack_store.clone(),
+            idempotency: self.idempotency.clone(),
         }
     }
 }
@@ -44,6 +53,8 @@ impl ServerState {
             store: InMemoryStore::new(),
             notifier: LogNotifier::new(),
             event_store: crate::events::store::EventStore::in_memory(),
+            rule_pack_store: InMemoryRulePackStore::new(),
+            idempotency: IdempotencyStore::with_defaults(),
         }
     }
 

@@ -34,7 +34,13 @@ impl Rule for WeekendHoldingRule {
         ViolationKind::WeekendHolding
     }
     fn scope(&self) -> EvaluationScope {
-        EvaluationScope::PreTrade
+        // P0.6 fix: this rule inspects *held open positions* over the
+        // weekend, so it must run on the tick/periodic path too — not
+        // only pre-trade. Declaring only `PreTrade` meant the stateless
+        // evaluate endpoint (OnTick) could never observe a weekend-held
+        // position. It still applies pre-trade via `OnDemand`-inclusive
+        // matching in the registry.
+        EvaluationScope::OnTick
     }
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Hard

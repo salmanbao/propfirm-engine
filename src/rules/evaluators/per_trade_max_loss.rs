@@ -11,6 +11,7 @@
 //!   `plan.per_trade_max_loss_money` — see `topstep_futures()`), or
 //! - a rule-pack entry binds it (`RuleParams` present with
 //!   `enabled: true`).
+//!
 //! The default registry previously registered it unconditionally with
 //! a 2% limit at Liquidate severity — a rule that does not exist in
 //! most prop-firm programs — liquidating accounts out of nowhere.

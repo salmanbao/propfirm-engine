@@ -33,7 +33,12 @@ impl Rule for OvernightHoldingRule {
         ViolationKind::OvernightHolding
     }
     fn scope(&self) -> EvaluationScope {
-        EvaluationScope::PreTrade
+        // P0.6 fix: this rule inspects *held open positions* during
+        // forbidden overnight hours, so it must run on the tick path
+        // too — declaring only `PreTrade` meant the stateless evaluate
+        // endpoint (OnTick) could never observe an overnight-held
+        // position.
+        EvaluationScope::OnTick
     }
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Hard

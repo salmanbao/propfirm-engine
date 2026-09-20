@@ -88,7 +88,8 @@ fn eval_against_pack(
         &registry,
         RuleContextKind::OnTick,
         ServerTime::now(),
-        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick),
+        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick)
+            .with_equity_source(propfirm::pure::EquitySource::BrokerReported),
     )
     .unwrap();
     verdict.decision.kind
@@ -197,7 +198,8 @@ fn p0_d_pack_priority_overrides_default() {
         &registry,
         RuleContextKind::OnTick,
         ServerTime::now(),
-        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick),
+        propfirm::pure::EvaluateInputs::for_tick(&[], &[], &tick)
+            .with_equity_source(propfirm::pure::EquitySource::BrokerReported),
     )
     .unwrap();
     assert!(verdict.decision.is_terminating(), "expected breach");

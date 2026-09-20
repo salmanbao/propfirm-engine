@@ -8,6 +8,7 @@
 //! **P0.1 fix**: this rule is DISABLED by default. It runs only when:
 //! - the plan enables it (`plan.hft_ban_enabled = true`), or
 //! - a rule-pack entry binds it (`RuleParams` present, `enabled: true`).
+//!
 //! The default registry previously registered it unconditionally.
 
 use crate::core::ids::RuleId;

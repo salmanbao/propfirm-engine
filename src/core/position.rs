@@ -10,6 +10,11 @@ use crate::core::tick::Quote;
 use crate::core::types::{dec, Decimal, Money, Price, Quantity, Symbol, Timestamp};
 
 /// Side of an open position.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PositionSide {
     Long,
@@ -35,6 +40,11 @@ impl PositionSide {
 }
 
 /// Position lifecycle status.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PositionStatus {
     Open,
@@ -45,6 +55,10 @@ pub enum PositionStatus {
 /// Immutable position aggregate. A position is created on the first fill of
 /// an open-order and mutated (via new instances) as additional fills or
 /// partial closes occur.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Debug, Clone)]
 pub struct Position {
     pub id: PositionId,

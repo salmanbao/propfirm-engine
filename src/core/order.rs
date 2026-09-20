@@ -9,6 +9,11 @@ use crate::core::types::{dec, Decimal, Price, Quantity, Symbol, Timestamp};
 use crate::core::Error;
 
 /// Side of an order/position.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderSide {
     /// Buy / long.
@@ -73,6 +78,11 @@ pub enum TimeInForce {
 }
 
 /// Order kind: open a position or close an existing one.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderKind {
     /// Open a new position.
@@ -87,6 +97,11 @@ pub enum OrderKind {
 }
 
 /// Status of an order lifecycle.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[serde(rename_all = "snake_case")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderStatus {
     /// Created but not yet submitted to the matching engine.
