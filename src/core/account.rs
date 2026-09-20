@@ -144,6 +144,12 @@ pub struct Account {
     /// Smallest single-day loss observed so far.
     pub largest_day_loss: Money,
 
+    /// **P1.1 fix**: equity at the start of the current server day. Used
+    /// by `daily_drawdown()` when `drawdown_on_balance = false` (the
+    /// default per the binding spec) so daily drawdown is computed from
+    /// EOD equity rather than the intraday balance.
+    pub day_start_equity: Money,
+
     /// **P0-2 fix**: Timestamp the profit target was first reached, or
     /// `None` if not yet. Once set, *never cleared* — even if equity
     /// subsequently dips below target before `min_trading_days` is met.
@@ -206,6 +212,7 @@ impl Account {
             total_swaps: Money::ZERO,
             largest_day_profit: Money::ZERO,
             largest_day_loss: Money::ZERO,
+            day_start_equity: initial,
             target_reached_at: None,
             target_reached_on_day: None,
             version: 0,

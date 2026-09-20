@@ -8,6 +8,7 @@
 use crate::core::ids::{ChallengeId, RuleId};
 use crate::core::types::{dec, Money, Pct, Timestamp};
 use crate::core::Error;
+use chrono_tz::Tz;
 
 /// Phase of the challenge lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -183,10 +184,20 @@ pub struct ChallengePlan {
     pub leverage: u32,
     /// Allowed trading hours (server time) as (`start_hour`, `end_hour`), 24h format.
     pub trading_hours: Option<(u8, u8)>,
+    /// **P1.1 fix**: server-time timezone for day-reset / EOD trailing
+    /// calculations. The offset is applied to `chrono::Utc::now()` to
+    /// determine the plan's "server day" boundary (midnight in this
+    /// timezone). When `None`, UTC is assumed (existing behaviour).
+    pub timezone: Option<Tz>,
+
+    /// **P1.1 fix**: hour-of-day (0..23) when the server day resets.
+    /// Midnight in the plan's timezone, i.e. the boundary after which
+    /// `trading_day_index`, `active_trading_days`, `day_start_balance`,
+    /// `largest_day_profit`, and `largest_day_loss` all reset.
+    /// Default 0 (= midnight UTC) when `timezone` is `None`.
+    pub day_reset_time: u8,
     /// Effective timestamp of the plan.
     pub effective_at: Timestamp,
-
-    /// **P0.1 fix**: per-trade max-loss limit as a percentage of balance
     /// (e.g. 0.02 = "no single closed trade may lose more than 2% of
     /// balance" — Topstep-style). `None` = rule disabled. Previously this
     /// rule was enabled by default for every account via the default
@@ -398,6 +409,9 @@ impl Default for ChallengePlan {
             refundable: true,
             leverage: 100,
             trading_hours: None,
+            // P1.1: timezone defaults to UTC (None), day reset at midnight UTC
+            timezone: None,
+            day_reset_time: 0,
             effective_at: chrono::Utc::now(),
             // P0.1: opt-in rules default to OFF. A plan must explicitly
             // enable per-trade max loss / the HFT ban (or bind a pack

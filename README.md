@@ -24,15 +24,15 @@ Built to satisfy the binding spec for a proprietary-trading-firm-as-a-service (P
 
 ## Features
 
-### Comprehensive rule library (19 rules out of the box)
+### Comprehensive rule library (22 rules out of the box)
 
 | Category | Rules |
 |----------|-------|
-| **Drawdown** | Daily drawdown · Max drawdown (static + trailing) · Trailing drawdown |
+| **Drawdown** | Daily drawdown · Max drawdown (static + trailing) · Trailing drawdown · Per-trade max loss |
 | **Targets** | Profit target · Minimum trading days · Consistency |
-| **Trade restrictions** | News trading · Overnight holding · Weekend holding · Hedging · Grid/martingale · Copy trading |
+| **Trade restrictions** | News trading · Overnight holding · Weekend holding · Hedging · Grid/martingale · Copy trading · HFT/scalping |
 | **Position limits** | Max position size · Max open positions · Max daily trades · Cooldown |
-| **Time** | Time limit · Stop-loss required · Take-profit required |
+| **Time** | Time limit · Stop-loss required · Take-profit required · Inactivity termination |
 
 Each rule is implemented as a `Rule` trait object with explicit `priority()` (for breach arbitration) and `tolerance_cents()` (to absorb broker rounding noise at the boundary).
 
@@ -40,7 +40,7 @@ Each rule is implemented as a `Rule` trait object with explicit `priority()` (fo
 
 FTMO (phase 1 / phase 2 / funded) · MyForexFunds · The Funded Trader · SurgeTrader · custom.
 
-Each preset declares `max_loss_reference: LossReference::{Static, Trailing}` explicitly so the max-loss rule measures against the correct baseline. FTMO phase-1 uses a static floor (`$90k` on a `$100k` account, never moves); FTMO funded switches to trailing.
+Each preset declares `max_loss_reference: LossReference::{Static, Trailing, EodTrailing}` explicitly so the max-loss rule measures against the correct baseline. FTMO phase-1 uses a static floor (`$90k` on a `$100k` account, never moves); FTMO funded switches to trailing; FTMO 1-Step and FundedNext 1-Step use EOD-reset trailing.
 
 ### Risk analytics
 

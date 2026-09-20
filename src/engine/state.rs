@@ -104,6 +104,7 @@ impl AccountState {
         }
         self.account.trading_day_index += 1;
         self.account.day_start_balance = self.account.balance;
+        self.account.day_start_equity = self.account.equity;
         self.account.today_realized_pnl = Money::ZERO;
         self
     }

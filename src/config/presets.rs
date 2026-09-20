@@ -194,8 +194,8 @@ pub fn ftmo_1step() -> ChallengePlan {
     p.profit_target_pct = Pct(dec!(0.10));
     p.max_daily_drawdown_pct = Pct(dec!(0.05));
     p.max_total_drawdown_pct = Pct(dec!(0.10));
-    // P1.6: when EOD-trailing lands, switch this to EodTrailing.
-    p.max_loss_reference = LossReference::Static;
+    // P1.2: FTMO 1-Step uses EOD-reset trailing max loss.
+    p.max_loss_reference = LossReference::EodTrailing;
     p.drawdown_on_balance = false;
     p.min_trading_days = 0; // 1-Step has no min days.
     p.time_limit_days = None; // unlimited + inactivity termination (P1 future).
@@ -250,7 +250,8 @@ pub fn fundednext_1step() -> ChallengePlan {
     p.profit_target_pct = Pct(dec!(0.08));
     p.max_daily_drawdown_pct = Pct(dec!(0.05));
     p.max_total_drawdown_pct = Pct(dec!(0.10));
-    p.max_loss_reference = LossReference::Static;
+    // P1.2: FundedNext 1-Step uses EOD-reset trailing max loss.
+    p.max_loss_reference = LossReference::EodTrailing;
     p.min_trading_days = 0;
     p.time_limit_days = None;
     p.news_trading_allowed = true;
@@ -265,8 +266,6 @@ pub fn fundednext_1step() -> ChallengePlan {
 }
 
 /// **P1.12 fix**: Topstep-style futures plan (per-trade max loss, no time limit).
-///
-/// **P1.5 / P0.1 fix**: Topstep's published Trading Combine rules combine
 /// an **End-of-Day trailing** account max loss ("trailing threshold") with
 /// a **per-trade loss limit** ("Max Loss Per Trade") and have **no daily
 /// loss limit** — the daily-DD preset here was wrong and has been removed

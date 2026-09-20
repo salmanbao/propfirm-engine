@@ -6,7 +6,7 @@ authors = ["Prop Firm Engine Team"]
 description = "Enterprise-grade risk and rule evaluation engine for proprietary trading firms"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://example.com/propfirm-engine"
+repository = "https://github.com/salman/propfirm-engine"
 keywords = ["trading", "risk", "prop-firm", "fintech", "rules"]
 categories = ["finance", "data-structures"]
 
@@ -35,6 +35,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber"]
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 chrono = { version = "0.4", features = ["clock"] }
+chrono-tz = "0.9"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 rust_decimal = { version = "1.36", features = ["serde", "maths"] }
 rust_decimal_macros = "1.36"
