@@ -21,6 +21,15 @@ impl AccountState {
     /// Applies a realized P&L change (positive or negative) and updates
     /// balance, peak balance, today_realized_pnl, total_realized_pnl,
     /// largest_day_profit/loss.
+    ///
+    /// **P1.7 fix**: `largest_day_profit` / `largest_day_loss` are now
+    /// tracked per-DAY, not per-trade. The previous implementation
+    /// compared each trade's net against the all-time largest, which
+    /// made `largest_day_profit` actually "largest single trade profit"
+    /// — wrong for the consistency rule. Now we accumulate the running
+    /// day's net into `today_realized_pnl`, and `largest_day_profit` is
+    /// updated only at day rollover (where `today_realized_pnl` is
+    /// frozen and reset).
     pub fn apply_realized_pnl(mut self, pnl: Money, commission: Money, swap: Money, at: Timestamp) -> Self {
         let net = Money(pnl.0 - commission.0 - swap.0);
         self.account.balance = Money(self.account.balance.0 + net.0);
@@ -32,12 +41,9 @@ impl AccountState {
         self.account.total_realized_pnl = Money(self.account.total_realized_pnl.0 + net.0);
         self.account.total_commissions = Money(self.account.total_commissions.0 + commission.0);
         self.account.total_swaps = Money(self.account.total_swaps.0 + swap.0);
-        if net.0 > self.account.largest_day_profit.0 {
-            self.account.largest_day_profit = net;
-        }
-        if net.0 < self.account.largest_day_loss.0 {
-            self.account.largest_day_loss = net;
-        }
+        // P1.7: do NOT update largest_day_profit per-trade — that would
+        // make it "largest trade profit", not "largest day profit".
+        // It's now updated only at rollover_day().
         let _ = at;
         self
     }
@@ -64,8 +70,22 @@ impl AccountState {
     /// Rolls over a new trading day. Resets today_realized_pnl, updates
     /// day_start_balance to the current balance, bumps day index, and
     /// increments active_trading_days if the previous day had any trades.
+    ///
+    /// **P1.7 fix**: also stamps `largest_day_profit` / `largest_day_loss`
+    /// from the frozen `today_realized_pnl` (per-DAY tracking, not
+    /// per-trade). This is the value the consistency rule checks
+    /// against.
     pub fn rollover_day(mut self, had_trades_today: bool) -> Self {
+        // P1.7: before resetting today_realized_pnl, freeze it into
+        // largest_day_profit / largest_day_loss (per-day, not per-trade).
         if had_trades_today {
+            let today_net = self.account.today_realized_pnl;
+            if today_net.0 > self.account.largest_day_profit.0 {
+                self.account.largest_day_profit = today_net;
+            }
+            if today_net.0 < self.account.largest_day_loss.0 {
+                self.account.largest_day_loss = today_net;
+            }
             self.account.active_trading_days += 1;
         }
         self.account.trading_day_index += 1;
@@ -187,8 +207,37 @@ impl StateDelta {
 }
 
 /// Helper: applies a tick revaluation to equity given open positions.
+/// (Single-symbol variant — used by the broker-reported path where the
+/// engine does NOT recompute equity; kept for backwards compatibility.)
 pub fn equity_after_tick(balance: Money, positions: &[crate::core::position::Position], quote: &crate::core::tick::Quote) -> Money {
-    let _ = dec!(0);
     let unreal: Money = positions.iter().filter(|p| p.is_open()).map(|p| p.unrealized_pnl(quote)).fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
+    Money(balance.0 + unreal.0)
+}
+
+/// **P1.11 fix**: applies a tick revaluation to equity using a
+/// per-symbol quote map. Each open position is valued against its own
+/// symbol's quote — correct for multi-symbol books.
+///
+/// Positions whose symbol is missing from the quote map contribute zero
+/// unrealized P&L (display-only path; broker-reported equity is the
+/// source of truth for breach decisions per P1-5).
+pub fn equity_after_tick_multi(
+    balance: Money,
+    positions: &[crate::core::position::Position],
+    quotes: &std::collections::HashMap<String, crate::core::tick::Quote>,
+) -> Money {
+    let unreal: Money = positions
+        .iter()
+        .filter(|p| p.is_open())
+        .map(|p| {
+            // Look up the quote for this position's symbol.
+            // If missing, the position contributes zero unrealized P&L
+            // (display-only; broker-reported equity is the source of truth).
+            match quotes.get(&p.symbol.0) {
+                Some(q) => p.unrealized_pnl(q),
+                None => Money::ZERO,
+            }
+        })
+        .fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
     Money(balance.0 + unreal.0)
 }

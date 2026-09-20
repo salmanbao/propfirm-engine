@@ -49,11 +49,14 @@ pub async fn evaluate_internal(
     // Build a registry from the supplied rule pack (P1-6).
     let registry = crate::rules::registry::RuleRegistry::build_from_pack(&req.rule_pack)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    // Pure evaluate (P1-7) — no storage mutation.
+    // Pure evaluate (P1-7) — no storage mutation. P0-C: server_time is
+    // explicit so the verdict is reproducible from recorded inputs.
     let tick = req.tick.clone();
+    let server_time = crate::core::types::ServerTime::now();
     let verdict = crate::pure::evaluate(
         &acc, &req.rule_pack, &registry,
         crate::rules::context::RuleContextKind::OnTick,
+        server_time,
         &[], &[], Vec::new(),
         None, None, Some(&tick),
     ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

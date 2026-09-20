@@ -43,6 +43,7 @@ use crate::core::Error;
 /// Lifecycle of a rule pack. Maps to the binding spec's
 /// `lifecycle: draft | active | superseded` field.
 #[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackLifecycle {
     /// Pack is being edited by tenant admins. Not yet bound to any
@@ -80,14 +81,18 @@ impl std::str::FromStr for PackLifecycle {
 }
 
 /// Basis of a rule's measurement. Maps directly to the binding spec's
-/// `basis: static | trailing` field.
+/// `basis: static | trailing | eod_trailing` field.
 #[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleBasis {
     /// Measured from a fixed reference point (e.g. initial balance).
     Static,
-    /// Measured from a high-water mark that floats up.
+    /// Measured from a high-water mark that floats up intraday.
     Trailing,
+    /// **P1.6 fix**: Measured from prior day's closing balance; floor
+    /// resets once per day at the trading-session rollover.
+    EodTrailing,
 }
 
 impl std::fmt::Display for RuleBasis {
@@ -95,6 +100,7 @@ impl std::fmt::Display for RuleBasis {
         match self {
             RuleBasis::Static => write!(f, "static"),
             RuleBasis::Trailing => write!(f, "trailing"),
+            RuleBasis::EodTrailing => write!(f, "eod_trailing"),
         }
     }
 }
@@ -105,8 +111,9 @@ impl std::str::FromStr for RuleBasis {
         match s.to_ascii_lowercase().as_str() {
             "static" => Ok(RuleBasis::Static),
             "trailing" => Ok(RuleBasis::Trailing),
+            "eod_trailing" | "eodtrailing" | "eod-trailing" => Ok(RuleBasis::EodTrailing),
             other => Err(Error::invalid_config(format!(
-                "unknown rule basis '{other}' (expected static/trailing)"
+                "unknown rule basis '{other}' (expected static/trailing/eod_trailing)"
             ))),
         }
     }
@@ -114,6 +121,7 @@ impl std::str::FromStr for RuleBasis {
 
 /// Unit of a rule's value.
 #[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleUnit {
     /// Value is a fraction of the reference (0.10 = 10%).
@@ -255,19 +263,16 @@ impl RulePack {
         self.rules.iter().find(|r| r.id == id)
     }
 
-    /// Computes a content hash (sha256-prefix) of this pack's content.
-    /// Used by the pure-evaluate function (P1-7 fix) to record the
-    /// exact rule set that produced a verdict — so any past verdict can
-    /// be recomputed byte-for-byte from its recorded inputs.
+    /// Computes the real sha256 content hash of this pack's content
+    /// (P0-B fix — was previously mislabeled SipHash truncated to 64 bits).
     ///
-    /// Implementation note: uses the std default hasher (which is not
-    /// actually sha256, but is stable within a process). For
-    /// cross-process reproducibility, replace with a real sha256
-    /// implementation (e.g. the `sha2` crate) before going live.
+    /// Used by the pure-evaluate function (P1-7 fix) to record the exact
+    /// rule set that produced a verdict — so any past verdict can be
+    /// recomputed byte-for-byte from its recorded inputs.
     pub fn content_hash(&self) -> String {
-        use std::collections::hash_map::DefaultHasher;
+        use crate::sha256_helper::Sha256Hasher;
         use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
+        let mut h = Sha256Hasher::new();
         // Hash the pack's identifying content (not the volatile metadata).
         self.id.hash(&mut h);
         self.version.hash(&mut h);
@@ -280,11 +285,14 @@ impl RulePack {
             r.value.hash(&mut h);
             r.priority.hash(&mut h);
             r.enabled.hash(&mut h);
+            r.tolerance_cents.hash(&mut h);
+            r.early_warning_pct.hash(&mut h);
+            r.params_json.hash(&mut h);
         }
         self.initial_balance.0.hash(&mut h);
         self.leverage.hash(&mut h);
         self.profit_target_pct.0.hash(&mut h);
-        format!("sha256:{:016x}", h.finish())
+        h.finalize_hex()
     }
 
     /// Looks up the rule id for a given kind/name. Useful for cross-referencing

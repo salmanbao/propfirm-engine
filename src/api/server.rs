@@ -16,12 +16,22 @@ pub struct ServerState {
 }
 
 impl Clone for ServerState {
+    /// **P0-A fix**: clone shares the underlying `Arc`ed stores instead
+    /// of re-instantiating empty ones. Previously, every
+    /// `state.read().clone()` in a handler discarded all in-memory state,
+    /// making every endpoint other than `/health` return 404.
+    ///
+    /// `InMemoryStore`, `LogNotifier`, and `EventStore` are all
+    /// `Arc<RwLock<...>>`-backed, so cloning them is cheap (bumps a refcount)
+    /// and shares the underlying state — exactly what we want for a
+    /// stateful server handler that does `state.read().clone()` to grab a
+    /// snapshot of the shared server state.
     fn clone(&self) -> Self {
         ServerState {
             evaluator: self.evaluator.clone(),
-            store: InMemoryStore::new(),
-            notifier: LogNotifier::new(),
-            event_store: crate::events::store::EventStore::in_memory(),
+            store: self.store.clone(),
+            notifier: self.notifier.clone(),
+            event_store: self.event_store.clone(),
         }
     }
 }

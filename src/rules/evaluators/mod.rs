@@ -28,3 +28,5 @@ pub mod grid_trading;
 pub mod copy_trading;
 pub mod sl_required;
 pub mod tp_required;
+pub mod hft_scalping;          // P2.15 fix.
+pub mod per_trade_max_loss;    // P2.15 fix.

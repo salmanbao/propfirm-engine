@@ -37,6 +37,11 @@ pub enum DomainEventKind {
     RuleViolated { violation: Violation },
     /// Plan upgrade (Phase1 -> Phase2 -> Funded).
     PlanUpgraded { from_phase: crate::config::plan::ChallengePhase, to_phase: crate::config::plan::ChallengePhase },
+    /// **P1.10 fix**: liquidation requested. The bridge must close all
+    /// listed positions immediately. Carries the full instruction
+    /// (positions, reason, audit metadata) so the bridge has everything
+    /// it needs to act — no extra lookup required.
+    LiquidationRequested { instruction: crate::liquidation::LiquidationInstruction },
 }
 
 /// A fully-timestamped domain event.

@@ -111,11 +111,13 @@ fn pure_evaluate_bench(c: &mut Criterion) {
     };
     let registry = propfirm::rules::registry::RuleRegistry::with_default_rules();
     let tick = Tick::new(Symbol::new("EURUSD"), Quote { bid: Price(dec!(1.08)), ask: Price(dec!(1.0802)), ts: chrono::Utc::now() });
+    let server_time = propfirm::core::types::ServerTime::now();
     c.bench_function("pure_evaluate", |b| {
         b.iter(|| {
             let _ = black_box(propfirm::pure::evaluate(
                 &account, &pack, &registry,
                 RuleContextKind::OnTick,
+                server_time,
                 &[], &[], Vec::new(),
                 None, None, Some(&tick),
             ).unwrap());

@@ -230,7 +230,20 @@ fn test_account_state_apply_pnl() {
     let state = state.apply_realized_pnl(Money(dec!(500)), Money(dec!(10)), Money::ZERO, chrono::Utc::now());
     assert_eq!(state.account.balance.0, dec!(10_490));
     assert_eq!(state.account.total_realized_pnl.0, dec!(490));
-    assert_eq!(state.account.largest_day_profit.0, dec!(490));
+    // P1.7: largest_day_profit is no longer updated per-trade; it's
+    // updated only at day rollover. Verify the running today_realized_pnl
+    // is the correct accumulator instead.
+    assert_eq!(state.account.today_realized_pnl.0, dec!(490),
+        "today_realized_pnl should accumulate per-trade; got {}",
+        state.account.today_realized_pnl.0);
+    assert_eq!(state.account.largest_day_profit.0, dec!(0),
+        "P1.7: largest_day_profit should NOT be updated per-trade (was a bug); got {}",
+        state.account.largest_day_profit.0);
+    // Now roll over the day — largest_day_profit should be stamped.
+    let state = state.rollover_day(true);
+    assert_eq!(state.account.largest_day_profit.0, dec!(490),
+        "P1.7: after rollover, largest_day_profit should be stamped from today_realized_pnl; got {}",
+        state.account.largest_day_profit.0);
 }
 
 #[test]
@@ -738,12 +751,14 @@ fn p1_12_emergency_stop_short_circuits() {
 
 #[test]
 fn p1_7_pure_evaluate_produces_stable_input_hash() {
-    // Same (account, pack, tick) → same input_hash. Different (account,
-    // pack, tick) → different input_hash (with overwhelming probability).
+    // Same (account, pack, tick, server_time) → same input_hash. Different
+    // (account, pack, tick, server_time) → different input_hash (with
+    // overwhelming probability on sha256).
     use propfirm::pure::{evaluate, compute_input_hash};
     use propfirm::rulepack::{RulePack, RuleEntry, RuleBasis, RuleUnit, PackLifecycle};
     use propfirm::rules::registry::RuleRegistry;
     use propfirm::rules::context::RuleContextKind;
+    use propfirm::core::types::ServerTime;
     use std::sync::Arc;
 
     let mut plan = ftmo_phase1();
@@ -763,16 +778,24 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
     };
     let registry = RuleRegistry::with_default_rules();
     let _ = Arc::new(registry);
-    let h1 = compute_input_hash(&account1, &pack, RuleContextKind::OnTick, &[], &[], None, None, None);
-    let h2 = compute_input_hash(&account1, &pack, RuleContextKind::OnTick, &[], &[], None, None, None);
-    let h3 = compute_input_hash(&account2, &pack, RuleContextKind::OnTick, &[], &[], None, None, None);
-    assert_eq!(h1, h2, "same inputs must produce same hash");
+    // P0-C: server_time is now part of the input hash, so identical
+    // inputs evaluated at the *same* server_time produce the same hash.
+    let st = ServerTime::now();
+    let h1 = compute_input_hash(&account1, &pack, RuleContextKind::OnTick, st, &[], &[], None, None, None);
+    let h2 = compute_input_hash(&account1, &pack, RuleContextKind::OnTick, st, &[], &[], None, None, None);
+    let h3 = compute_input_hash(&account2, &pack, RuleContextKind::OnTick, st, &[], &[], None, None, None);
+    assert_eq!(h1, h2, "same inputs at same server_time must produce same hash");
     assert_ne!(h1, h3, "different account ids must produce different hash");
-    // Full evaluate() should also produce a stable PureVerdict.
+    // P0-B: hash must be a real 64-char sha256 digest (not 16-char SipHash).
+    assert!(h1.starts_with("sha256:"), "hash must be prefixed with sha256:");
+    assert_eq!(h1.len(), 7 + 64, "hash must be 64 hex chars after the sha256: prefix");
+
+    // Full evaluate() should also produce a stable PureVerdict when called
+    // with the same server_time.
     let v1 = evaluate(&account1, &pack, &RuleRegistry::with_default_rules(),
-        RuleContextKind::OnTick, &[], &[], Vec::new(), None, None, None).unwrap();
+        RuleContextKind::OnTick, st, &[], &[], Vec::new(), None, None, None).unwrap();
     let v2 = evaluate(&account1, &pack, &RuleRegistry::with_default_rules(),
-        RuleContextKind::OnTick, &[], &[], Vec::new(), None, None, None).unwrap();
+        RuleContextKind::OnTick, st, &[], &[], Vec::new(), None, None, None).unwrap();
     assert_eq!(v1.input_hash, v2.input_hash, "pure evaluate must produce stable hash");
     assert_eq!(v1.pack_version, 1);
     assert_eq!(v1.pack_id, "test-pack-v1");

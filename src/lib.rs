@@ -97,6 +97,10 @@ pub mod override_engine;
 pub mod rulepack;
 pub mod pure;
 pub mod equity_input;
+pub mod sha256_helper;
+pub mod liquidation;
+pub mod news_calendar;
+pub mod copy_trading;
 
 #[cfg(feature = "server")]
 pub mod api;

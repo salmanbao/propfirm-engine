@@ -38,6 +38,9 @@ fn base_plan(firm: &str, program: &str, balance: Money) -> ChallengePlan {
 /// *trailing* max loss is a separate, optional rule FTMO applied to funded
 /// accounts — not to phase-1/phase-2 — so we leave `trailing_drawdown_*`
 /// disabled here.
+///
+/// **P1.12 fix**: FTMO's published minimum trading days is **4** (was
+/// hardcoded to 3 — drift caught by the deep assessment).
 pub fn ftmo_phase1() -> ChallengePlan {
     let mut p = base_plan("FTMO", "Challenge", Money(dec!(10_000)));
     p.phase = ChallengePhase::Phase1;
@@ -49,7 +52,7 @@ pub fn ftmo_phase1() -> ChallengePlan {
     // breach (you're still above the $9k floor).
     p.max_loss_reference = LossReference::Static;
     p.drawdown_on_balance = false;
-    p.min_trading_days = 3;
+    p.min_trading_days = 4;  // P1.12: FTMO published spec is 4, not 3.
     p.time_limit_days = Some(30);
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
@@ -163,4 +166,109 @@ pub fn surgetrader_plan() -> ChallengePlan {
 /// Custom plan builder.
 pub fn custom(name: &str, balance: Money) -> ChallengePlan {
     base_plan("Custom", name, balance)
+}
+
+/// **P1.12 fix**: FTMO-style 1-Step plan (single-phase evaluation).
+///
+/// As of 2026, FTMO and most major prop firms offer a "1-Step" product:
+/// a single evaluation phase with no separate Phase 2 verification. The
+/// profit target is typically higher (10%) to compensate for skipping
+/// Phase 2, drawdown rules are tighter (often trailing-EOD), and there's
+/// no min-trading-days requirement (1-Step is meant to be fast).
+///
+/// Note: real 1-Step plans use EOD-reset trailing max loss; the engine
+/// supports this via `LossReference::EodTrailing` once P1.6 lands.
+pub fn ftmo_1step() -> ChallengePlan {
+    let mut p = base_plan("FTMO", "1-Step Challenge", Money(dec!(10_000)));
+    p.phase = ChallengePhase::Phase1;
+    p.profit_target_pct = Pct(dec!(0.10));
+    p.max_daily_drawdown_pct = Pct(dec!(0.05));
+    p.max_total_drawdown_pct = Pct(dec!(0.10));
+    // P1.6: when EOD-trailing lands, switch this to EodTrailing.
+    p.max_loss_reference = LossReference::Static;
+    p.drawdown_on_balance = false;
+    p.min_trading_days = 0;  // 1-Step has no min days.
+    p.time_limit_days = None;  // unlimited + inactivity termination (P1 future).
+    p.news_trading_allowed = true;
+    p.overnight_holding_allowed = true;
+    p.weekend_holding_allowed = false;
+    p.hedging_allowed = true;
+    p.grid_trading_allowed = true;
+    p.require_stop_loss = true;
+    p.consistency_pct = Some(Pct(dec!(0.40)));
+    p.leverage = 100;
+    p.validate().unwrap();
+    p
+}
+
+/// **P1.12 fix**: Instant Funding plan (no evaluation).
+///
+/// A growing 2026 product: pay a higher fee upfront and skip the
+/// evaluation entirely — start on a funded account with reduced profit
+/// split (often 50% → scaling plan → 90%) until a profit target is hit.
+/// This preset captures the funded-with-restrictions shape.
+pub fn ftmo_instant_funding() -> ChallengePlan {
+    let mut p = base_plan("FTMO", "Instant Funding", Money(dec!(10_000)));
+    p.phase = ChallengePhase::Funded;
+    p.profit_target_pct = Pct(dec!(0.05));  // lower target — just verify profitability
+    p.max_daily_drawdown_pct = Pct(dec!(0.05));
+    p.max_total_drawdown_pct = Pct(dec!(0.10));
+    p.max_loss_reference = LossReference::Trailing;
+    p.trailing_drawdown_enabled = true;
+    p.trailing_drawdown_pct = Pct(dec!(0.10));
+    p.drawdown_on_balance = false;
+    p.min_trading_days = 0;
+    p.time_limit_days = None;
+    p.news_trading_allowed = true;
+    p.overnight_holding_allowed = true;
+    p.weekend_holding_allowed = false;
+    p.hedging_allowed = true;
+    p.grid_trading_allowed = false;
+    p.require_stop_loss = true;
+    p.consistency_pct = Some(Pct(dec!(0.40)));
+    p.leverage = 100;
+    p.validate().unwrap();
+    p
+}
+
+/// **P1.12 fix**: FundedNext-style 1-Step plan (50k account, 8% target).
+pub fn fundednext_1step() -> ChallengePlan {
+    let mut p = base_plan("FundedNext", "1-Step", Money(dec!(50_000)));
+    p.phase = ChallengePhase::Phase1;
+    p.profit_target_pct = Pct(dec!(0.08));
+    p.max_daily_drawdown_pct = Pct(dec!(0.05));
+    p.max_total_drawdown_pct = Pct(dec!(0.10));
+    p.max_loss_reference = LossReference::Static;
+    p.min_trading_days = 0;
+    p.time_limit_days = None;
+    p.news_trading_allowed = true;
+    p.overnight_holding_allowed = true;
+    p.weekend_holding_allowed = true;
+    p.hedging_allowed = true;
+    p.require_stop_loss = false;
+    p.consistency_pct = None;
+    p.leverage = 100;
+    p.validate().unwrap();
+    p
+}
+
+/// **P1.12 fix**: Topstep-style futures plan (per-trade max loss, no time limit).
+pub fn topstep_futures() -> ChallengePlan {
+    let mut p = base_plan("Topstep", "Trading Combine", Money(dec!(50_000)));
+    p.phase = ChallengePhase::Phase1;
+    p.profit_target_pct = Pct(dec!(0.06));
+    p.max_daily_drawdown_pct = Pct(dec!(0.05));
+    p.max_total_drawdown_pct = Pct(dec!(0.10));
+    p.max_loss_reference = LossReference::Static;
+    p.min_trading_days = 5;
+    p.time_limit_days = None;
+    p.news_trading_allowed = true;
+    p.overnight_holding_allowed = true;
+    p.weekend_holding_allowed = true;
+    p.hedging_allowed = false;
+    p.require_stop_loss = true;
+    p.consistency_pct = None;
+    p.leverage = 1;  // futures: no leverage flag; 1 contract per position
+    p.validate().unwrap();
+    p
 }

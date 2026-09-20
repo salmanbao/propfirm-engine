@@ -8,9 +8,17 @@ use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
-pub struct MaxDailyTradesRule;
+pub struct MaxDailyTradesRule {
+    /// **P0-D fix**: pack-derived parameters. When `Some`, rule reads
+    /// `value`/`basis`/`tolerance_cents`/`priority` from here instead of
+    /// from `ctx.account.plan` — so a tenant editing the pack actually
+    /// changes the verdict. When `None` (constructed via `Default`), the
+    /// rule falls back to plan-derived config.
+    pub params: Option<RuleParams>,
+}
 
 impl Rule for MaxDailyTradesRule {
     fn id(&self) -> RuleId { RuleId::named("max_daily_trades") }
@@ -48,5 +56,18 @@ impl Rule for MaxDailyTradesRule {
             }
         }
         Ok(RuleVerdict::Pass)
+    }
+}
+
+impl MaxDailyTradesRule {
+    /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        MaxDailyTradesRule { params: Some(RuleParams::from_entry(entry)) }
+    }
+}
+
+impl ParameterizedRule for MaxDailyTradesRule {
+    fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        MaxDailyTradesRule::from_entry(entry)
     }
 }

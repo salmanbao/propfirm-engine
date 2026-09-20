@@ -117,8 +117,53 @@ where
     }
 
     /// Processes a single pipeline event.
+    ///
+    /// **P0-E fix**: reads the account (account_id is globally unique —
+    /// UUIDv4), then writes via `put_with_version` (optimistic
+    /// concurrency — a concurrent writer between our read and write
+    /// produces `Error::StateConflict`, which the caller must retry).
+    /// The pipeline is no longer the version owner; the store is — so
+    /// there's no double-increment.
+    ///
+    /// For strict tenant-scoped reads (e.g. when the caller doesn't
+    /// trust the account_id to be globally unique within their store),
+    /// use [`process_for_tenant`](Self::process_for_tenant) instead.
     pub fn process(&mut self, account_id: crate::core::ids::AccountId, ev: PipelineEvent) -> crate::Result<PipelineResult> {
-        let account = self.store.get(account_id)?.ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
+        // Read the account (unscoped — account_id is UUIDv4 globally unique).
+        let account = self.store.get(account_id)?
+            .ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
+        // Extract the account's own tenant_id; pass to the OCC-scoped
+        // process_for_tenant so the write uses put_with_version.
+        let tenant_id = account.tenant_id;
+        self.process_with_loaded_account(account, tenant_id, ev)
+    }
+
+    /// **P0-E fix**: tenant-scoped process. Reads via `get_for_tenant` so
+    /// cross-tenant data leakage is impossible at the storage layer.
+    /// Writes via `put_with_version(expected_version)` so a concurrent
+    /// writer between our read and write produces `Error::StateConflict`,
+    /// which the caller must retry.
+    pub fn process_for_tenant(
+        &mut self,
+        tenant_id: crate::tenant::TenantId,
+        account_id: crate::core::ids::AccountId,
+        ev: PipelineEvent,
+    ) -> crate::Result<PipelineResult> {
+        let account = self.store.get_for_tenant(tenant_id, account_id)?
+            .ok_or_else(|| crate::Error::NotFound(format!("account {account_id} not found for tenant {tenant_id}")))?;
+        self.process_with_loaded_account(account, tenant_id, ev)
+    }
+
+    /// Common path for `process` and `process_for_tenant` once the
+    /// account is loaded. Owns the OCC write.
+    fn process_with_loaded_account(
+        &mut self,
+        account: Account,
+        _tenant_id: crate::tenant::TenantId,
+        ev: PipelineEvent,
+    ) -> crate::Result<PipelineResult> {
+        let account_id = account.id;
+        let expected_version = account.version;
         let state = AccountState::new(account);
         let mut events: Vec<DomainEvent> = Vec::new();
 
@@ -128,11 +173,7 @@ where
         let ctx = self.build_context(new_state.account.clone(), ctx_kind, &ev, &open_positions, &today_trades, recent_events);
         // Evaluate rules
         let result = self.evaluator.evaluate(&ctx)?;
-        // P0-2: post-evaluation state update. If ProfitTargetRule emitted
-        // TargetHit (first time target was reached), stamp
-        // target_reached_at on the account and transition to
-        // TargetHitPending. If target was already reached and min trading
-        // days is now satisfied, promote to Passed.
+        // P0-2: post-evaluation state update.
         let mut final_state = new_state;
         if result.decision.is_target_hit() {
             final_state = final_state.mark_target_reached(ctx.server_time.ts());
@@ -145,7 +186,6 @@ where
                 ctx.server_time.ts(),
             ));
         }
-        // Promote TargetHitPending → Passed when min trading days met.
         if final_state.account.target_reached_at.is_some()
             && final_state.account.status == crate::core::account::AccountStatus::TargetHitPending
             && final_state.account.active_trading_days >= final_state.account.plan.min_trading_days
@@ -160,7 +200,6 @@ where
                 ctx.server_time.ts(),
             ));
         }
-        // Apply decision-driven status change (breach → Failed, emergency → EmergencyStopped).
         if let Some(target_status) = result.decision.account_status_target() {
             let from = final_state.account.status;
             final_state.account.status = target_status;
@@ -169,20 +208,61 @@ where
                 DomainEventKind::AccountStatusChanged { from, to: target_status },
                 ctx.server_time.ts(),
             ));
+            // P1.10: emit a LiquidationInstruction when the decision is
+            // Liquidate or Emergency. The bridge consumes this event and
+            // closes all listed positions on the broker side.
+            if matches!(result.decision.kind, crate::engine::decision::DecisionKind::Liquidate
+                | crate::engine::decision::DecisionKind::Emergency)
+            {
+                let reason = match result.decision.kind {
+                    crate::engine::decision::DecisionKind::Liquidate => {
+                        let violation = result.decision.all_violations.iter()
+                            .find(|v| v.severity >= crate::core::violation::ViolationSeverity::Liquidate)
+                            .or_else(|| result.decision.all_violations.first());
+                        let kind = violation.map(|v| v.kind).unwrap_or(crate::core::violation::ViolationKind::Custom);
+                        crate::liquidation::LiquidationReason::RuleBreach(kind)
+                    }
+                    crate::engine::decision::DecisionKind::Emergency => {
+                        crate::liquidation::LiquidationReason::EmergencyStop
+                    }
+                    _ => crate::liquidation::LiquidationReason::Manual,
+                };
+                let triggered_by = result.decision.all_violations.first().map(|v| v.id);
+                let actor_id = match &ev {
+                    PipelineEvent::EmergencyStop { actor_id, .. } => actor_id.clone(),
+                    _ => "rule_engine".to_string(),
+                };
+                let instruction = crate::liquidation::LiquidationInstruction::new(
+                    account_id,
+                    final_state.account.tenant_id,
+                    &open_positions,
+                    reason,
+                    triggered_by,
+                    actor_id,
+                    ctx.server_time.ts(),
+                );
+                events.push(DomainEvent::new(
+                    account_id,
+                    DomainEventKind::LiquidationRequested { instruction },
+                    ctx.server_time.ts(),
+                ));
+            }
         }
-        // P1-8: bump optimistic-concurrency version on every successful write.
-        final_state.account.version = final_state.account.version.wrapping_add(1);
-        // P1-14: stamp last_tick_ts if this was a tick event (broker-reported or estimated).
+        // P0-E: do NOT bump version here — the store is the single owner of
+        // version increments. `put_with_version` will bump on success or
+        // return `StateConflict` if another writer beat us.
+        // P1-14: stamp last_tick_ts if this was a tick event.
         match &ev {
             PipelineEvent::Tick { tick, .. } | PipelineEvent::TickEstimated { tick } => {
                 final_state.account.last_tick_ts = Some(tick.quote.ts);
             }
             _ => {}
         }
-        // Snapshot
+        // Snapshot before write (so we can return it even on conflict-retry).
         let snap = Snapshot::new(&final_state.account, result.decision.clone());
-        // Persist updated account
-        self.store.put(final_state.account.clone())?;
+        // P0-E: persist via `put_with_version` so optimistic-concurrency
+        // conflicts are detected at the storage layer.
+        self.store.put_with_version(final_state.account.clone(), expected_version)?;
         // Emit decision event
         let _decision_event = self.emit_decision_event(account_id, &result.decision, &mut events);
         // Append events

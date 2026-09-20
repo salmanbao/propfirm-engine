@@ -29,7 +29,7 @@ impl std::fmt::Display for ChallengePhase {
 
 /// Reference point used to compute the maximum *total* (lifetime) drawdown
 /// of an account. This maps directly to the binding spec's
-/// `mode: static | trailing` field in the rule-pack schema.
+/// `mode: static | trailing | eod_trailing` field in the rule-pack schema.
 ///
 /// - [`LossReference::Static`]: drawdown = `initial_balance - current`
 ///   (the floor never moves; if your $100k account drops below $90k at
@@ -39,6 +39,11 @@ impl std::fmt::Display for ChallengePhase {
 ///   (the floor floats up as the account grows; this is what
 ///   [`TrailingDrawdownRule`](crate::rules::evaluators::trailing_drawdown::TrailingDrawdownRule)
 ///   already implements).
+/// - [`LossReference::EodTrailing`]: **P1.6 fix** — floor = prior day's
+///   closing balance − pct, reset once per day at the trading-session
+///   rollover. This is the mode used by FTMO 1-Step and several 2026
+///   programs — distinct from continuous trailing (which floats
+///   intraday) and from static (which never moves).
 ///
 /// **Important**: [`MaxDrawdownRule`](crate::rules::evaluators::max_drawdown::MaxDrawdownRule)
 /// reads this field to decide which reference to use. Plans that do not
@@ -56,6 +61,15 @@ pub enum LossReference {
     /// the distinction was introduced.
     #[default]
     Trailing,
+    /// **P1.6 fix**: End-of-day-reset trailing. Floor = prior trading
+    /// day's closing balance − pct, recomputed once per day at the
+    /// trading-session rollover (in the plan's configured timezone —
+    /// see P1.5). Distinct from continuous `Trailing` because the floor
+    /// does not float intraday; intraday drawdown against the
+    /// session-opening floor is allowed up to the daily DD limit.
+    ///
+    /// Used by FTMO 1-Step, FundedNext, and several 2026 programs.
+    EodTrailing,
 }
 
 impl std::fmt::Display for LossReference {
@@ -63,6 +77,7 @@ impl std::fmt::Display for LossReference {
         match self {
             LossReference::Static => write!(f, "static"),
             LossReference::Trailing => write!(f, "trailing"),
+            LossReference::EodTrailing => write!(f, "eod_trailing"),
         }
     }
 }
@@ -73,8 +88,9 @@ impl std::str::FromStr for LossReference {
         match s.to_ascii_lowercase().as_str() {
             "static" => Ok(LossReference::Static),
             "trailing" => Ok(LossReference::Trailing),
+            "eod_trailing" | "eodtrailing" | "eod-trailing" => Ok(LossReference::EodTrailing),
             other => Err(crate::core::Error::invalid_config(format!(
-                "unknown loss reference '{other}' (expected 'static' or 'trailing')"
+                "unknown loss reference '{other}' (expected 'static', 'trailing', or 'eod_trailing')"
             ))),
         }
     }

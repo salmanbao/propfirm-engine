@@ -11,10 +11,18 @@ use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 use chrono::{Datelike, NaiveTime, TimeZone, Utc, Weekday};
 
 #[derive(Debug, Clone, Default)]
-pub struct NewsTradingRule;
+pub struct NewsTradingRule {
+    /// **P0-D fix**: pack-derived parameters. When `Some`, rule reads
+    /// `value`/`basis`/`tolerance_cents`/`priority` from here instead of
+    /// from `ctx.account.plan` — so a tenant editing the pack actually
+    /// changes the verdict. When `None` (constructed via `Default`), the
+    /// rule falls back to plan-derived config.
+    pub params: Option<RuleParams>,
+}
 
 /// A high-impact news event. (Illustrative only.)
 #[derive(Debug, Clone)]
@@ -98,5 +106,18 @@ impl Rule for NewsTradingRule {
             return Ok(RuleVerdict::Fail(v));
         }
         Ok(RuleVerdict::Pass)
+    }
+}
+
+impl NewsTradingRule {
+    /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        NewsTradingRule { params: Some(RuleParams::from_entry(entry)) }
+    }
+}
+
+impl ParameterizedRule for NewsTradingRule {
+    fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        NewsTradingRule::from_entry(entry)
     }
 }

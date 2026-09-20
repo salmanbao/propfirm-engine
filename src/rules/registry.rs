@@ -16,37 +16,43 @@ use std::sync::Arc;
 /// [`RuleEntry`](crate::rulepack::RuleEntry). Maps the rule-pack's `kind`
 /// string to the concrete Rust rule implementation that backs it.
 ///
-/// (P1-6 fix.) Each `kind` ("max_drawdown", "daily_drawdown", etc.) maps
+/// (P1-6 fix, P0-D fix.) Each `kind` ("max_drawdown", "daily_drawdown", etc.) maps
 /// to a registered rule factory; the factory reads the entry's `value`,
-/// `basis`, `unit`, `tolerance_cents`, `early_warning_pct`, and `params_json`
-/// fields to parameterize the rule. The rule implementations themselves
-/// are unchanged — they're now re-parameterized from data instead of
-/// from compiled struct fields.
-pub type RuleFactory = fn() -> Arc<dyn Rule>;
+/// `basis`, `unit`, `tolerance_cents`, `early_warning_pct`, `priority`,
+/// and `params_json` fields to construct a parameterized rule. The rule
+/// then reads from its own `params` field in `evaluate` instead of from
+/// `ctx.account.plan` — so a tenant editing the pack through the form
+/// actually changes the verdict.
+pub type RuleFactory = fn(&crate::rulepack::RuleEntry) -> Result<Arc<dyn Rule>, Error>;
 
 /// Default factory: maps kind name → constructor for the standard rule library.
+/// Each factory reads the `RuleEntry`'s `value`, `basis`, `unit`, etc. and
+/// produces a parameterized rule.
 pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
     use crate::rules::evaluators::*;
+    use crate::rulepack::RuleEntry;
     Some(match kind {
-        "daily_drawdown" => || Arc::new(daily_drawdown::DailyDrawdownRule::default()),
-        "max_drawdown" => || Arc::new(max_drawdown::MaxDrawdownRule::default()),
-        "trailing_drawdown" => || Arc::new(trailing_drawdown::TrailingDrawdownRule::default()),
-        "profit_target" => || Arc::new(profit_target::ProfitTargetRule::default()),
-        "min_trading_days" => || Arc::new(min_trading_days::MinTradingDaysRule::default()),
-        "consistency" => || Arc::new(consistency::ConsistencyRule::default()),
-        "news_trading" => || Arc::new(news_trading::NewsTradingRule::default()),
-        "overnight_holding" => || Arc::new(overnight_holding::OvernightHoldingRule::default()),
-        "weekend_holding" => || Arc::new(weekend_holding::WeekendHoldingRule::default()),
-        "max_position_size" => || Arc::new(max_position_size::MaxPositionSizeRule::default()),
-        "max_open_positions" => || Arc::new(max_open_positions::MaxOpenPositionsRule::default()),
-        "max_daily_trades" => || Arc::new(max_daily_trades::MaxDailyTradesRule::default()),
-        "time_limit" => || Arc::new(time_limit::TimeLimitRule::default()),
-        "cooldown" => || Arc::new(cooldown::CooldownRule::default()),
-        "hedging" => || Arc::new(hedging::HedgingRule::default()),
-        "grid_trading" => || Arc::new(grid_trading::GridTradingRule::default()),
-        "copy_trading" => || Arc::new(copy_trading::CopyTradingRule::default()),
-        "sl_required" => || Arc::new(sl_required::StopLossRequiredRule::default()),
-        "tp_required" => || Arc::new(tp_required::TakeProfitRequiredRule::default()),
+        "daily_drawdown" => |e: &RuleEntry| Ok(Arc::new(daily_drawdown::DailyDrawdownRule::from_entry(e))),
+        "max_drawdown" => |e: &RuleEntry| Ok(Arc::new(max_drawdown::MaxDrawdownRule::from_entry(e))),
+        "trailing_drawdown" => |e: &RuleEntry| Ok(Arc::new(trailing_drawdown::TrailingDrawdownRule::from_entry(e))),
+        "profit_target" => |e: &RuleEntry| Ok(Arc::new(profit_target::ProfitTargetRule::from_entry(e))),
+        "min_trading_days" => |e: &RuleEntry| Ok(Arc::new(min_trading_days::MinTradingDaysRule::from_entry(e))),
+        "consistency" => |e: &RuleEntry| Ok(Arc::new(consistency::ConsistencyRule::from_entry(e))),
+        "news_trading" => |e: &RuleEntry| Ok(Arc::new(news_trading::NewsTradingRule::from_entry(e))),
+        "overnight_holding" => |e: &RuleEntry| Ok(Arc::new(overnight_holding::OvernightHoldingRule::from_entry(e))),
+        "weekend_holding" => |e: &RuleEntry| Ok(Arc::new(weekend_holding::WeekendHoldingRule::from_entry(e))),
+        "max_position_size" => |e: &RuleEntry| Ok(Arc::new(max_position_size::MaxPositionSizeRule::from_entry(e))),
+        "max_open_positions" => |e: &RuleEntry| Ok(Arc::new(max_open_positions::MaxOpenPositionsRule::from_entry(e))),
+        "max_daily_trades" => |e: &RuleEntry| Ok(Arc::new(max_daily_trades::MaxDailyTradesRule::from_entry(e))),
+        "time_limit" => |e: &RuleEntry| Ok(Arc::new(time_limit::TimeLimitRule::from_entry(e))),
+        "cooldown" => |e: &RuleEntry| Ok(Arc::new(cooldown::CooldownRule::from_entry(e))),
+        "hedging" => |e: &RuleEntry| Ok(Arc::new(hedging::HedgingRule::from_entry(e))),
+        "grid_trading" => |e: &RuleEntry| Ok(Arc::new(grid_trading::GridTradingRule::from_entry(e))),
+        "copy_trading" => |e: &RuleEntry| Ok(Arc::new(copy_trading::CopyTradingRule::from_entry(e))),
+        "sl_required" => |e: &RuleEntry| Ok(Arc::new(sl_required::StopLossRequiredRule::from_entry(e))),
+        "tp_required" => |e: &RuleEntry| Ok(Arc::new(tp_required::TakeProfitRequiredRule::from_entry(e))),
+        "hft_scalping" => |e: &RuleEntry| Ok(Arc::new(hft_scalping::HftScalpingRule::from_entry(e))),
+        "per_trade_max_loss" => |e: &RuleEntry| Ok(Arc::new(per_trade_max_loss::PerTradeMaxLossRule::from_entry(e))),
         _ => return None,
     })
 }
@@ -74,6 +80,9 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
         Arc::new(copy_trading::CopyTradingRule::default()),
         Arc::new(sl_required::StopLossRequiredRule::default()),
         Arc::new(tp_required::TakeProfitRequiredRule::default()),
+        // P2.15: new rules added in the industry-semantics upgrade.
+        Arc::new(hft_scalping::HftScalpingRule::default()),
+        Arc::new(per_trade_max_loss::PerTradeMaxLossRule::default()),
     ]
 }
 
@@ -133,13 +142,16 @@ impl RuleRegistry {
         }
     }
 
-    /// **P1-6 fix**: builds a registry from a [`RulePack`] (versioned data).
-    /// For each `RuleEntry` in the pack, look up the rule factory by
-    /// `kind`, instantiate the rule implementation, and register it. The
-    /// rule implementations are unchanged — they read their parameters
-    /// from `ctx.rule_config` at evaluation time, which the pipeline
-    /// builds from the plan. The pack itself is the *source of truth*
-    /// for which rules are active.
+    /// **P1-6 fix, P0-D fix**: builds a registry from a [`RulePack`]
+    /// (versioned data). For each `RuleEntry` in the pack, look up the
+    /// rule factory by `kind`, pass the *entry* to the factory (so the
+    /// rule can read `value`, `basis`, `unit`, `tolerance_cents`,
+    /// `priority`, etc.), and register the resulting parameterized rule.
+    ///
+    /// The rule's `evaluate` reads from its own `params` field
+    /// (populated from the entry) instead of from `ctx.account.plan` —
+    /// so a tenant editing the pack through the form actually changes
+    /// the verdict. This is the binding spec's EVL-01/02 requirement.
     ///
     /// Disabled entries (`enabled: false`) are skipped. Unknown kinds
     /// produce a soft warning and are skipped (not a hard error — a
@@ -153,7 +165,7 @@ impl RuleRegistry {
             }
             match default_factory_for_kind(&entry.kind) {
                 Some(factory) => {
-                    let rule = factory();
+                    let rule = factory(entry)?;
                     registry.register(rule);
                 }
                 None => {
@@ -193,6 +205,14 @@ impl RuleRegistry {
     }
 
     /// Evaluates all rules applicable to the given context, returning reports.
+    ///
+    /// **P3.20 fix**: each rule's `evaluate` is wrapped in
+    /// `std::panic::catch_unwind`. A panicking rule (e.g. a divide-by-zero
+    /// in some edge case) is caught and converted to a `RuleVerdict::Warn`
+    /// with a descriptive message — the other rules still run, and the
+    /// process stays alive. Critical because the engine serves many
+    /// accounts on one process; one bad rule shouldn't take down
+    /// everyone's evaluation.
     pub fn evaluate(&self, ctx: &RuleContext) -> crate::Result<Vec<RuleReport>> {
         let mut reports = Vec::with_capacity(self.rules.len());
         for rule in self.rules.iter() {
@@ -211,18 +231,43 @@ impl RuleRegistry {
             if !applicable {
                 continue;
             }
-            let verdict = rule.evaluate(ctx).unwrap_or_else(|e| {
-                let v = Violation::new(
-                    ctx.account.id,
-                    rule.id(),
-                    rule.name(),
-                    rule.kind(),
-                    ViolationSeverity::Warning,
-                    format!("rule evaluation error: {e}"),
-                    ctx.server_time.ts(),
-                );
-                RuleVerdict::Warn(v)
-            });
+            // P3.20: catch panics from buggy rules. A panic is converted
+            // to a Warn verdict so the process keeps running.
+            let verdict_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.evaluate(ctx)));
+            let verdict = match verdict_result {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    let v = Violation::new(
+                        ctx.account.id,
+                        rule.id(),
+                        rule.name(),
+                        rule.kind(),
+                        ViolationSeverity::Warning,
+                        format!("rule evaluation error: {e}"),
+                        ctx.server_time.ts(),
+                    ).with_tenant(ctx.account.tenant_id);
+                    RuleVerdict::Warn(v)
+                }
+                Err(panic_payload) => {
+                    let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic payload".to_string()
+                    };
+                    let v = Violation::new(
+                        ctx.account.id,
+                        rule.id(),
+                        rule.name(),
+                        rule.kind(),
+                        ViolationSeverity::Warning,
+                        format!("rule panicked (caught by registry, process preserved): {panic_msg}"),
+                        ctx.server_time.ts(),
+                    ).with_tenant(ctx.account.tenant_id);
+                    RuleVerdict::Warn(v)
+                }
+            };
             let mut report = RuleReport::new(rule.id(), rule.name(), verdict, scope);
             // P0-4: stamp each report with the rule's declared priority so
             // Decision::from_reports can pick the winner deterministically

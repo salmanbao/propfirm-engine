@@ -262,21 +262,37 @@ impl Account {
         Money(plan_dd.0 * self.peak_balance.0)
     }
 
+    /// **P1.6 fix**: Returns the *EOD-reset-trailing* maximum total drawdown
+    /// limit, i.e. `max_total_drawdown_pct * eod_reference_balance`. The
+    /// floor floats up *once per day* at the trading-session rollover —
+    /// distinct from continuous `Trailing` (which floats intraday).
+    ///
+    /// For now, the EOD reference is the same as `day_start_balance`
+    /// (the closing balance from the prior trading day, captured at
+    /// rollover). When P1.5 lands a real timezone-aware day model,
+    /// `eod_reference_balance` becomes a separately-tracked field
+    /// stamped at midnight in the plan's timezone.
+    pub fn max_dd_limit_eod_trailing(&self) -> Money {
+        let plan_dd = self.plan.max_total_drawdown_pct;
+        Money(plan_dd.0 * self.day_start_balance.0)
+    }
+
     /// **P0-1 fix**: Returns the maximum total drawdown limit appropriate
-    /// for this account's `max_loss_reference` setting (static or trailing).
-    /// Dispatches to [`max_dd_limit_static`](Self::max_dd_limit_static)
-    /// or [`max_dd_limit_trailing`](Self::max_dd_limit_trailing).
+    /// for this account's `max_loss_reference` setting (static, trailing,
+    /// or eod_trailing). Dispatches to the specific limit function.
     pub fn max_dd_limit(&self) -> Money {
         match self.plan.max_loss_reference {
             crate::config::plan::LossReference::Static => self.max_dd_limit_static(),
             crate::config::plan::LossReference::Trailing => self.max_dd_limit_trailing(),
+            crate::config::plan::LossReference::EodTrailing => self.max_dd_limit_eod_trailing(),
         }
     }
 
     /// **P0-1 fix**: Returns the current total drawdown measured against
     /// the *same reference* the limit is computed from, so the two are
     /// always consistent. When the plan uses `Static`, the drawdown is
-    /// measured from `initial_balance`; when `Trailing`, from `peak_balance`.
+    /// measured from `initial_balance`; when `Trailing`, from `peak_balance`;
+    /// when `EodTrailing`, from `day_start_balance` (prior day close).
     ///
     /// This is the function `MaxDrawdownRule` should call to compute
     /// `dd` *and* `limit` — they will always use the same reference point,
@@ -285,6 +301,7 @@ impl Account {
         let reference = match self.plan.max_loss_reference {
             crate::config::plan::LossReference::Static => self.initial_balance,
             crate::config::plan::LossReference::Trailing => self.peak_balance,
+            crate::config::plan::LossReference::EodTrailing => self.day_start_balance,
         };
         let current = if self.plan.drawdown_on_balance { self.balance } else { self.equity };
         Money((reference.0 - current.0).max(dec!(0)))

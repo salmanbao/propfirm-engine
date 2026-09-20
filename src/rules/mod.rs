@@ -5,3 +5,4 @@ pub mod registry;
 pub mod traits;
 pub mod outcome;
 pub mod evaluators;
+pub mod params;

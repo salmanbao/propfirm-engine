@@ -11,6 +11,12 @@
 //! — previously the limit was always `pct × initial_balance` while the dd
 //! was `peak_balance - balance`, which silently behaved like an undocumented
 //! trailing mode and would misfire against the FTMO-style static preset.
+//!
+//! **P0-D fix**: the rule now holds an optional [`RuleParams`] populated
+//! from a [`RuleEntry`](crate::rulepack::RuleEntry). When present, the
+//! rule reads its `value`/`basis`/`tolerance_cents`/`priority` from there
+//! instead of from `ctx.account.plan` — so a tenant editing the rule
+//! pack through the form actually changes the verdict.
 
 use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
@@ -18,9 +24,44 @@ use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict, ViolationBuilder};
+use crate::rules::params::{ParameterizedRule, RuleParams};
 
 #[derive(Debug, Clone, Default)]
-pub struct MaxDrawdownRule;
+pub struct MaxDrawdownRule {
+    /// **P0-D fix**: pack-derived parameters. When `Some`, the rule
+    /// reads its `value`/`basis`/`tolerance_cents`/`priority` from here
+    /// instead of from `ctx.account.plan`. When `None` (constructed via
+    /// `Default`), the rule falls back to plan-derived config —
+    /// backwards-compatible with the existing pipeline path.
+    pub params: Option<RuleParams>,
+}
+
+impl MaxDrawdownRule {
+    /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        MaxDrawdownRule { params: Some(RuleParams::from_entry(entry)) }
+    }
+
+    /// Effective drawdown pct — pack entry's value if set, else plan.
+    fn effective_pct(&self, ctx: &RuleContext) -> rust_decimal::Decimal {
+        if let Some(p) = &self.params {
+            if let Some(v) = p.value() {
+                return v;
+            }
+        }
+        ctx.account.plan.max_total_drawdown_pct.0
+    }
+
+    /// Effective loss reference — pack entry's basis if set, else plan's.
+    fn effective_basis(&self, ctx: &RuleContext) -> crate::config::plan::LossReference {
+        if let Some(p) = &self.params {
+            if let Some(b) = p.basis() {
+                return b;
+            }
+        }
+        ctx.account.plan.max_loss_reference
+    }
+}
 
 impl Rule for MaxDrawdownRule {
     fn id(&self) -> RuleId { RuleId::named("max_drawdown") }
@@ -28,39 +69,55 @@ impl Rule for MaxDrawdownRule {
     fn kind(&self) -> ViolationKind { ViolationKind::MaxDrawdown }
     fn scope(&self) -> EvaluationScope { EvaluationScope::OnTick }
     fn severity(&self) -> ViolationSeverity { ViolationSeverity::Hard }
-    /// Max drawdown is the most severe single-rule breach: it terminates
-    /// the account immediately with no grace period. We give it the
-    /// highest priority so it always wins when fired alongside another
-    /// rule on the same evaluation (P0-4 fix).
-    fn priority(&self) -> u32 { 1000 }
+    /// P0-D: pack entry's priority overrides default.
+    fn priority(&self) -> u32 {
+        self.params.as_ref().and_then(|p| p.priority()).unwrap_or(1000)
+    }
+    /// P0-D: pack entry's tolerance overrides default.
+    fn tolerance_cents(&self) -> i64 {
+        self.params.as_ref().and_then(|p| p.tolerance_cents()).unwrap_or(1)
+    }
 
     fn description(&self) -> &str {
         "Maximum cumulative drawdown permitted over the life of the account. \
-         Reference point (static vs trailing) is set by ChallengePlan::max_loss_reference \
-         so limit and drawdown are always measured against the same baseline."
+         Reference point (static vs trailing vs eod_trailing) is set by \
+         ChallengePlan::max_loss_reference or the rule-pack entry's basis \
+         field — so limit and drawdown are always measured against the \
+         same baseline."
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
-        ctx.account.plan.max_total_drawdown_pct.0 > dec!(0)
+        // P0-D: if the pack entry explicitly disabled this rule, honor it.
+        if let Some(p) = &self.params {
+            if !p.enabled { return false; }
+        }
+        // Otherwise: enabled iff there's a non-zero threshold to check
+        // (either from pack or plan).
+        self.effective_pct(ctx) > dec!(0)
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let plan_pct = ctx.account.plan.max_total_drawdown_pct;
-        if plan_pct.0 <= dec!(0) {
+        let plan_pct = self.effective_pct(ctx);
+        if plan_pct <= dec!(0) {
             return Ok(RuleVerdict::Pass);
         }
-        // P0-1 fix: both `limit` and `dd` use the same reference point.
-        let limit = ctx.account.max_dd_limit();
-        let dd = ctx.account.total_drawdown();
+        // P0-D + P1.6: compute the limit and drawdown against the
+        // *effective* basis (pack entry overrides plan; supports static,
+        // trailing, and eod_trailing). Both use the same reference.
+        let basis = self.effective_basis(ctx);
+        let reference = match basis {
+            crate::config::plan::LossReference::Static => ctx.account.initial_balance,
+            crate::config::plan::LossReference::Trailing => ctx.account.peak_balance,
+            crate::config::plan::LossReference::EodTrailing => ctx.account.day_start_balance,
+        };
+        let limit = Money(plan_pct * reference.0);
+        let current = if ctx.account.plan.drawdown_on_balance { ctx.account.balance } else { ctx.account.equity };
+        let dd = Money((reference.0 - current.0).max(dec!(0)));
+
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
-        // Breach is only triggered if dd > limit + tolerance.
         let tolerance = self.tolerance_money();
         if dd.0 > limit.0 + tolerance.0 {
-            // P1-5 fix: refuse to terminate on an *estimated* equity. If
-            // the broker didn't report equity on this tick, the breach
-            // verdict is downgraded to a Warning so ops gets paged but
-            // the account isn't terminated on a number that might be a
-            // shadow-ledger drift.
+            // P1-5 fix: refuse to terminate on an *estimated* equity.
             let severity = if ctx.equity_is_broker_reported() {
                 ViolationSeverity::Liquidate
             } else {
@@ -73,8 +130,8 @@ impl Rule for MaxDrawdownRule {
                 format!(
                     "Maximum drawdown breach{} ({:?} mode): {dd} > {limit}+{tolerance} ({}%)",
                     if ctx.equity_is_broker_reported() { "" } else { " [ESTIMATED — not terminating]" },
-                    ctx.account.plan.max_loss_reference,
-                    plan_pct.0 * dec!(100)
+                    basis,
+                    plan_pct * dec!(100)
                 ),
             );
             v = v.with_breach(dd, limit);
@@ -83,9 +140,11 @@ impl Rule for MaxDrawdownRule {
                 _ => RuleVerdict::Warn(v),
             });
         }
-        // P1-13: warn at 80% utilization. Emitted as an `EarlyWarning`
-        // (ops-paged) — distinct from a trader-facing `Warn`.
-        let warn = limit.0 * dec!(0.8);
+        // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
+        let warn_pct = self.params.as_ref()
+            .and_then(|p| p.early_warning_pct())
+            .unwrap_or(dec!(0.8));
+        let warn = limit.0 * warn_pct;
         if dd.0 >= warn {
             let mut v = build_violation(
                 self,
@@ -94,13 +153,19 @@ impl Rule for MaxDrawdownRule {
                 format!(
                     "Maximum drawdown at {dd}/{limit} ({}%) [{:?}]",
                     (dd.0 / limit.0 * dec!(100)).round_dp(2),
-                    ctx.account.plan.max_loss_reference,
+                    basis,
                 ),
             );
             v = v.with_breach(dd, limit);
             return Ok(RuleVerdict::EarlyWarning(v));
         }
         Ok(RuleVerdict::Pass)
+    }
+}
+
+impl ParameterizedRule for MaxDrawdownRule {
+    fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        MaxDrawdownRule::from_entry(entry)
     }
 }
 
