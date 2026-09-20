@@ -42,6 +42,12 @@ pub enum AccountStatus {
     Pending,
     /// Evaluation in progress.
     Active,
+    /// Profit target has been reached but `min_trading_days` not yet met
+    /// (per the binding spec's `target_hit_pending` state). The account
+    /// is still tradable, but cannot be promoted to [`AccountStatus::Passed`]
+    /// until the day count is satisfied. Once set, `target_reached_at` is
+    /// *never cleared* even if equity subsequently dips below target.
+    TargetHitPending,
     /// Evaluation passed – awaiting upgrade.
     Passed,
     /// Evaluation failed.
@@ -52,14 +58,34 @@ pub enum AccountStatus {
     PayoutPending,
     /// Closed by firm.
     Closed,
+    /// Account was terminated via emergency stop (ops/compliance action).
+    /// Transitions to [`AccountStatus::Failed`] only via an explicit,
+    /// audited override.
+    EmergencyStopped,
 }
 
 impl AccountStatus {
     pub fn is_active(self) -> bool {
-        matches!(self, AccountStatus::Active | AccountStatus::Funded)
+        matches!(self,
+            AccountStatus::Active
+            | AccountStatus::Funded
+            | AccountStatus::TargetHitPending
+        )
     }
     pub fn is_terminal(self) -> bool {
-        matches!(self, AccountStatus::Passed | AccountStatus::Failed | AccountStatus::Closed)
+        matches!(self,
+            AccountStatus::Passed
+            | AccountStatus::Failed
+            | AccountStatus::Closed
+            | AccountStatus::EmergencyStopped
+        )
+    }
+    /// Returns true if this status was reached as a result of a breach
+    /// (vs. a positive outcome).
+    pub fn is_breach_terminal(self) -> bool {
+        matches!(self,
+            AccountStatus::Failed | AccountStatus::EmergencyStopped
+        )
     }
 }
 
@@ -71,6 +97,12 @@ pub struct Account {
     pub status: AccountStatus,
     pub challenge_id: ChallengeId,
     pub plan: ChallengePlan,
+
+    /// **P1-9 fix**: tenant this account belongs to. Required for the
+    /// PFaaS platform's correctness property: no cross-tenant data
+    /// leakage, even in the same database table. Filtered on every
+    /// store read.
+    pub tenant_id: crate::tenant::TenantId,
 
     /// Initial deposit (starting balance).
     pub initial_balance: Money,
@@ -107,6 +139,30 @@ pub struct Account {
     pub largest_day_profit: Money,
     /// Smallest single-day loss observed so far.
     pub largest_day_loss: Money,
+
+    /// **P0-2 fix**: Timestamp the profit target was first reached, or
+    /// `None` if not yet. Once set, *never cleared* — even if equity
+    /// subsequently dips below target before `min_trading_days` is met.
+    /// The account stays in [`AccountStatus::TargetHitPending`] until
+    /// the day count is satisfied, at which point it transitions to
+    /// [`AccountStatus::Passed`].
+    pub target_reached_at: Option<Timestamp>,
+    /// Day index (0-based) on which the profit target was first reached.
+    /// Used together with `target_reached_at` for the
+    /// `target_hit_pending` → `passed` state transition.
+    pub target_reached_on_day: Option<u32>,
+
+    /// Optimistic-concurrency version (P1-8 fix). Bumped on every
+    /// successful write. The store rejects `put_with_version(v)` calls
+    /// where `v` does not match the persisted value, returning a
+    /// [`crate::core::Error::StateConflict`].
+    pub version: u64,
+
+    /// Last-evaluated tick timestamp (P1-14 fix). Used by the
+    /// out-of-order-tick guard: any tick with `ts <= last_tick_ts` is
+    /// rejected before evaluation runs, preventing replay/reordering
+    /// from silently producing a different verdict.
+    pub last_tick_ts: Option<Timestamp>,
 }
 
 impl Account {
@@ -123,6 +179,7 @@ impl Account {
             status: AccountStatus::Pending,
             challenge_id: plan.id,
             plan,
+            tenant_id: crate::tenant::TenantId::new(),
             initial_balance: initial,
             balance: initial,
             equity: initial,
@@ -139,7 +196,19 @@ impl Account {
             total_swaps: Money::ZERO,
             largest_day_profit: Money::ZERO,
             largest_day_loss: Money::ZERO,
+            target_reached_at: None,
+            target_reached_on_day: None,
+            version: 0,
+            last_tick_ts: None,
         }
+    }
+
+    /// **P1-9 fix**: sets the tenant id on the account. Call this
+    /// immediately after `Account::new()` — every account MUST have
+    /// a tenant id before being persisted.
+    pub fn with_tenant(mut self, tenant_id: crate::tenant::TenantId) -> Self {
+        self.tenant_id = tenant_id;
+        self
     }
 
     /// Marks the account as active and stamps the start time.
@@ -159,16 +228,73 @@ impl Account {
     }
 
     /// Returns the maximum daily drawdown as a money amount, derived from
-    /// the day-start balance.
+    /// the day-start balance. Daily drawdown is *always* a day-anchored
+    /// measure (resets at rollover); the static-vs-trailing distinction
+    /// only applies to the *total* drawdown rule, not the daily one.
     pub fn daily_dd_limit(&self) -> Money {
         let plan_dd = self.plan.max_daily_drawdown_pct;
         Money(plan_dd.0 * self.day_start_balance.0)
     }
 
-    /// Returns the maximum total drawdown as a money amount.
-    pub fn max_dd_limit(&self) -> Money {
+    /// **P0-1 fix**: Returns the *static* maximum total drawdown limit,
+    /// i.e. `max_total_drawdown_pct * initial_balance`. The floor never
+    /// moves regardless of how high the account grows.
+    ///
+    /// For an account with $100k initial and a 10% static max loss, this
+    /// returns $10k *forever* — the trader can grow to $200k and pull back
+    /// to $190k without ever tripping this rule, because $190k is still
+    /// $10k above the static $90k floor.
+    pub fn max_dd_limit_static(&self) -> Money {
         let plan_dd = self.plan.max_total_drawdown_pct;
         Money(plan_dd.0 * self.initial_balance.0)
+    }
+
+    /// **P0-1 fix**: Returns the *trailing* maximum total drawdown limit,
+    /// i.e. `max_total_drawdown_pct * peak_balance`. The floor floats up
+    /// as the account grows.
+    ///
+    /// This is what `TrailingDrawdownRule` already computes internally;
+    /// `MaxDrawdownRule` should call this when `plan.max_loss_reference ==
+    /// Trailing`, and call [`max_dd_limit_static`](Self::max_dd_limit_static)
+    /// when `== Static`.
+    pub fn max_dd_limit_trailing(&self) -> Money {
+        let plan_dd = self.plan.max_total_drawdown_pct;
+        Money(plan_dd.0 * self.peak_balance.0)
+    }
+
+    /// **P0-1 fix**: Returns the maximum total drawdown limit appropriate
+    /// for this account's `max_loss_reference` setting (static or trailing).
+    /// Dispatches to [`max_dd_limit_static`](Self::max_dd_limit_static)
+    /// or [`max_dd_limit_trailing`](Self::max_dd_limit_trailing).
+    pub fn max_dd_limit(&self) -> Money {
+        match self.plan.max_loss_reference {
+            crate::config::plan::LossReference::Static => self.max_dd_limit_static(),
+            crate::config::plan::LossReference::Trailing => self.max_dd_limit_trailing(),
+        }
+    }
+
+    /// **P0-1 fix**: Returns the current total drawdown measured against
+    /// the *same reference* the limit is computed from, so the two are
+    /// always consistent. When the plan uses `Static`, the drawdown is
+    /// measured from `initial_balance`; when `Trailing`, from `peak_balance`.
+    ///
+    /// This is the function `MaxDrawdownRule` should call to compute
+    /// `dd` *and* `limit` — they will always use the same reference point,
+    /// which is the whole point of the P0-1 fix.
+    pub fn total_drawdown(&self) -> Money {
+        let reference = match self.plan.max_loss_reference {
+            crate::config::plan::LossReference::Static => self.initial_balance,
+            crate::config::plan::LossReference::Trailing => self.peak_balance,
+        };
+        let current = if self.plan.drawdown_on_balance { self.balance } else { self.equity };
+        Money((reference.0 - current.0).max(dec!(0)))
+    }
+
+    /// **Backward-compat helper**: same as `total_drawdown()` when in
+    /// trailing mode, i.e. the old behavior pre-P0-1. Prefer
+    /// [`total_drawdown`](Self::total_drawdown) in new code.
+    pub fn balance_drawdown(&self) -> Money {
+        Money((self.peak_balance.0 - self.balance.0).max(dec!(0)))
     }
 
     /// Returns the profit target as a money amount.
@@ -182,14 +308,13 @@ impl Account {
         Money((self.peak_equity.0 - self.equity.0).max(dec!(0)))
     }
 
-    /// Current drawdown from peak balance.
-    pub fn balance_drawdown(&self) -> Money {
-        Money((self.peak_balance.0 - self.balance.0).max(dec!(0)))
-    }
-
-    /// Current daily drawdown (from day start).
+    /// Current daily drawdown (from day start). The basis (balance or
+    /// equity) is controlled by `plan.drawdown_on_balance`; defaults to
+    /// equity-based (the binding spec's `daily_pnl_cents = equity_now -
+    /// day_start_equity_cents`).
     pub fn daily_drawdown(&self) -> Money {
-        Money((self.day_start_balance.0 - self.equity.0).max(dec!(0)))
+        let current = if self.plan.drawdown_on_balance { self.balance } else { self.equity };
+        Money((self.day_start_balance.0 - current.0).max(dec!(0)))
     }
 
     /// Net profit (current balance - initial balance).
@@ -211,13 +336,31 @@ impl Account {
         Pct(self.daily_drawdown().0 / limit.0)
     }
 
-    /// Returns the total drawdown utilization as a percentage (0..1).
+    /// Returns the total drawdown utilization as a percentage (0..1),
+    /// measured against the *same* reference (static or trailing) used
+    /// to compute the limit. (P0-1 fix.)
     pub fn max_dd_utilization(&self) -> Pct {
         let limit = self.max_dd_limit();
         if limit.0.is_zero() {
             return Pct::ZERO;
         }
-        Pct(self.balance_drawdown().0 / limit.0)
+        Pct(self.total_drawdown().0 / limit.0)
+    }
+
+    /// **P0-2 helper**: returns true if the profit target has been hit
+    /// and is now in pending state (recorded via `target_reached_at`).
+    /// This is *sticky* — once true, it stays true even if equity dips
+    /// back below target before `min_trading_days` is satisfied.
+    pub fn target_pending(&self) -> bool {
+        self.target_reached_at.is_some()
+    }
+
+    /// **P0-2 helper**: returns true if the profit target has been hit
+    /// AND the minimum trading days requirement has been met — i.e. the
+    /// account is eligible to be promoted to `Passed`.
+    pub fn target_fully_satisfied(&self) -> bool {
+        self.target_reached_at.is_some()
+            && self.active_trading_days >= self.plan.min_trading_days
     }
 }
 
@@ -246,6 +389,15 @@ pub struct AccountSnapshot {
     pub started_at: Option<Timestamp>,
     pub deadline: Option<Timestamp>,
     pub challenge_id: ChallengeId,
+    /// **P0-2 fix**: timestamp the profit target was first reached
+    /// (sticky; never cleared once set). Null until target is hit.
+    pub target_reached_at: Option<Timestamp>,
+    /// **P0-1 fix**: the loss reference mode in effect (static or trailing).
+    pub max_loss_reference: crate::config::plan::LossReference,
+    /// **P1-8 fix**: optimistic-concurrency version.
+    pub version: u64,
+    /// **P1-9 fix**: tenant id this account belongs to.
+    pub tenant_id: crate::tenant::TenantId,
 }
 
 impl From<&Account> for AccountSnapshot {
@@ -262,7 +414,7 @@ impl From<&Account> for AccountSnapshot {
             day_start_balance: a.day_start_balance,
             net_profit: a.net_profit(),
             daily_drawdown: a.daily_drawdown(),
-            total_drawdown: a.balance_drawdown(),
+            total_drawdown: a.total_drawdown(),
             daily_dd_utilization: a.daily_dd_utilization(),
             max_dd_utilization: a.max_dd_utilization(),
             profit_target: a.profit_target(),
@@ -275,6 +427,10 @@ impl From<&Account> for AccountSnapshot {
             started_at: a.started_at,
             deadline: a.deadline,
             challenge_id: a.challenge_id,
+            target_reached_at: a.target_reached_at,
+            max_loss_reference: a.plan.max_loss_reference,
+            version: a.version,
+            tenant_id: a.tenant_id,
         }
     }
 }

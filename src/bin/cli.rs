@@ -55,12 +55,17 @@ fn main() -> anyhow::Result<()> {
     let result = pipeline.process(account.id, PipelineEvent::OrderSubmitted { order })?;
     println!("[Order] decision={:?} passed={} violations={}", result.snapshot.decision.kind, result.result.passed(), result.result.violations().len());
 
-    // 5. A tick comes in (positive move).
+    // 5. A broker-reported tick comes in (positive move). P1-5: the engine
+    //    does NOT recompute equity — it trusts the broker's number.
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: now },
     );
-    let result = pipeline.process(account.id, PipelineEvent::Tick { tick })?;
+    // In a real deployment this comes from the bridge/BRG module. Here we
+    // synthesize a broker-reported equity that matches our expected value.
+    let broker_equity = Money(dec!(10_200));
+    let broker_balance = Money(dec!(10_000));
+    let result = pipeline.process(account.id, PipelineEvent::Tick { tick, broker_equity, broker_balance })?;
     println!("[Tick] equity={} balance={} daily_dd={}/{}",
         result.snapshot.account.equity,
         result.snapshot.account.balance,

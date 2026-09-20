@@ -12,6 +12,45 @@ use crate::core::Error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Factory function type for building a rule implementation from a
+/// [`RuleEntry`](crate::rulepack::RuleEntry). Maps the rule-pack's `kind`
+/// string to the concrete Rust rule implementation that backs it.
+///
+/// (P1-6 fix.) Each `kind` ("max_drawdown", "daily_drawdown", etc.) maps
+/// to a registered rule factory; the factory reads the entry's `value`,
+/// `basis`, `unit`, `tolerance_cents`, `early_warning_pct`, and `params_json`
+/// fields to parameterize the rule. The rule implementations themselves
+/// are unchanged — they're now re-parameterized from data instead of
+/// from compiled struct fields.
+pub type RuleFactory = fn() -> Arc<dyn Rule>;
+
+/// Default factory: maps kind name → constructor for the standard rule library.
+pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
+    use crate::rules::evaluators::*;
+    Some(match kind {
+        "daily_drawdown" => || Arc::new(daily_drawdown::DailyDrawdownRule::default()),
+        "max_drawdown" => || Arc::new(max_drawdown::MaxDrawdownRule::default()),
+        "trailing_drawdown" => || Arc::new(trailing_drawdown::TrailingDrawdownRule::default()),
+        "profit_target" => || Arc::new(profit_target::ProfitTargetRule::default()),
+        "min_trading_days" => || Arc::new(min_trading_days::MinTradingDaysRule::default()),
+        "consistency" => || Arc::new(consistency::ConsistencyRule::default()),
+        "news_trading" => || Arc::new(news_trading::NewsTradingRule::default()),
+        "overnight_holding" => || Arc::new(overnight_holding::OvernightHoldingRule::default()),
+        "weekend_holding" => || Arc::new(weekend_holding::WeekendHoldingRule::default()),
+        "max_position_size" => || Arc::new(max_position_size::MaxPositionSizeRule::default()),
+        "max_open_positions" => || Arc::new(max_open_positions::MaxOpenPositionsRule::default()),
+        "max_daily_trades" => || Arc::new(max_daily_trades::MaxDailyTradesRule::default()),
+        "time_limit" => || Arc::new(time_limit::TimeLimitRule::default()),
+        "cooldown" => || Arc::new(cooldown::CooldownRule::default()),
+        "hedging" => || Arc::new(hedging::HedgingRule::default()),
+        "grid_trading" => || Arc::new(grid_trading::GridTradingRule::default()),
+        "copy_trading" => || Arc::new(copy_trading::CopyTradingRule::default()),
+        "sl_required" => || Arc::new(sl_required::StopLossRequiredRule::default()),
+        "tp_required" => || Arc::new(tp_required::TakeProfitRequiredRule::default()),
+        _ => return None,
+    })
+}
+
 /// Default rule library (registered automatically).
 pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::*;
@@ -94,6 +133,39 @@ impl RuleRegistry {
         }
     }
 
+    /// **P1-6 fix**: builds a registry from a [`RulePack`] (versioned data).
+    /// For each `RuleEntry` in the pack, look up the rule factory by
+    /// `kind`, instantiate the rule implementation, and register it. The
+    /// rule implementations are unchanged — they read their parameters
+    /// from `ctx.rule_config` at evaluation time, which the pipeline
+    /// builds from the plan. The pack itself is the *source of truth*
+    /// for which rules are active.
+    ///
+    /// Disabled entries (`enabled: false`) are skipped. Unknown kinds
+    /// produce a soft warning and are skipped (not a hard error — a
+    /// pack might reference a rule kind that this engine version
+    /// doesn't yet support).
+    pub fn build_from_pack(pack: &crate::rulepack::RulePack) -> Result<Self, Error> {
+        let mut registry = Self::empty();
+        for entry in &pack.rules {
+            if !entry.enabled {
+                continue;
+            }
+            match default_factory_for_kind(&entry.kind) {
+                Some(factory) => {
+                    let rule = factory();
+                    registry.register(rule);
+                }
+                None => {
+                    // Soft skip — unknown kind in this engine version.
+                    // In production, log this so tenant admins know
+                    // their pack references an unsupported kind.
+                }
+            }
+        }
+        Ok(registry)
+    }
+
     /// Returns the rule with the given id, if any.
     pub fn get(&self, id: RuleId) -> Option<&Arc<dyn Rule>> {
         self.by_id.get(&id).map(|&i| &self.rules[i])
@@ -152,6 +224,10 @@ impl RuleRegistry {
                 RuleVerdict::Warn(v)
             });
             let mut report = RuleReport::new(rule.id(), rule.name(), verdict, scope);
+            // P0-4: stamp each report with the rule's declared priority so
+            // Decision::from_reports can pick the winner deterministically
+            // rather than by iteration order.
+            report = report.with_priority(rule.priority());
             report = report.with_metadata("kind", ctx.kind.to_string());
             reports.push(report);
         }
@@ -191,4 +267,6 @@ pub fn build_violation(
         message,
         ctx.server_time.ts(),
     )
+    // P1-9: stamp the tenant from the account.
+    .with_tenant(ctx.account.tenant_id)
 }

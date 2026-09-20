@@ -92,6 +92,11 @@ pub mod persistence;
 pub mod events;
 pub mod notifications;
 pub mod reporting;
+pub mod tenant;
+pub mod override_engine;
+pub mod rulepack;
+pub mod pure;
+pub mod equity_input;
 
 #[cfg(feature = "server")]
 pub mod api;

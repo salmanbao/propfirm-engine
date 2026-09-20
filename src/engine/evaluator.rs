@@ -68,12 +68,29 @@ impl Evaluator {
         self.evaluate(&ctx)
     }
 
-    /// Convenience: evaluate a market tick.
+    /// Convenience: evaluate a market tick. The equity/balance on the
+    /// `account` are treated as broker-reported (P1-5) — only call this
+    /// helper when you're providing the broker's actual equity. For
+    /// estimate-only paths, use `evaluate_tick_estimated` instead.
     pub fn evaluate_tick(&self, account: &Account, tick: &Tick, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
         let mut ctx = RuleContext::for_tick(account.clone(), tick);
         ctx.open_positions = open_positions.to_vec();
         ctx.today_trades = today_trades.to_vec();
         ctx.recent_events = recent_events;
+        // P1-5: caller-provided account.equity is treated as broker-reported.
+        ctx = ctx.with_broker_equity(account.equity, account.balance);
+        self.evaluate(&ctx)
+    }
+
+    /// Convenience: evaluate a market tick where the equity is an
+    /// *estimate* (not broker-reported). Breach-capable rules will refuse
+    /// to terminate on this context (P1-5).
+    pub fn evaluate_tick_estimated(&self, account: &Account, tick: &Tick, open_positions: &[crate::core::position::Position], today_trades: &[Trade], recent_events: Vec<DomainEvent>) -> crate::Result<EvaluationResult> {
+        let mut ctx = RuleContext::for_tick(account.clone(), tick);
+        ctx.open_positions = open_positions.to_vec();
+        ctx.today_trades = today_trades.to_vec();
+        ctx.recent_events = recent_events;
+        ctx = ctx.with_estimated_equity(account.equity, account.balance);
         self.evaluate(&ctx)
     }
 

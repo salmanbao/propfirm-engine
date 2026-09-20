@@ -55,6 +55,9 @@ fn main() -> anyhow::Result<()> {
             propfirm::rules::traits::RuleVerdict::Warn(_) => "warn",
             propfirm::rules::traits::RuleVerdict::Fail(_) => "fail",
             propfirm::rules::traits::RuleVerdict::Liquidate(_) => "liquidate",
+            propfirm::rules::traits::RuleVerdict::TargetHit(_) => "target_hit",
+            propfirm::rules::traits::RuleVerdict::Emergency(_) => "emergency",
+            propfirm::rules::traits::RuleVerdict::EarlyWarning(_) => "early_warning",
             propfirm::rules::traits::RuleVerdict::Skip => "skip",
         });
     }

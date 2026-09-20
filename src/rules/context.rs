@@ -12,6 +12,7 @@ use crate::core::tick::Tick;
 use crate::core::trade::Trade;
 use crate::core::types::{Timestamp, ServerTime};
 use crate::config::rule_config::RuleConfig;
+use crate::equity_input::EquityInput;
 
 /// What triggered the evaluation. Determines which rules apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,6 +56,11 @@ pub struct RuleContext {
     pub server_time: ServerTime,
     pub kind: RuleContextKind,
     pub rule_config: RuleConfig,
+    /// **P1-5 fix**: tagged equity input — broker-reported or estimated.
+    /// Breach-capable rules call [`Self::equity_is_broker_reported`]
+    /// (or use `equity_input.broker_equity()`) to refuse termination
+    /// on an estimate.
+    pub equity_input: EquityInput,
 }
 
 impl RuleContext {
@@ -70,7 +76,33 @@ impl RuleContext {
             server_time: ServerTime::now(),
             kind: RuleContextKind::OnDemand,
             rule_config: RuleConfig::empty(),
+            equity_input: EquityInput::default(),
         }
+    }
+
+    /// **P1-5 fix**: returns true only if the equity input on this context
+    /// is broker-reported. Breach-capable rules check this before emitting
+    /// `Fail`/`Liquidate` — if false, the rule must downgrade to `Warn`
+    /// at most (no termination on an estimate).
+    pub fn equity_is_broker_reported(&self) -> bool {
+        self.equity_input.is_broker_reported()
+    }
+
+    /// **P1-5 fix**: builder-style setter to mark the equity input as
+    /// broker-reported. Called by the pipeline when the tick event
+    /// carries the broker's own equity number (the only valid source
+    /// for breach decisions).
+    pub fn with_broker_equity(mut self, equity: crate::core::types::Money, balance: crate::core::types::Money) -> Self {
+        self.equity_input = EquityInput::BrokerReported { equity, balance };
+        self
+    }
+
+    /// **P1-5 fix**: builder-style setter to mark the equity input as
+    /// engine-derived (estimated). The default; breach-capable rules will
+    /// refuse to terminate on this.
+    pub fn with_estimated_equity(mut self, equity: crate::core::types::Money, balance: crate::core::types::Money) -> Self {
+        self.equity_input = EquityInput::Estimated { equity, balance };
+        self
     }
 
     pub fn for_open_order(account: Account, order: &Order) -> Self {

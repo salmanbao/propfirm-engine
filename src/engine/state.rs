@@ -51,6 +51,16 @@ impl AccountState {
         self
     }
 
+    /// **P1-5 fix**: updates the broker-reported balance. Only called
+    /// from the broker-is-truth tick path; never derived by the engine.
+    pub fn update_balance(mut self, balance: Money) -> Self {
+        self.account.balance = balance;
+        if balance.0 > self.account.peak_balance.0 {
+            self.account.peak_balance = balance;
+        }
+        self
+    }
+
     /// Rolls over a new trading day. Resets today_realized_pnl, updates
     /// day_start_balance to the current balance, bumps day index, and
     /// increments active_trading_days if the previous day had any trades.
@@ -89,6 +99,49 @@ impl AccountState {
             _ => Err(Error::InvalidState(format!(
                 "invalid phase transition: {:?} -> {:?}",
                 from, to
+            ))),
+        }
+    }
+
+    /// **P0-2 fix**: stamps `target_reached_at` on the account. Idempotent —
+    /// if the target was already reached, this is a no-op. Once set, the
+    /// timestamp is *never cleared*, even if equity subsequently dips
+    /// below target before `min_trading_days` is satisfied. Transitions
+    /// the account status to `TargetHitPending`.
+    pub fn mark_target_reached(mut self, at: Timestamp) -> Self {
+        if self.account.target_reached_at.is_none() {
+            self.account.target_reached_at = Some(at);
+            self.account.target_reached_on_day = Some(self.account.trading_day_index);
+            if self.account.status == crate::core::account::AccountStatus::Active {
+                self.account.status = crate::core::account::AccountStatus::TargetHitPending;
+            }
+        }
+        self
+    }
+
+    /// **P1-12 fix**: marks the account as emergency-stopped. Only valid
+    /// from active/pending states. Once stopped, the account can only be
+    /// restored via an explicit, audited [`Override`] record (P1-11).
+    pub fn emergency_stop(mut self, reason: &str, actor_id: &str, at: Timestamp) -> Self {
+        let _ = (reason, actor_id, at);
+        self.account.status = crate::core::account::AccountStatus::EmergencyStopped;
+        self
+    }
+
+    /// **P1-11 fix**: clears a breach via an explicit override. Only valid
+    /// from `Failed` or `EmergencyStopped` terminal states. The override
+    /// itself is part of the permanent record; this method just transitions
+    /// the account back to `Active`. The `Override` record is created by
+    /// the caller and persisted to the event log alongside this transition.
+    pub fn clear_breach(mut self, _override: &crate::override_engine::Override) -> Result<Self, Error> {
+        use crate::core::account::AccountStatus::*;
+        match self.account.status {
+            Failed | EmergencyStopped => {
+                self.account.status = Active;
+                Ok(self)
+            }
+            other => Err(Error::invalid_state(format!(
+                "cannot clear breach from status {other:?} — only Failed/EmergencyStopped are clearable"
             ))),
         }
     }

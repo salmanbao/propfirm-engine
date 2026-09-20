@@ -10,7 +10,7 @@ use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::registry::build_violation;
-use crate::rules::traits::{Rule, RuleVerdict};
+use crate::rules::traits::{Rule, RuleVerdict, ViolationBuilder};
 
 /// Maximum daily drawdown rule.
 #[derive(Debug, Clone, Default)]
@@ -38,20 +38,32 @@ impl Rule for DailyDrawdownRule {
         }
         let limit = ctx.account.daily_dd_limit();
         let dd = ctx.account.daily_drawdown();
-        if dd.0 > limit.0 {
+        // P2 fix: tolerance to absorb broker rounding noise at the boundary.
+        let tolerance = self.tolerance_money();
+        if dd.0 > limit.0 + tolerance.0 {
+            // P1-5 fix: refuse to terminate on estimated equity.
+            let severity = if ctx.equity_is_broker_reported() {
+                ViolationSeverity::Liquidate
+            } else {
+                ViolationSeverity::Warning
+            };
             let mut v = build_violation(
                 self,
                 ctx,
-                ViolationSeverity::Liquidate,
+                severity,
                 format!(
-                    "Daily drawdown breached: {dd} > {limit} ({}%)",
+                    "Daily drawdown breach{}: {dd} > {limit}+{tolerance} ({}%)",
+                    if ctx.equity_is_broker_reported() { "" } else { " [ESTIMATED — not terminating]" },
                     plan_pct.0 * rust_decimal::Decimal::ONE_HUNDRED
                 ),
             );
             v = v.with_breach(dd, limit);
-            return Ok(RuleVerdict::Liquidate(v));
+            return Ok(match severity {
+                ViolationSeverity::Liquidate => RuleVerdict::Liquidate(v),
+                _ => RuleVerdict::Warn(v),
+            });
         }
-        // Warn at 80% utilization
+        // P1-13: warn at 80% utilization (EarlyWarning — ops-paged).
         let warn_threshold = limit.0 * rust_decimal::Decimal::new(8, 1); // 0.8
         if dd.0 >= warn_threshold {
             let mut v = build_violation(
@@ -66,7 +78,7 @@ impl Rule for DailyDrawdownRule {
                 ),
             );
             v = v.with_breach(dd, limit);
-            return Ok(RuleVerdict::Warn(v));
+            return Ok(RuleVerdict::EarlyWarning(v));
         }
         Ok(RuleVerdict::Pass)
     }

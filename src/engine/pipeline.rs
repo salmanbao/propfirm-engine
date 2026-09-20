@@ -16,9 +16,15 @@ use crate::engine::decision::{Decision, DecisionKind};
 use crate::engine::evaluator::Evaluator;
 use crate::engine::snapshot::Snapshot;
 use crate::engine::state::{equity_after_tick, AccountState};
+use crate::equity_input::EquityInput;
 use crate::events::store::EventStore;
 use crate::notifications::traits::Notifier;
 use crate::persistence::traits::AccountStore;
+
+/// **P1-14 fix**: a tick older than this many minutes from wall-clock "now"
+/// is rejected before evaluation runs, regardless of whether it would have
+/// produced a breach. The binding spec reference value is 10 minutes.
+pub const STALE_TICK_THRESHOLD_MINUTES: i64 = 10;
 
 /// Inputs to the pipeline.
 #[derive(Debug, Clone)]
@@ -29,14 +35,41 @@ pub enum PipelineEvent {
     OrderSubmitted { order: Order },
     /// A trade has been filled (post-trade state update).
     TradeFilled { trade: Trade },
-    /// A market tick arrived.
-    Tick { tick: Tick },
+    /// **P1-5 fix**: a market tick arrived, carrying the **broker-reported**
+    /// equity/balance (the only values that can drive a `Fail`/`Liquidate`
+    /// verdict). The engine does NOT recompute equity from positions + quote.
+    /// If only a quote is available (no broker equity), use
+    /// [`PipelineEvent::TickEstimated`] instead — breach-capable rules will
+    /// downgrade their verdicts to `Warn` at most.
+    Tick {
+        tick: Tick,
+        /// Broker-reported equity (balance + unrealized P&L per the broker).
+        broker_equity: crate::core::types::Money,
+        /// Broker-reported balance (cash, no floating P&L).
+        broker_balance: crate::core::types::Money,
+    },
+    /// **P1-5 fix**: a market tick arrived but the broker did not report
+    /// equity on this tick (e.g. an interim quote between sync windows).
+    /// The engine estimates equity from positions + quote, but breach-capable
+    /// rules will refuse to terminate on the estimate.
+    TickEstimated { tick: Tick },
     /// New trading day rollover.
     DayRollover { had_trades_today: bool },
     /// Manual end-of-day evaluation.
     EndOfDay,
     /// Manual on-demand evaluation.
     OnDemand,
+    /// **P1-12 fix**: emergency stop. Short-circuits normal rule evaluation
+    /// and forces `DecisionKind::Emergency` with full audit metadata
+    /// (reason + actor_id). Used for disaster-response scenarios — e.g.
+    /// a broker feed is clearly corrupted and every account needs to
+    /// freeze immediately.
+    EmergencyStop { reason: String, actor_id: String, at: Timestamp },
+    /// **P1-11 fix**: manual override clearing a false-positive breach.
+    /// Reverts the account from `Failed`/`EmergencyStopped` back to
+    /// `Active`. The original violation stays in the audit log; the
+    /// override is recorded alongside it as the rebuttal.
+    OverrideBreach { override_record: crate::override_engine::Override },
 }
 
 /// The result of processing a pipeline event: snapshot + emitted events + rule-evaluation result.
@@ -95,10 +128,61 @@ where
         let ctx = self.build_context(new_state.account.clone(), ctx_kind, &ev, &open_positions, &today_trades, recent_events);
         // Evaluate rules
         let result = self.evaluator.evaluate(&ctx)?;
+        // P0-2: post-evaluation state update. If ProfitTargetRule emitted
+        // TargetHit (first time target was reached), stamp
+        // target_reached_at on the account and transition to
+        // TargetHitPending. If target was already reached and min trading
+        // days is now satisfied, promote to Passed.
+        let mut final_state = new_state;
+        if result.decision.is_target_hit() {
+            final_state = final_state.mark_target_reached(ctx.server_time.ts());
+            events.push(DomainEvent::new(
+                account_id,
+                DomainEventKind::AccountStatusChanged {
+                    from: crate::core::account::AccountStatus::Active,
+                    to: crate::core::account::AccountStatus::TargetHitPending,
+                },
+                ctx.server_time.ts(),
+            ));
+        }
+        // Promote TargetHitPending → Passed when min trading days met.
+        if final_state.account.target_reached_at.is_some()
+            && final_state.account.status == crate::core::account::AccountStatus::TargetHitPending
+            && final_state.account.active_trading_days >= final_state.account.plan.min_trading_days
+        {
+            final_state.account.status = crate::core::account::AccountStatus::Passed;
+            events.push(DomainEvent::new(
+                account_id,
+                DomainEventKind::AccountStatusChanged {
+                    from: crate::core::account::AccountStatus::TargetHitPending,
+                    to: crate::core::account::AccountStatus::Passed,
+                },
+                ctx.server_time.ts(),
+            ));
+        }
+        // Apply decision-driven status change (breach → Failed, emergency → EmergencyStopped).
+        if let Some(target_status) = result.decision.account_status_target() {
+            let from = final_state.account.status;
+            final_state.account.status = target_status;
+            events.push(DomainEvent::new(
+                account_id,
+                DomainEventKind::AccountStatusChanged { from, to: target_status },
+                ctx.server_time.ts(),
+            ));
+        }
+        // P1-8: bump optimistic-concurrency version on every successful write.
+        final_state.account.version = final_state.account.version.wrapping_add(1);
+        // P1-14: stamp last_tick_ts if this was a tick event (broker-reported or estimated).
+        match &ev {
+            PipelineEvent::Tick { tick, .. } | PipelineEvent::TickEstimated { tick } => {
+                final_state.account.last_tick_ts = Some(tick.quote.ts);
+            }
+            _ => {}
+        }
         // Snapshot
-        let snap = Snapshot::new(&new_state.account, result.decision.clone());
+        let snap = Snapshot::new(&final_state.account, result.decision.clone());
         // Persist updated account
-        self.store.put(new_state.account.clone())?;
+        self.store.put(final_state.account.clone())?;
         // Emit decision event
         let _decision_event = self.emit_decision_event(account_id, &result.decision, &mut events);
         // Append events
@@ -145,7 +229,45 @@ where
                 ));
                 Ok((new_state, OnTradeFill, open_positions, today_trades, recent_events))
             }
-            PipelineEvent::Tick { tick } => {
+            PipelineEvent::Tick { tick, broker_equity, broker_balance } => {
+                // P1-14: stale-tick guard — skip evaluation if tick is older
+                // than 10 minutes from wall-clock "now". A stale equity value
+                // must never drive a breach decision.
+                let now = chrono::Utc::now();
+                let staleness = now - tick.quote.ts;
+                if staleness.num_minutes() > STALE_TICK_THRESHOLD_MINUTES {
+                    return Err(crate::Error::TickRejected(format!(
+                        "tick ts {} is {} minutes old (threshold {}m) — refusing to evaluate stale equity",
+                        tick.quote.ts, staleness.num_minutes(), STALE_TICK_THRESHOLD_MINUTES
+                    )));
+                }
+                // P1-14: out-of-order-tick guard — skip if older than the
+                // last-evaluated tick for this account (replay protection).
+                if let Some(last_ts) = state.account.last_tick_ts {
+                    if tick.quote.ts <= last_ts {
+                        return Err(crate::Error::TickRejected(format!(
+                            "tick ts {} is not newer than last-evaluated ts {} — refusing to evaluate out-of-order tick",
+                            tick.quote.ts, last_ts
+                        )));
+                    }
+                }
+                // P1-5: use broker-reported equity/balance directly.
+                // The engine does NOT recompute equity.
+                let new_state = state
+                    .update_equity(*broker_equity)
+                    .update_balance(*broker_balance);
+                events.push(DomainEvent::new(
+                    new_state.account.id,
+                    DomainEventKind::TickEvaluated { equity: *broker_equity },
+                    tick.quote.ts,
+                ));
+                Ok((new_state, OnTick, open_positions, today_trades, recent_events))
+            }
+            PipelineEvent::TickEstimated { tick } => {
+                // P1-5: estimate-only path. The engine computes equity
+                // from positions + quote for display purposes only; breach
+                // rules will see `EquityInput::Estimated` on the context
+                // and refuse to terminate.
                 let equity = equity_after_tick(state.account.balance, &open_positions, &tick.quote);
                 let new_state = state.update_equity(equity);
                 events.push(DomainEvent::new(
@@ -166,6 +288,39 @@ where
             }
             PipelineEvent::EndOfDay => Ok((state, OnEndOfDay, open_positions, today_trades, recent_events)),
             PipelineEvent::OnDemand => Ok((state, OnDemand, open_positions, today_trades, recent_events)),
+            // P1-12: emergency stop short-circuits state transition;
+            // the actual `Emergency` verdict is produced in `process()`
+            // after this function returns. Here we just stamp the
+            // emergency-stop status on the account.
+            PipelineEvent::EmergencyStop { reason, actor_id, at } => {
+                let new_state = state.emergency_stop(reason, actor_id, *at);
+                events.push(DomainEvent::new(
+                    new_state.account.id,
+                    DomainEventKind::AccountStatusChanged {
+                        from: crate::core::account::AccountStatus::Active,
+                        to: crate::core::account::AccountStatus::EmergencyStopped,
+                    },
+                    *at,
+                ));
+                Ok((new_state, OnDemand, open_positions, today_trades, recent_events))
+            }
+            // P1-11: override-breach reverts the account from
+            // Failed/EmergencyStopped back to Active. The original
+            // violation stays in the audit log; this just transitions
+            // the state and records the override.
+            PipelineEvent::OverrideBreach { override_record } => {
+                override_record.validate()?;
+                let new_state = state.clear_breach(override_record)?;
+                events.push(DomainEvent::new(
+                    new_state.account.id,
+                    DomainEventKind::AccountStatusChanged {
+                        from: crate::core::account::AccountStatus::Failed,
+                        to: crate::core::account::AccountStatus::Active,
+                    },
+                    override_record.at,
+                ));
+                Ok((new_state, OnDemand, open_positions, today_trades, recent_events))
+            }
         }
     }
 
@@ -180,7 +335,18 @@ where
         match ev {
             PipelineEvent::OrderSubmitted { order } => { ctx.pending_order = Some(order.clone()); }
             PipelineEvent::TradeFilled { trade } => { ctx.latest_trade = Some(trade.clone()); }
-            PipelineEvent::Tick { tick } => { ctx.latest_tick = Some(tick.clone()); }
+            // P1-5: broker-is-truth equity input — tag the context so
+            // breach-capable rules know they CAN terminate.
+            PipelineEvent::Tick { tick, broker_equity, broker_balance } => {
+                ctx.latest_tick = Some(tick.clone());
+                ctx.equity_input = EquityInput::BrokerReported { equity: *broker_equity, balance: *broker_balance };
+            }
+            // P1-5: estimate-only path — breach-capable rules will refuse
+            // to terminate on this context.
+            PipelineEvent::TickEstimated { tick } => {
+                ctx.latest_tick = Some(tick.clone());
+                ctx.equity_input = EquityInput::Estimated { equity: ctx.account.equity, balance: ctx.account.balance };
+            }
             _ => {}
         }
         ctx

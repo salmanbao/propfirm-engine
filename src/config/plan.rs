@@ -27,6 +27,59 @@ impl std::fmt::Display for ChallengePhase {
     }
 }
 
+/// Reference point used to compute the maximum *total* (lifetime) drawdown
+/// of an account. This maps directly to the binding spec's
+/// `mode: static | trailing` field in the rule-pack schema.
+///
+/// - [`LossReference::Static`]: drawdown = `initial_balance - current`
+///   (the floor never moves; if your $100k account drops below $90k at
+///   any time, you've breached a 10% static limit, even if you grew to
+///   $105k first and pulled back to $95k).
+/// - [`LossReference::Trailing`]: drawdown = `peak_balance - current`
+///   (the floor floats up as the account grows; this is what
+///   [`TrailingDrawdownRule`](crate::rules::evaluators::trailing_drawdown::TrailingDrawdownRule)
+///   already implements).
+///
+/// **Important**: [`MaxDrawdownRule`](crate::rules::evaluators::max_drawdown::MaxDrawdownRule)
+/// reads this field to decide which reference to use. Plans that do not
+/// set it explicitly default to `Trailing` for backward compatibility —
+/// but every preset in [`crate::config::presets`] sets it deliberately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LossReference {
+    /// Drawdown is measured from the initial deposit; the floor never
+    /// moves. This is the mode most V1 phase-1/phase-2 challenges use for
+    /// the *max total loss* rule (as opposed to a trailing max loss).
+    Static,
+    /// Drawdown is measured from the high-water mark (peak) of
+    /// balance/equity. The floor floats up as the account grows. This is
+    /// the default for backward compatibility with code written before
+    /// the distinction was introduced.
+    #[default]
+    Trailing,
+}
+
+impl std::fmt::Display for LossReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LossReference::Static => write!(f, "static"),
+            LossReference::Trailing => write!(f, "trailing"),
+        }
+    }
+}
+
+impl std::str::FromStr for LossReference {
+    type Err = crate::core::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "static" => Ok(LossReference::Static),
+            "trailing" => Ok(LossReference::Trailing),
+            other => Err(crate::core::Error::invalid_config(format!(
+                "unknown loss reference '{other}' (expected 'static' or 'trailing')"
+            ))),
+        }
+    }
+}
+
 /// Metadata about the plan (firm name, version, currency).
 #[derive(Debug, Clone)]
 pub struct PlanMeta {
@@ -64,6 +117,12 @@ pub struct ChallengePlan {
     pub max_daily_drawdown_pct: Pct,
     /// Maximum total drawdown as a percentage (e.g. 0.10 = 10%).
     pub max_total_drawdown_pct: Pct,
+    /// **Reference point** used by [`MaxDrawdownRule`](crate::rules::evaluators::max_drawdown::MaxDrawdownRule)
+    /// to compute the maximum total drawdown: `Static` measures from
+    /// `initial_balance` (the floor never moves), `Trailing` measures
+    /// from `peak_balance` (the floor floats up). Maps to the binding
+    /// spec's `mode: static | trailing` rule-pack field.
+    pub max_loss_reference: LossReference,
     /// Whether drawdown is computed on balance (true) or equity (false).
     pub drawdown_on_balance: bool,
     /// Whether trailing drawdown is enabled.
@@ -181,6 +240,13 @@ impl ChallengePlan {
         self
     }
 
+    /// Builder-style setter for the maximum-loss reference mode
+    /// (static vs trailing). See [`LossReference`] for semantics.
+    pub fn with_loss_reference(mut self, mode: LossReference) -> Self {
+        self.max_loss_reference = mode;
+        self
+    }
+
     /// Builder-style setter for min trading days.
     pub fn with_min_days(mut self, days: u32) -> Self {
         self.min_trading_days = days;
@@ -222,6 +288,7 @@ impl Default for ChallengePlan {
             profit_target_pct: Pct(dec!(0.08)),
             max_daily_drawdown_pct: Pct(dec!(0.05)),
             max_total_drawdown_pct: Pct(dec!(0.10)),
+            max_loss_reference: LossReference::Trailing,
             drawdown_on_balance: false,
             trailing_drawdown_enabled: false,
             trailing_drawdown_pct: Pct::ZERO,

@@ -51,6 +51,28 @@ pub enum Error {
     /// A user-supplied rule produced an error.
     #[error("rule evaluation error: {0}")]
     RuleEval(String),
+
+    /// **P1-8 fix**: optimistic-concurrency conflict. Returned by
+    /// `AccountStore::put_with_version` when the expected version does
+    /// not match the persisted version — i.e. another evaluation wrote
+    /// to this account between our read and our write. The caller must
+    /// re-read, re-evaluate, and retry.
+    #[error("state conflict on {0}: expected version {1}, found {2}")]
+    StateConflict(String, u64, u64),
+
+    /// **P1-14 fix**: a tick was rejected because it was too old (older
+    /// than the staleness threshold) or older than the last-evaluated
+    /// tick for this account (out-of-order). Distinct from other errors
+    /// so the HTTP layer can surface it as a 4xx with a clear message
+    /// rather than as a 5xx.
+    #[error("tick rejected: {0}")]
+    TickRejected(String),
+
+    /// **P1-15 fix**: a required metric was unavailable for evaluation.
+    /// Distinct from a clean pass — the verdict should be
+    /// "ok-with-data-gap" rather than "ok".
+    #[error("missing metric: {0}")]
+    MissingMetric(String),
 }
 
 /// Convenience constructor for [`Error::InvalidConfig`].

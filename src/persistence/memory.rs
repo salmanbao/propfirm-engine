@@ -27,7 +27,41 @@ impl AccountStore for InMemoryStore {
         Ok(self.accounts.read().get(&id).cloned())
     }
     fn put(&self, account: Account) -> Result<(), Error> {
-        self.accounts.write().insert(account.id, account);
+        // Last-write-wins path; bumps version unconditionally.
+        let mut accounts = self.accounts.write();
+        let mut updated = account;
+        match accounts.get_mut(&updated.id) {
+            Some(existing) => {
+                updated.version = existing.version.wrapping_add(1);
+                *existing = updated;
+            }
+            None => {
+                // New account: version stays at 0 (set by caller).
+                accounts.insert(updated.id, updated);
+            }
+        }
+        Ok(())
+    }
+
+    /// **P1-8 fix**: in-memory optimistic concurrency check. Reads the
+    /// persisted version and rejects the write if it doesn't match
+    /// `expected_version`.
+    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
+        let mut accounts = self.accounts.write();
+        let existing = accounts
+            .get(&account.id)
+            .ok_or_else(|| Error::NotFound(format!("account {}", account.id)))?;
+        if existing.version != expected_version {
+            return Err(Error::StateConflict(
+                format!("account {}", account.id),
+                expected_version,
+                existing.version,
+            ));
+        }
+        // Apply: bump version, write fields.
+        let mut updated = account.clone();
+        updated.version = expected_version.wrapping_add(1);
+        *accounts.get_mut(&account.id).unwrap() = updated;
         Ok(())
     }
     fn delete(&self, id: AccountId) -> Result<(), Error> {

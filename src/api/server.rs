@@ -12,6 +12,7 @@ pub struct ServerState {
     pub evaluator: Evaluator,
     pub store: InMemoryStore,
     pub notifier: LogNotifier,
+    pub event_store: crate::events::store::EventStore,
 }
 
 impl Clone for ServerState {
@@ -20,6 +21,7 @@ impl Clone for ServerState {
             evaluator: self.evaluator.clone(),
             store: InMemoryStore::new(),
             notifier: LogNotifier::new(),
+            event_store: crate::events::store::EventStore::in_memory(),
         }
     }
 }
@@ -30,11 +32,15 @@ impl ServerState {
             evaluator: Evaluator::new(plan),
             store: InMemoryStore::new(),
             notifier: LogNotifier::new(),
+            event_store: crate::events::store::EventStore::in_memory(),
         }
     }
 
     pub fn pipeline(&self) -> crate::engine::pipeline::Pipeline<InMemoryStore, LogNotifier> {
-        crate::engine::pipeline::Pipeline::new(self.evaluator.clone(), self.store.clone(), self.notifier.clone())
+        let mut p = crate::engine::pipeline::Pipeline::new(self.evaluator.clone(), self.store.clone(), self.notifier.clone());
+        // Replace the pipeline's default event store with our shared one.
+        p.event_store = self.event_store.clone();
+        p
     }
 }
 

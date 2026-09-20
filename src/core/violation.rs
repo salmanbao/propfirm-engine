@@ -116,6 +116,9 @@ impl std::fmt::Display for ViolationKind {
 pub struct Violation {
     pub id: ViolationId,
     pub account_id: AccountId,
+    /// **P1-9 fix**: tenant this violation belongs to. Required so the
+    /// breach-report endpoint (TD-25) can filter by tenant.
+    pub tenant_id: crate::tenant::TenantId,
     pub rule_id: RuleId,
     pub rule_name: String,
     pub kind: ViolationKind,
@@ -144,6 +147,7 @@ impl Violation {
         Violation {
             id: ViolationId::new(),
             account_id,
+            tenant_id: crate::tenant::TenantId::new(),
             rule_id,
             rule_name: rule_name.into(),
             kind,
@@ -154,6 +158,14 @@ impl Violation {
             threshold_value: None,
             utilization: None,
         }
+    }
+
+    /// **P1-9 fix**: builder-style setter for tenant id. Called by the
+    /// rule registry when constructing a violation, so the violation
+    /// inherits the account's tenant.
+    pub fn with_tenant(mut self, tenant_id: crate::tenant::TenantId) -> Self {
+        self.tenant_id = tenant_id;
+        self
     }
 
     /// Builder-style setter for breach value.

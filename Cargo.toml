@@ -54,6 +54,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
+proptest = "1.5"
 
 [[bench]]
 name = "engine"

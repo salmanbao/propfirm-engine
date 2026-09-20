@@ -6,6 +6,7 @@
 use crate::core::types::{Price, Symbol, Timestamp};
 
 /// Bid/ask quote for a single symbol at a point in time.
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quote {
     /// Bid price (where the market buys from you).
@@ -29,6 +30,7 @@ impl Quote {
 }
 
 /// A market-data tick carrying symbol, quote, and optional last-traded price.
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Tick {
     pub symbol: Symbol,

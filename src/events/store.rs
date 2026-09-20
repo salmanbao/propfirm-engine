@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Append-only event log.
+#[derive(Clone)]
 pub struct EventStore {
     events: Arc<RwLock<HashMap<AccountId, Vec<DomainEvent>>>>,
 }
