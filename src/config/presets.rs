@@ -265,14 +265,25 @@ pub fn fundednext_1step() -> ChallengePlan {
 }
 
 /// **P1.12 fix**: Topstep-style futures plan (per-trade max loss, no time limit).
+///
+/// **P1.5 / P0.1 fix**: Topstep's published Trading Combine rules combine
+/// an **End-of-Day trailing** account max loss ("trailing threshold") with
+/// a **per-trade loss limit** ("Max Loss Per Trade") and have **no daily
+/// loss limit** — the daily-DD preset here was wrong and has been removed
+/// (`max_daily_drawdown_pct = 0` disables the daily rule).
 #[must_use]
 pub fn topstep_futures() -> ChallengePlan {
     let mut p = base_plan("Topstep", "Trading Combine", Money(dec!(50_000)));
     p.phase = ChallengePhase::Phase1;
     p.profit_target_pct = Pct(dec!(0.06));
-    p.max_daily_drawdown_pct = Pct(dec!(0.05));
+    // P1.5: Topstep has NO daily loss limit — only the EOD-trailing
+    // threshold and the per-trade limit. Zero disables the daily rule.
+    p.max_daily_drawdown_pct = Pct::ZERO;
+    // P1.5: the account-level threshold trails the best end-of-day balance.
     p.max_total_drawdown_pct = Pct(dec!(0.10));
-    p.max_loss_reference = LossReference::Static;
+    p.max_loss_reference = LossReference::EodTrailing;
+    // P0.1: Topstep publishes an explicit per-trade loss limit.
+    p.per_trade_max_loss_pct = Some(Pct(dec!(0.02)));
     p.min_trading_days = 5;
     p.time_limit_days = None;
     p.news_trading_allowed = true;

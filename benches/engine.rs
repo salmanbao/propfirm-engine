@@ -20,7 +20,7 @@ use propfirm::rules::context::RuleContextKind;
 fn evaluate_tick_bench(c: &mut Criterion) {
     let plan = ftmo_phase1().with_loss_reference(LossReference::Static);
     let account = Account::new(AccountId::new(), plan.clone());
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -43,7 +43,7 @@ fn evaluate_tick_bench(c: &mut Criterion) {
 fn evaluate_order_bench(c: &mut Criterion) {
     let plan = ftmo_phase1().with_loss_reference(LossReference::Static);
     let account = Account::new(AccountId::new(), plan.clone());
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let order = Order {
         id: propfirm::core::ids::OrderId::new(),
         account_id: account.id,
@@ -85,7 +85,7 @@ fn realistic_load_bench(c: &mut Criterion) {
             n_accounts,
             |b, &n| {
                 let plan = ftmo_phase1().with_loss_reference(LossReference::Static);
-                let evaluator = Evaluator::new(plan.clone());
+                let evaluator = Evaluator::new(&plan);
                 let accounts: Vec<Account> = (0..n)
                     .map(|_| {
                         Account::new(AccountId::new(), plan.clone())

@@ -129,7 +129,7 @@ proptest! {
     fn prop_stateless_determinism(balance in 80_000i64..120_000) {
         let plan = make_plan(LossReference::Static);
         let account = make_account(plan, balance, balance, 100_000, 100_000);
-        let evaluator = Evaluator::new(account.plan.clone());
+        let evaluator = Evaluator::new(&account.plan);
         let result1 = eval_tick(&evaluator, &account);
         let result2 = eval_tick(&evaluator, &account);
         prop_assert_eq!(result1.decision.kind, result2.decision.kind,
@@ -181,7 +181,7 @@ proptest! {
     fn prop_breach_more_severe_than_warning(balance in 50_000i64..150_000) {
         let plan = make_plan(LossReference::Static);
         let account = make_account(plan, balance, balance, 100_000, 100_000);
-        let evaluator = Evaluator::new(account.plan.clone());
+        let evaluator = Evaluator::new(&account.plan);
         let result = eval_tick(&evaluator, &account);
         // Verify that all violations have well-defined severities, and
         // that the max severity across all violations matches the decision

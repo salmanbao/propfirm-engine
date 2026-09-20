@@ -107,8 +107,39 @@ pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
                 per_trade_max_loss::PerTradeMaxLossRule::from_entry(e),
             ))
         },
+        "inactivity" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                crate::rules::evaluators::inactivity::InactivityRule::from_entry(e),
+            ))
+        },
         _ => return None,
     })
+}
+
+/// **P0.4 fix**: resolves the default factory for each pack kind and
+/// returns a typed error listing every kind the engine cannot enforce.
+/// Silently dropping a rule means silently not enforcing it — a tenant
+/// admin must know when their pack references something this engine
+/// version does not support.
+pub fn default_factories_for_kinds(
+    kind_names: &[&str],
+) -> Result<Vec<(String, RuleFactory)>, Error> {
+    let mut out = Vec::with_capacity(kind_names.len());
+    let mut unsupported: Vec<&str> = Vec::new();
+    for k in kind_names {
+        match default_factory_for_kind(k) {
+            Some(f) => out.push(((*k).to_string(), f)),
+            None => unsupported.push(k),
+        }
+    }
+    if !unsupported.is_empty() {
+        return Err(Error::invalid_config(format!(
+            "rule pack references unsupported rule kind(s): {} — \
+             these rules would NOT be enforced; fix the pack or upgrade the engine",
+            unsupported.join(", ")
+        )));
+    }
+    Ok(out)
 }
 
 /// Default rule library (registered automatically).
@@ -116,9 +147,9 @@ pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
 pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::{
         consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
-        max_daily_trades, max_drawdown, max_open_positions, max_position_size, min_trading_days,
-        news_trading, overnight_holding, per_trade_max_loss, profit_target, sl_required,
-        time_limit, tp_required, trailing_drawdown, weekend_holding,
+        inactivity, max_daily_trades, max_drawdown, max_open_positions, max_position_size,
+        min_trading_days, news_trading, overnight_holding, per_trade_max_loss, profit_target,
+        sl_required, time_limit, tp_required, trailing_drawdown, weekend_holding,
     };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
@@ -141,8 +172,13 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
         Arc::new(sl_required::StopLossRequiredRule::default()),
         Arc::new(tp_required::TakeProfitRequiredRule::default()),
         // P2.15: new rules added in the industry-semantics upgrade.
+        // P0.1: both default to DISABLED — each rule's `is_enabled`
+        // requires an explicit plan flag (`hft_ban_enabled`,
+        // `per_trade_max_loss_pct`) or an enabling pack entry.
         Arc::new(hft_scalping::HftScalpingRule::default()),
         Arc::new(per_trade_max_loss::PerTradeMaxLossRule::default()),
+        // P1.4/P1.5: inactivity termination (unlimited-time programs).
+        Arc::new(inactivity::InactivityRule::default()),
     ]
 }
 
@@ -174,6 +210,59 @@ impl RuleRegistry {
     pub fn with_default_rules() -> Self {
         let mut r = Self::empty();
         for rule in default_rules() {
+            r.register(rule);
+        }
+        r
+    }
+
+    /// **P0.2 fix**: builds the default rule library with plan-disabled
+    /// opt-in rules removed entirely. Each remaining rule still gates
+    /// itself via `is_enabled` (defense in depth), but rules the plan
+    /// cannot enable are not registered at all — they cannot run, and
+    /// `registry.all()` reflects the effective rule set.
+    #[must_use]
+    pub fn with_default_rules_for_plan(plan: &crate::config::plan::ChallengePlan) -> Self {
+        let hft_id = crate::core::ids::RuleId::named("hft_scalping");
+        let per_trade_id = crate::core::ids::RuleId::named("per_trade_max_loss");
+        let inactivity_id = crate::core::ids::RuleId::named("inactivity");
+        let hedging_id = crate::core::ids::RuleId::named("hedging");
+        let grid_id = crate::core::ids::RuleId::named("grid_trading");
+        let copy_id = crate::core::ids::RuleId::named("copy_trading");
+        let news_id = crate::core::ids::RuleId::named("news_trading");
+        let cooldown_id = crate::core::ids::RuleId::named("cooldown");
+        let mut r = Self::empty();
+        for rule in default_rules() {
+            // Drop the opt-in rules the plan does not enable.
+            let id = rule.id();
+            if id == hft_id && !plan.hft_ban_enabled {
+                continue;
+            }
+            if id == per_trade_id
+                && plan.per_trade_max_loss_pct.is_none()
+                && plan.per_trade_max_loss_money.is_none()
+            {
+                continue;
+            }
+            if id == inactivity_id && plan.inactivity_days.is_none() {
+                continue;
+            }
+            // P0.2: drop the prohibition rules the plan disables
+            // (plan allows the behavior ⇒ no rule to enforce).
+            if id == hedging_id && plan.hedging_allowed {
+                continue;
+            }
+            if id == grid_id && plan.grid_trading_allowed {
+                continue;
+            }
+            if id == copy_id && plan.copy_trading_allowed {
+                continue;
+            }
+            if id == news_id && plan.news_trading_allowed {
+                continue;
+            }
+            if id == cooldown_id && plan.cooldown_seconds == 0 {
+                continue;
+            }
             r.register(rule);
         }
         r
@@ -215,24 +304,26 @@ impl RuleRegistry {
     /// so a tenant editing the pack through the form actually changes
     /// the verdict. This is the binding spec's EVL-01/02 requirement.
     ///
-    /// Disabled entries (`enabled: false`) are skipped. Unknown kinds
-    /// produce a soft warning and are skipped (not a hard error — a
-    /// pack might reference a rule kind that this engine version
-    /// doesn't yet support).
+    /// Disabled entries (`enabled: false`) are skipped.
+    ///
+    /// **P0.4 fix**: unknown kinds now FAIL with a typed
+    /// [`Error::InvalidConfig`] listing the unsupported kind — silently
+    /// dropping a rule means silently not enforcing it.
     pub fn build_from_pack(pack: &crate::rulepack::RulePack) -> Result<Self, Error> {
         let mut registry = Self::empty();
         for entry in &pack.rules {
             if !entry.enabled {
                 continue;
             }
-            if let Some(factory) = default_factory_for_kind(&entry.kind) {
-                let rule = factory(entry)?;
-                registry.register(rule);
-            } else {
-                // Soft skip — unknown kind in this engine version.
-                // In production, log this so tenant admins know
-                // their pack references an unsupported kind.
-            }
+            let factory = default_factory_for_kind(&entry.kind).ok_or_else(|| {
+                Error::invalid_config(format!(
+                    "rule pack {} references unsupported rule kind '{}' — \
+                     the rule would silently not be enforced",
+                    pack.id, entry.kind
+                ))
+            })?;
+            let rule = factory(entry)?;
+            registry.register(rule);
         }
         Ok(registry)
     }

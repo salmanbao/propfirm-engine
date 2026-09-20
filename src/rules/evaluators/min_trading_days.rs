@@ -21,6 +21,28 @@ pub struct MinTradingDaysRule {
     pub params: Option<RuleParams>,
 }
 
+impl MinTradingDaysRule {
+    /// **P0.4 fix**: effective required days — pack entry's value if
+    /// set (fail-closed on a bad unit), else plan.
+    fn effective_days(&self, ctx: &RuleContext) -> Result<Option<u32>, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(None);
+            }
+            let Some(v) = p.value() else {
+                return Ok(None);
+            };
+            let days = u32::try_from(v).map_err(|_| {
+                crate::core::Error::invalid_config(format!(
+                    "min_trading_days: pack value {v} is not a valid day count"
+                ))
+            })?;
+            return Ok(Some(days));
+        }
+        Ok(Some(ctx.account.plan.min_trading_days))
+    }
+}
+
 impl Rule for MinTradingDaysRule {
     fn id(&self) -> RuleId {
         RuleId::named("min_trading_days")
@@ -43,11 +65,24 @@ impl Rule for MinTradingDaysRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.min_trading_days > 0
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let required = ctx.account.plan.min_trading_days;
+        // P0.4: use the effective required days (pack entry overrides plan).
+        let Some(required) = self
+            .effective_days(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("min_trading_days: {e}")))?
+        else {
+            return Ok(RuleVerdict::Pass);
+        };
         if required == 0 {
             return Ok(RuleVerdict::Pass);
         }

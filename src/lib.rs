@@ -61,7 +61,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let plan = ftmo_phase1();
 //! let account = Account::new(AccountId::new(), plan.clone());
-//! let evaluator = Evaluator::new(plan);
+//! let evaluator = Evaluator::new(&plan);
 //! let ctx = RuleContext::new(account);
 //! let result = evaluator.evaluate(&ctx)?;
 //! println!("decision: {:?}", result.decision.kind);

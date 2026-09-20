@@ -44,6 +44,12 @@ impl Rule for OvernightHoldingRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan. An
+        // overnight pack entry means "overnight holding forbidden"
+        // when enabled.
+        if let Some(p) = &self.params {
+            return p.enabled && !ctx.account.plan.overnight_holding_allowed;
+        }
         !ctx.account.plan.overnight_holding_allowed
     }
 

@@ -42,6 +42,13 @@ impl Rule for TimeLimitRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return true;
+        }
         ctx.account.plan.time_limit_days.is_some()
     }
 

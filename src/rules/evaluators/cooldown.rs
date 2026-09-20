@@ -20,6 +20,26 @@ pub struct CooldownRule {
     pub params: Option<RuleParams>,
 }
 
+impl CooldownRule {
+    /// **P0.4 fix**: effective cooldown seconds — pack entry's value if
+    /// set, else plan.
+    fn effective_seconds(&self, ctx: &RuleContext) -> Result<u64, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled || p.value().is_none() {
+                return Ok(0);
+            }
+            let v = p.value().unwrap_or_default();
+            let secs = u64::try_from(v).map_err(|_| {
+                crate::core::Error::invalid_config(format!(
+                    "cooldown: pack value {v} is not a valid seconds count"
+                ))
+            })?;
+            return Ok(secs);
+        }
+        Ok(ctx.account.plan.cooldown_seconds)
+    }
+}
+
 impl Rule for CooldownRule {
     fn id(&self) -> RuleId {
         RuleId::named("cooldown")
@@ -42,11 +62,21 @@ impl Rule for CooldownRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.cooldown_seconds > 0
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let cooldown = ctx.account.plan.cooldown_seconds;
+        // P0.4: use the effective cooldown (pack entry overrides plan).
+        let cooldown = self
+            .effective_seconds(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("cooldown: {e}")))?;
         if cooldown == 0 {
             return Ok(RuleVerdict::Pass);
         }

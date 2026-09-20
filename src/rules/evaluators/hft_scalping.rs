@@ -4,6 +4,11 @@
 //! scalping — round trips (open + close on the same symbol) faster
 //! than X seconds, or more than N closes per minute. This rule
 //! detects both patterns from recent trades.
+//!
+//! **P0.1 fix**: this rule is DISABLED by default. It runs only when:
+//! - the plan enables it (`plan.hft_ban_enabled = true`), or
+//! - a rule-pack entry binds it (`RuleParams` present, `enabled: true`).
+//! The default registry previously registered it unconditionally.
 
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
@@ -25,12 +30,17 @@ impl HftScalpingRule {
         }
     }
 
-    /// Effective min round-trip time in seconds (default 60s).
-    fn effective_min_round_trip_seconds(&self) -> i64 {
-        self.params
-            .as_ref()
-            .and_then(super::super::params::RuleParams::value)
-            .map_or(60, |v| v.try_into().unwrap_or(60))
+    /// Effective min round-trip time in seconds: pack value if bound,
+    /// else the plan's `hft_min_round_trip_seconds` (default 60s).
+    fn effective_min_round_trip_seconds(&self, ctx: &RuleContext) -> i64 {
+        if let Some(p) = &self.params {
+            if let Some(v) = p.value() {
+                if let Ok(secs) = i64::try_from(v) {
+                    return secs;
+                }
+            }
+        }
+        i64::try_from(ctx.account.plan.hft_min_round_trip_seconds).unwrap_or(60)
     }
 
     /// Effective max closes per minute (default 10). Stored in `params_json`.
@@ -82,7 +92,21 @@ impl Rule for HftScalpingRule {
     fn description(&self) -> &'static str {
         "Detects high-frequency trading / scalping patterns: \
          round trips faster than X seconds, or more than N closes per minute. \
-         Many 2026 prop firms explicitly ban this trading style."
+         Many 2026 prop firms explicitly ban this trading style. \
+         Disabled unless the plan or a pack entry enables it (P0.1)."
+    }
+
+    /// **P0.1 fix**: disabled unless the plan or the pack entry
+    /// explicitly enables it. Never relies on the trait default `true`.
+    fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            // A bound pack entry IS the enablement.
+            return true;
+        }
+        ctx.account.plan.hft_ban_enabled
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
@@ -93,7 +117,7 @@ impl Rule for HftScalpingRule {
         };
 
         // Find recent entries on the same symbol.
-        let min_round_trip = self.effective_min_round_trip_seconds();
+        let min_round_trip = self.effective_min_round_trip_seconds(ctx);
         let max_closes = self.effective_max_closes_per_minute();
 
         // Pattern 1: round-trip time < min_round_trip_seconds.

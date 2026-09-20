@@ -16,6 +16,7 @@ pub mod daily_drawdown;
 pub mod grid_trading;
 pub mod hedging;
 pub mod hft_scalping; // P2.15 fix.
+pub mod inactivity; // P1.4/P1.5 fix: inactivity termination.
 pub mod max_daily_trades;
 pub mod max_drawdown;
 pub mod max_open_positions;

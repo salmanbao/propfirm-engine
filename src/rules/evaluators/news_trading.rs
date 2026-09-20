@@ -120,6 +120,11 @@ impl Rule for NewsTradingRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan. A news
+        // pack entry means "news trading forbidden" when enabled.
+        if let Some(p) = &self.params {
+            return p.enabled && !ctx.account.plan.news_trading_allowed;
+        }
         !ctx.account.plan.news_trading_allowed
     }
 

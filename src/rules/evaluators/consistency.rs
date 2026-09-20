@@ -22,6 +22,31 @@ pub struct ConsistencyRule {
     pub params: Option<RuleParams>,
 }
 
+impl ConsistencyRule {
+    /// **P0.4 fix**: effective cap pct — pack entry's value if set,
+    /// else plan. Fail-closed on a bad unit via `effective_pct`.
+    fn effective_cap(
+        &self,
+        ctx: &RuleContext,
+    ) -> Result<Option<rust_decimal::Decimal>, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(None);
+            }
+            let Some(_) = p.value() else {
+                return Ok(None);
+            };
+            let denom = ctx.account.total_realized_pnl;
+            if denom.0.is_zero() {
+                // Denominator not ready yet; treat as no cap this round.
+                return Ok(None);
+            }
+            return Ok(Some(p.effective_pct("consistency", denom)?));
+        }
+        Ok(ctx.account.plan.consistency_pct.map(|p| p.0))
+    }
+}
+
 impl Rule for ConsistencyRule {
     fn id(&self) -> RuleId {
         RuleId::named("consistency")
@@ -44,14 +69,25 @@ impl Rule for ConsistencyRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.consistency_pct.is_some()
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let cap_pct = match ctx.account.plan.consistency_pct {
-            Some(p) => p,
-            None => return Ok(RuleVerdict::Pass),
+        // P0.4: use the effective cap (pack entry overrides plan).
+        let Some(cap_pct_raw) = self
+            .effective_cap(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("consistency: {e}")))?
+        else {
+            return Ok(RuleVerdict::Pass);
         };
+        let cap_pct = crate::core::types::Pct(cap_pct_raw);
         let total_profit = ctx.account.total_realized_pnl;
         if total_profit.0 <= dec!(0) {
             // No profit yet → nothing to check

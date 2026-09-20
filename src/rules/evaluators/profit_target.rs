@@ -59,13 +59,36 @@ impl Rule for ProfitTargetRule {
          Pass (P0-3)."
     }
 
+    /// **P0.4 fix**: pack entry's enabled flag gates the rule.
+    fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        if let Some(p) = &self.params {
+            return p.enabled;
+        }
+        ctx.account.plan.profit_target_pct.0 > dec!(0)
+    }
+
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let target_pct = ctx.account.plan.profit_target_pct;
-        if target_pct.0 <= dec!(0) {
+        // P0.4: pack entry's value (unit-aware) overrides the plan target.
+        let target = if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(RuleVerdict::Pass);
+            }
+            match p.value() {
+                Some(v) => match p.unit {
+                    Some(crate::rulepack::RuleUnit::Money) => crate::core::types::Money(v),
+                    _ => crate::core::types::Money(v * ctx.account.initial_balance.0),
+                },
+                None => ctx.account.profit_target(),
+            }
+        } else {
+            ctx.account.profit_target()
+        };
+        let target_pct = crate::core::types::Pct(dec!(1)); // placeholder: target computed above
+        let _ = target_pct;
+        if target.0 <= dec!(0) {
             // No target (e.g. funded phase) – always pass.
             return Ok(RuleVerdict::Pass);
         }
-        let target = ctx.account.profit_target();
         let net = ctx.account.net_profit();
 
         // --- P0-2: sticky target-reached state ------------------------

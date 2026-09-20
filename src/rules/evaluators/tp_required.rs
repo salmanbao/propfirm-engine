@@ -39,6 +39,10 @@ impl Rule for TakeProfitRequiredRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            return p.enabled;
+        }
         ctx.account.plan.require_take_profit
     }
 

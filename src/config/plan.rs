@@ -185,6 +185,30 @@ pub struct ChallengePlan {
     pub trading_hours: Option<(u8, u8)>,
     /// Effective timestamp of the plan.
     pub effective_at: Timestamp,
+
+    /// **P0.1 fix**: per-trade max-loss limit as a percentage of balance
+    /// (e.g. 0.02 = "no single closed trade may lose more than 2% of
+    /// balance" — Topstep-style). `None` = rule disabled. Previously this
+    /// rule was enabled by default for every account via the default
+    /// registry, liquidating accounts on programs that have no such rule.
+    pub per_trade_max_loss_pct: Option<Pct>,
+    /// **P0.1 fix**: absolute per-trade max-loss limit in money
+    /// (alternative to `per_trade_max_loss_pct`; the tighter of the two
+    /// applies when both are set). `None` = not configured.
+    pub per_trade_max_loss_money: Option<Money>,
+    /// **P0.1 fix**: whether the HFT / scalping ban is enabled for this
+    /// plan (round-trip time / closes-per-minute detection). `false` =
+    /// rule disabled. Only firms that publish an HFT/scalping ban set
+    /// this to `true` in their preset.
+    pub hft_ban_enabled: bool,
+    /// **P0.1 fix**: minimum round-trip time in seconds for the HFT ban
+    /// (open + close faster than this is scalping). Used only when
+    /// `hft_ban_enabled` is `true`.
+    pub hft_min_round_trip_seconds: u64,
+    /// **P1.5 fix**: whether the plan is "unlimited time + inactivity
+    /// termination" (several 2026 programs). When `Some(n)`, the account
+    /// is terminated after `n` consecutive days without a trade.
+    pub inactivity_days: Option<u32>,
 }
 
 impl ChallengePlan {
@@ -312,6 +336,28 @@ impl ChallengePlan {
         self
     }
 
+    /// Builder-style setter for the per-trade max-loss rule (P0.1).
+    #[must_use]
+    pub fn with_per_trade_max_loss_pct(mut self, pct: Pct) -> Self {
+        self.per_trade_max_loss_pct = Some(pct);
+        self
+    }
+
+    /// Builder-style setter for the HFT/scalping ban (P0.1).
+    #[must_use]
+    pub fn with_hft_ban(mut self, min_round_trip_seconds: u64) -> Self {
+        self.hft_ban_enabled = true;
+        self.hft_min_round_trip_seconds = min_round_trip_seconds;
+        self
+    }
+
+    /// Builder-style setter for inactivity termination (P1.5).
+    #[must_use]
+    pub fn with_inactivity_days(mut self, days: u32) -> Self {
+        self.inactivity_days = Some(days);
+        self
+    }
+
     /// Returns the rule id for a named rule (stable across runs).
     #[must_use]
     pub fn rule_id(name: &str) -> RuleId {
@@ -353,6 +399,14 @@ impl Default for ChallengePlan {
             leverage: 100,
             trading_hours: None,
             effective_at: chrono::Utc::now(),
+            // P0.1: opt-in rules default to OFF. A plan must explicitly
+            // enable per-trade max loss / the HFT ban (or bind a pack
+            // entry that does), otherwise the rule must not run.
+            per_trade_max_loss_pct: None,
+            per_trade_max_loss_money: None,
+            hft_ban_enabled: false,
+            hft_min_round_trip_seconds: 60,
+            inactivity_days: None,
         }
     }
 }

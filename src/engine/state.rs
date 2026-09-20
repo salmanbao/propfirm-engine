@@ -51,10 +51,11 @@ impl AccountState {
         self.account.total_realized_pnl = Money(self.account.total_realized_pnl.0 + net.0);
         self.account.total_commissions = Money(self.account.total_commissions.0 + commission.0);
         self.account.total_swaps = Money(self.account.total_swaps.0 + swap.0);
+        // P1.4/P1.5: stamp the last-trade time for the inactivity rule.
+        self.account.last_trade_at = Some(at);
         // P1.7: do NOT update largest_day_profit per-trade — that would
         // make it "largest trade profit", not "largest day profit".
         // It's now updated only at rollover_day().
-        let _ = at;
         self
     }
 

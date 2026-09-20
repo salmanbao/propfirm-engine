@@ -48,6 +48,11 @@ impl Rule for CopyTradingRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan. A copy
+        // pack entry means "copy trading forbidden" when enabled.
+        if let Some(p) = &self.params {
+            return p.enabled && !ctx.account.plan.copy_trading_allowed;
+        }
         !ctx.account.plan.copy_trading_allowed
     }
 

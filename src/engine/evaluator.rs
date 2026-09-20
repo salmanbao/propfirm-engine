@@ -21,10 +21,24 @@ pub struct Evaluator {
 
 impl Evaluator {
     /// Constructs a new evaluator with the default rule library.
+    ///
+    /// **P0.2 fix**: the plan is no longer ignored. The registry is
+    /// built so that rules the plan disables are not registered at all
+    /// (defense in depth on top of each rule's own `is_enabled`):
+    ///
+    /// - `per_trade_max_loss` registered only if the plan sets
+    ///   `per_trade_max_loss_pct` / `per_trade_max_loss_money`.
+    /// - `hft_scalping` registered only if `plan.hft_ban_enabled`.
+    /// - `inactivity` registered only if `plan.inactivity_days` is set.
+    ///
+    /// Always-on rules (drawdown, profit target, time limit, etc.) are
+    /// registered unconditionally and gate themselves via `is_enabled`.
+    /// Callers that supply an explicit registry (the rule-pack path)
+    /// keep using [`Self::with_registry`].
     #[must_use]
-    pub fn new(_plan: crate::config::plan::ChallengePlan) -> Self {
+    pub fn new(plan: &crate::config::plan::ChallengePlan) -> Self {
         Evaluator {
-            registry: RuleRegistry::with_default_rules(),
+            registry: RuleRegistry::with_default_rules_for_plan(plan),
             account_id: AccountId::new(),
         }
     }

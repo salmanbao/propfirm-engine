@@ -40,7 +40,7 @@ impl ServerState {
     #[must_use]
     pub fn new(plan: ChallengePlan) -> Self {
         ServerState {
-            evaluator: Evaluator::new(plan),
+            evaluator: Evaluator::new(&plan),
             store: InMemoryStore::new(),
             notifier: LogNotifier::new(),
             event_store: crate::events::store::EventStore::in_memory(),

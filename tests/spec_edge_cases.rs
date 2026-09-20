@@ -79,7 +79,7 @@ fn spec_3_4_edge_1_equity_exactly_at_limit_fires() {
     // With tolerance 1¢, exact-equal does NOT breach (uses `>` not `>=`).
     // So 90k equity at 90k floor → Pass (no breach), 89_999.99 → breach.
     let acc = account_at(90_000, 100_000, LossReference::Trailing);
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -119,7 +119,7 @@ fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
     acc.balance = Money(dec!(10_500)); // dip below 10% target
     acc.equity = Money(dec!(10_500));
     acc.active_trading_days = 1;
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -148,7 +148,7 @@ fn spec_3_4_edge_3_breach_beats_pass_on_same_tick() {
     // To force both: set balance = 110k (10% target hit) AND equity at 94k (drawdown breach).
     let mut acc = acc;
     acc.balance = Money(dec!(110_000)); // 10% target reached
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -169,7 +169,7 @@ fn spec_3_4_edge_4_static_floor_never_moves() {
     // Static max-loss: 10% of 100k = 10k limit. Floor is 90k forever.
     // Account at 95k (peak 200k) → 5k dd < 10k limit → no breach.
     let acc = account_at(95_000, 200_000, LossReference::Static);
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -189,7 +189,7 @@ fn spec_3_4_edge_5_trailing_floor_floats_up() {
     // Trailing max-loss: peak 200k, trail 10% → floor = 180k.
     // Account at 175k → 25k dd > 20k limit → BREACH.
     let acc = account_at(175_000, 200_000, LossReference::Trailing);
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -207,7 +207,7 @@ fn spec_3_4_edge_5_trailing_floor_floats_up() {
 #[test]
 fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static); // breach on static
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick_estimated(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -225,7 +225,7 @@ fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
 #[test]
 fn spec_3_4_edge_8_broker_equity_can_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static);
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -248,7 +248,7 @@ fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
     let mut acc = account_at(90_000, 100_000, LossReference::Static);
     acc.balance = Money(dec!(90_000)); // exactly at floor
     acc.equity = Money(dec!(90_000));
-    let ev = Evaluator::new(acc.plan.clone());
+    let ev = Evaluator::new(&acc.plan);
     let result = ev
         .evaluate_tick(&acc, &tick_now(), &[], &[], Vec::new())
         .unwrap();
@@ -298,7 +298,7 @@ fn spec_3_4_edge_12_emergency_stop_short_circuits() {
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
     store.put(account.clone()).unwrap();
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
         store.clone(),

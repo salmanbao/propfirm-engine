@@ -46,7 +46,7 @@ fn test_daily_drawdown_pass() {
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -69,7 +69,7 @@ fn test_daily_drawdown_breach() {
         .unwrap();
     // Force equity to 9000 (drawdown of 1000 = 10% – exceeds 5% limit)
     account.equity = Money(dec!(9_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -98,7 +98,7 @@ fn test_max_drawdown_breach() {
     account.equity = Money(dec!(8_900));
     account.peak_balance = Money(dec!(10_000));
     account.peak_equity = Money(dec!(10_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -124,7 +124,7 @@ fn test_profit_target_reached() {
     account.equity = Money(dec!(11_000));
     account.peak_balance = Money(dec!(11_000));
     account.peak_equity = Money(dec!(11_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -164,7 +164,7 @@ fn test_stop_loss_required() {
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let order = Order::market_open(
         account.id,
         Symbol::new("EURUSD"),
@@ -190,7 +190,7 @@ fn test_hedging_blocked() {
         .start(chrono::Utc::now())
         .unwrap();
     account.plan.hedging_allowed = false;
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let open_position = Position::open(
         account.id,
         Symbol::new("EURUSD"),
@@ -225,7 +225,7 @@ fn test_max_position_size() {
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     // Default plan allows 5 lots; submit 6.
     let order = Order::market_open(
         account.id,
@@ -252,7 +252,7 @@ fn test_max_open_positions() {
         .start(chrono::Utc::now())
         .unwrap();
     account.plan.max_open_positions = Some(2);
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let p1 = Position::open(
         account.id,
         Symbol::new("EURUSD"),
@@ -289,7 +289,7 @@ fn test_min_trading_days_below() {
         .start(chrono::Utc::now())
         .unwrap();
     account.active_trading_days = 1;
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let ctx = propfirm::rules::context::RuleContext::for_day_rollover(account.clone());
     let result = evaluator.evaluate(&ctx).unwrap();
     // Min trading days rule should warn (3 days required, only 1)
@@ -304,7 +304,7 @@ fn test_consistency_rule_warns() {
         .unwrap();
     account.total_realized_pnl = Money(dec!(1_000));
     account.largest_day_profit = Money(dec!(700)); // 70% > 50% cap
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     // Use OnDemand context so all rules (including Periodic) run.
     let mut ctx = propfirm::rules::context::RuleContext::new(account.clone());
     ctx.kind = propfirm::rules::context::RuleContextKind::OnDemand;
@@ -333,7 +333,7 @@ fn test_pipeline_end_to_end() {
     let store = InMemoryStore::new();
     store.put(account.clone()).unwrap();
     let notifier = LogNotifier::new();
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, store, notifier);
     let now = chrono::Utc::now();
     let result = pipeline
@@ -583,7 +583,7 @@ fn test_copy_trading_detection() {
         .unwrap();
     let mut acc = account;
     acc.plan.copy_trading_allowed = false;
-    let evaluator = Evaluator::new(acc.plan.clone());
+    let evaluator = Evaluator::new(&acc.plan);
     let now = chrono::Utc::now();
     let trade = Trade::new(
         propfirm::core::ids::OrderId::new(),
@@ -625,7 +625,7 @@ fn test_time_limit_expired() {
         .start(chrono::Utc::now() - chrono::Duration::days(40))
         .unwrap();
     account.deadline = Some(chrono::Utc::now() - chrono::Duration::days(10));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -664,7 +664,7 @@ fn p0_1_static_max_drawdown_does_not_breach_when_above_initial_floor() {
     account.peak_balance = Money(dec!(105_000)); // grew then pulled back
     account.peak_equity = Money(dec!(105_000));
     account.initial_balance = Money(dec!(100_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -703,7 +703,7 @@ fn p0_1_trailing_max_drawdown_does_breach_when_pullback_exceeds_trail() {
     account.equity = Money(dec!(94_000));
     account.peak_balance = Money(dec!(105_000));
     account.peak_equity = Money(dec!(105_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -739,7 +739,7 @@ fn p0_2_target_reached_stays_pending_when_equity_dips_below() {
     account.equity = Money(dec!(10_500));
     // active_trading_days is still < 5.
     account.active_trading_days = 1;
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -792,7 +792,7 @@ fn p0_3_breach_beats_target_hit_on_same_tick() {
     account.peak_equity = Money(dec!(105_000));
     // Trailing mode so dd measures from peak (105k) → dd = 11k, limit = 10.5k → BREACH.
     account.plan.max_loss_reference = propfirm::config::plan::LossReference::Trailing;
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -912,7 +912,7 @@ fn p1_5_estimated_equity_does_not_terminate_account() {
     account.equity = Money(dec!(94_000));
     account.peak_balance = Money(dec!(105_000));
     account.peak_equity = Money(dec!(105_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -954,7 +954,7 @@ fn p1_5_broker_reported_equity_terminates_on_real_breach() {
     account.equity = Money(dec!(89_000));
     account.peak_balance = Money(dec!(100_000));
     account.peak_equity = Money(dec!(100_000));
-    let evaluator = Evaluator::new(account.plan.clone());
+    let evaluator = Evaluator::new(&account.plan);
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
@@ -986,7 +986,7 @@ fn p1_14_stale_tick_is_rejected_by_pipeline() {
     let store = propfirm::persistence::memory::InMemoryStore::new();
     use propfirm::persistence::traits::AccountStore;
     store.put(account.clone()).unwrap();
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
         store,
@@ -1031,7 +1031,7 @@ fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     let store = propfirm::persistence::memory::InMemoryStore::new();
     use propfirm::persistence::traits::AccountStore;
     store.put(account.clone()).unwrap();
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
         store,
@@ -1186,7 +1186,7 @@ fn p1_12_emergency_stop_short_circuits() {
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
     store.put(account.clone()).unwrap();
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
         store.clone(),

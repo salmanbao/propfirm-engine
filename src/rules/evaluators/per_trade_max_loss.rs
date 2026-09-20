@@ -5,6 +5,19 @@
 //! account balance (or an absolute dollar amount). This is distinct
 //! from daily/max drawdown: a trader can blow the entire account on
 //! one bad trade if the per-trade rule isn't enforced.
+//!
+//! **P0.1 fix**: this rule is DISABLED by default. It runs only when:
+//! - the plan enables it explicitly (`plan.per_trade_max_loss_pct` /
+//!   `plan.per_trade_max_loss_money` — see `topstep_futures()`), or
+//! - a rule-pack entry binds it (`RuleParams` present with
+//!   `enabled: true`).
+//! The default registry previously registered it unconditionally with
+//! a 2% limit at Liquidate severity — a rule that does not exist in
+//! most prop-firm programs — liquidating accounts out of nowhere.
+//!
+//! **P0.3 fix**: the pack entry's `unit` is honoured via
+//! `effective_money`: `Percent` → `value × balance`, `Money` → value
+//! as an absolute dollar limit. A mis-encoded unit fails closed.
 
 use crate::core::ids::RuleId;
 use crate::core::types::dec;
@@ -27,15 +40,41 @@ impl PerTradeMaxLossRule {
         }
     }
 
-    /// Effective max per-trade loss as a fraction of balance (default 0.02 = 2%).
-    fn effective_max_loss_pct(&self, _ctx: &RuleContext) -> rust_decimal::Decimal {
+    /// **P0.3 fix**: effective per-trade loss limit as `Money`.
+    /// Interprets the pack entry's `value` according to its `unit`:
+    /// `Percent` → fraction of current balance; `Money` → absolute.
+    /// Falls back to the plan fields when no pack entry is bound.
+    ///
+    /// `Ok(None)` = the rule has no limit configured (caller should
+    /// pass); `Err` = mis-encoded pack (fail closed).
+    fn effective_limit_money(
+        &self,
+        ctx: &RuleContext,
+    ) -> Result<Option<crate::core::types::Money>, crate::core::Error> {
         if let Some(p) = &self.params {
-            if let Some(v) = p.value() {
-                return v;
-            }
+            // Percent-unit packs interpret against the current balance.
+            let reference = ctx.account.balance;
+            return match p.unit {
+                Some(crate::rulepack::RuleUnit::Money) => {
+                    Ok(Some(crate::core::types::Money(p.value.unwrap_or_default())))
+                }
+                _ => Ok(Some(p.effective_money("per_trade_max_loss", reference)?)),
+            };
         }
-        // Default 2% of balance per trade.
-        dec!(0.02)
+        // Plan fallback (P0.1): the tighter of pct-of-balance and the
+        // absolute money cap applies.
+        let pct_limit = ctx
+            .account
+            .plan
+            .per_trade_max_loss_pct
+            .map(|p| crate::core::types::Money(p.0 * ctx.account.balance.0));
+        let money_limit = ctx.account.plan.per_trade_max_loss_money;
+        Ok(match (pct_limit, money_limit) {
+            (Some(a), Some(b)) => Some(crate::core::types::Money(a.0.min(b.0))),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        })
     }
 }
 
@@ -70,8 +109,24 @@ impl Rule for PerTradeMaxLossRule {
 
     fn description(&self) -> &'static str {
         "Forbids any single closed trade from losing more than X% of \
-         the account balance. Distinct from daily/max drawdown: catches \
-         a single bad trade before it blows the account."
+         the account balance (or an absolute money amount). Distinct \
+         from daily/max drawdown: catches a single bad trade before it \
+         blows the account. Disabled unless the plan or a pack entry \
+         enables it (P0.1)."
+    }
+
+    /// **P0.1 fix**: disabled unless the plan or the pack entry
+    /// explicitly enables it. Never relies on the trait default `true`.
+    fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            // A bound pack entry IS the enablement.
+            return p.value.is_some();
+        }
+        ctx.account.plan.per_trade_max_loss_pct.is_some()
+            || ctx.account.plan.per_trade_max_loss_money.is_some()
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
@@ -90,8 +145,10 @@ impl Rule for PerTradeMaxLossRule {
         if loss.0 >= dec!(0) {
             return Ok(RuleVerdict::Pass);
         }
-        let max_loss =
-            crate::core::types::Money(self.effective_max_loss_pct(ctx) * ctx.account.balance.0);
+        // P0.3: a mis-encoded unit must fail loudly, not silently pass.
+        let Some(max_loss) = self.effective_limit_money(ctx)? else {
+            return Ok(RuleVerdict::Pass);
+        };
         let loss_abs = loss.abs();
         if loss_abs.0 > max_loss.0 + self.tolerance_money().0 {
             // P1-5 fix: refuse to terminate on estimated equity. Realized
@@ -106,12 +163,7 @@ impl Rule for PerTradeMaxLossRule {
                 self,
                 ctx,
                 severity,
-                format!(
-                    "Per-trade max loss breach: trade lost {} > max {} ({}% of balance)",
-                    loss_abs,
-                    max_loss,
-                    self.effective_max_loss_pct(ctx) * dec!(100)
-                ),
+                format!("Per-trade max loss breach: trade lost {loss_abs} > max {max_loss}"),
             );
             return Ok(match severity {
                 ViolationSeverity::Liquidate => RuleVerdict::Liquidate(v),

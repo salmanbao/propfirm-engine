@@ -20,6 +20,28 @@ pub struct MaxDailyTradesRule {
     pub params: Option<RuleParams>,
 }
 
+impl MaxDailyTradesRule {
+    /// **P0.4 fix**: effective max daily trades — pack entry's value
+    /// if set (count semantics, fail-closed), else plan.
+    fn effective_max(&self, ctx: &RuleContext) -> Result<Option<u32>, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(None);
+            }
+            let Some(v) = p.value() else {
+                return Ok(None);
+            };
+            let n = u32::try_from(v).map_err(|_| {
+                crate::core::Error::invalid_config(format!(
+                    "max_daily_trades: pack value {v} is not a valid count"
+                ))
+            })?;
+            return Ok(Some(n));
+        }
+        Ok(ctx.account.plan.max_daily_trades)
+    }
+}
+
 impl Rule for MaxDailyTradesRule {
     fn id(&self) -> RuleId {
         RuleId::named("max_daily_trades")
@@ -42,13 +64,23 @@ impl Rule for MaxDailyTradesRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.max_daily_trades.is_some()
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let max = match ctx.account.plan.max_daily_trades {
-            Some(v) => v,
-            None => return Ok(RuleVerdict::Pass),
+        // P0.4: use the effective limit (pack entry overrides plan).
+        let Some(max) = self
+            .effective_max(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("max_daily_trades: {e}")))?
+        else {
+            return Ok(RuleVerdict::Pass);
         };
         let today = ctx.today_trades.len() as u32;
         if let Some(order) = &ctx.pending_order {

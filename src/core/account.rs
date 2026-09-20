@@ -167,6 +167,11 @@ pub struct Account {
     /// rejected before evaluation runs, preventing replay/reordering
     /// from silently producing a different verdict.
     pub last_tick_ts: Option<Timestamp>,
+
+    /// **P1.4/P1.5 fix**: execution time of the most recent fill.
+    /// Updated by the pipeline on every `TradeFilled` event; used by
+    /// the inactivity-termination rule (N days without a trade).
+    pub last_trade_at: Option<Timestamp>,
 }
 
 impl Account {
@@ -205,6 +210,7 @@ impl Account {
             target_reached_on_day: None,
             version: 0,
             last_tick_ts: None,
+            last_trade_at: None,
         }
     }
 

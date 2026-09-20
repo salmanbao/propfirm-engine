@@ -46,9 +46,27 @@ impl MaxDrawdownRule {
     }
 
     /// Effective drawdown pct — pack entry's value if set, else plan.
+    ///
+    /// **P0.3 fix**: the pack entry's `unit` is honoured: `Percent`
+    /// values are fractions of the plan's initial balance; `Money`
+    /// values are absolute limits normalized against the reference so
+    /// the comparison below stays in money space.
     fn effective_pct(&self, ctx: &RuleContext) -> rust_decimal::Decimal {
         if let Some(p) = &self.params {
             if let Some(v) = p.value() {
+                if matches!(p.unit, Some(crate::rulepack::RuleUnit::Money)) {
+                    let reference = match self.effective_basis(ctx) {
+                        crate::config::plan::LossReference::Static => ctx.account.initial_balance,
+                        crate::config::plan::LossReference::Trailing => ctx.account.peak_balance,
+                        crate::config::plan::LossReference::EodTrailing => {
+                            ctx.account.day_start_balance
+                        }
+                    };
+                    if reference.0.is_zero() {
+                        return v;
+                    }
+                    return v / reference.0;
+                }
                 return v;
             }
         }

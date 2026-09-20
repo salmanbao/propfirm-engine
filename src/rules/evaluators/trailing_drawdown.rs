@@ -22,6 +22,46 @@ pub struct TrailingDrawdownRule {
     pub params: Option<RuleParams>,
 }
 
+impl TrailingDrawdownRule {
+    /// Constructs a parameterized rule from a pack entry (P0-D fix).
+    #[must_use]
+    pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
+        TrailingDrawdownRule {
+            params: Some(RuleParams::from_entry(entry)),
+        }
+    }
+
+    /// **P0.4 fix**: effective trail pct — pack entry's value if set
+    /// (unit-aware: Percent → fraction of peak; Money → absolute),
+    /// else plan.
+    fn effective_trail_money(
+        &self,
+        ctx: &RuleContext,
+    ) -> Result<Option<crate::core::types::Money>, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(None);
+            }
+            let Some(v) = p.value() else {
+                return Ok(None);
+            };
+            return match p.unit {
+                Some(crate::rulepack::RuleUnit::Money) => Ok(Some(crate::core::types::Money(v))),
+                _ => Ok(Some(crate::core::types::Money(
+                    v * ctx.account.peak_equity.0,
+                ))),
+            };
+        }
+        if !ctx.account.plan.trailing_drawdown_enabled {
+            return Ok(None);
+        }
+        let pct = ctx.account.plan.trailing_drawdown_pct;
+        Ok(Some(crate::core::types::Money(
+            pct.0 * ctx.account.peak_equity.0,
+        )))
+    }
+}
+
 impl Rule for TrailingDrawdownRule {
     fn id(&self) -> RuleId {
         RuleId::named("trailing_drawdown")
@@ -44,17 +84,27 @@ impl Rule for TrailingDrawdownRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.trailing_drawdown_enabled
             && ctx.account.plan.trailing_drawdown_pct.0 > dec!(0)
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        if !ctx.account.plan.trailing_drawdown_enabled {
+        // P0.4: use the effective trail (pack entry overrides plan).
+        // A mis-encoded unit fails closed with a Hard violation.
+        let Some(trail_amount) = self
+            .effective_trail_money(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("trailing_drawdown: {e}")))?
+        else {
             return Ok(RuleVerdict::Pass);
-        }
-        let trail_pct = ctx.account.plan.trailing_drawdown_pct;
+        };
         let peak = ctx.account.peak_equity;
-        let trail_amount = Money(trail_pct.0 * peak.0);
         let floor = Money(peak.0 - trail_amount.0);
         let equity = ctx.account.equity;
         if equity.0 < floor.0 {
@@ -93,16 +143,6 @@ impl Rule for TrailingDrawdownRule {
             return Ok(RuleVerdict::EarlyWarning(v));
         }
         Ok(RuleVerdict::Pass)
-    }
-}
-
-impl TrailingDrawdownRule {
-    /// Constructs a parameterized rule from a pack entry (P0-D fix).
-    #[must_use]
-    pub fn from_entry(entry: &crate::rulepack::RuleEntry) -> Self {
-        TrailingDrawdownRule {
-            params: Some(RuleParams::from_entry(entry)),
-        }
     }
 }
 

@@ -45,6 +45,11 @@ impl Rule for GridTradingRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan. A grid
+        // pack entry means "grid forbidden" when enabled.
+        if let Some(p) = &self.params {
+            return p.enabled && !ctx.account.plan.grid_trading_allowed;
+        }
         !ctx.account.plan.grid_trading_allowed
     }
 

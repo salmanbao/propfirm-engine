@@ -21,6 +21,26 @@ pub struct MaxPositionSizeRule {
     pub params: Option<RuleParams>,
 }
 
+impl MaxPositionSizeRule {
+    /// **P0.4 fix**: effective max lots — pack entry's value if set
+    /// (count semantics, fail-closed), else plan.
+    fn effective_max_lots(
+        &self,
+        ctx: &RuleContext,
+    ) -> Result<Option<rust_decimal::Decimal>, crate::core::Error> {
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return Ok(None);
+            }
+            let Some(v) = p.value() else {
+                return Ok(None);
+            };
+            return Ok(Some(v));
+        }
+        Ok(ctx.account.plan.max_position_lots)
+    }
+}
+
 impl Rule for MaxPositionSizeRule {
     fn id(&self) -> RuleId {
         RuleId::named("max_position_size")
@@ -43,13 +63,23 @@ impl Rule for MaxPositionSizeRule {
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
+        // P0.4: pack entry's enabled flag overrides the plan.
+        if let Some(p) = &self.params {
+            if !p.enabled {
+                return false;
+            }
+            return p.value.is_some();
+        }
         ctx.account.plan.max_position_lots.is_some()
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
-        let max_lots = match ctx.account.plan.max_position_lots {
-            Some(v) => v,
-            None => return Ok(RuleVerdict::Pass),
+        // P0.4: use the effective limit (pack entry overrides plan).
+        let Some(max_lots) = self
+            .effective_max_lots(ctx)
+            .map_err(|e| crate::core::Error::RuleEval(format!("max_position_size: {e}")))?
+        else {
+            return Ok(RuleVerdict::Pass);
         };
         let Some(order) = &ctx.pending_order else {
             return Ok(RuleVerdict::Pass);

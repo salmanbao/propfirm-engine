@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     // 2. Build the pipeline.
-    let evaluator = Evaluator::new(plan.clone());
+    let evaluator = Evaluator::new(&plan);
     let store = InMemoryStore::new();
     store.put(account.clone())?;
     let notifier = LogNotifier::new();

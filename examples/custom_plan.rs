@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     println!("Custom plan validated: {plan:?}");
 
     let account = Account::new(AccountId::new(), plan.clone()).start(chrono::Utc::now())?;
-    let evaluator = Evaluator::new(plan);
+    let evaluator = Evaluator::new(&plan);
 
     // Submit an order with SL set.
     let order = Order {
