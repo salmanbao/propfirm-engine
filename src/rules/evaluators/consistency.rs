@@ -23,8 +23,6 @@ pub struct ConsistencyRule {
 }
 
 impl ConsistencyRule {
-    /// **P0.4 fix**: effective cap pct — pack entry's value if set,
-    /// else plan. Fail-closed on a bad unit via `effective_pct`.
     fn effective_cap(
         &self,
         ctx: &RuleContext,
@@ -36,14 +34,25 @@ impl ConsistencyRule {
             let Some(_) = p.value() else {
                 return Ok(None);
             };
-            let denom = ctx.account.total_realized_pnl;
+            let denom = ctx.account.sum_positive_days_profit;
             if denom.0.is_zero() {
-                // Denominator not ready yet; treat as no cap this round.
                 return Ok(None);
             }
             return Ok(Some(p.effective_pct("consistency", denom)?));
         }
         Ok(ctx.account.plan.consistency_pct.map(|p| p.0))
+    }
+
+    fn effective_severity(&self) -> ViolationSeverity {
+        if let Some(p) = &self.params {
+            if let Some(ref s) = p.severity {
+                return match s.as_str() {
+                    "hard" | "liquidate" => ViolationSeverity::Hard,
+                    _ => ViolationSeverity::Warning,
+                };
+            }
+        }
+        ViolationSeverity::Warning
     }
 }
 
@@ -61,7 +70,7 @@ impl Rule for ConsistencyRule {
         EvaluationScope::Periodic
     }
     fn severity(&self) -> ViolationSeverity {
-        ViolationSeverity::Warning
+        self.effective_severity()
     }
 
     fn description(&self) -> &'static str {

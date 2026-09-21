@@ -69,8 +69,8 @@ pub struct RuleParams {
     pub early_warning_pct: Option<rust_decimal::Decimal>,
     /// Whether the rule is enabled.
     pub enabled: bool,
-    /// Free-form params JSON (rule-kind-specific).
     pub params_json: String,
+    pub severity: Option<String>,
 }
 
 impl RuleParams {
@@ -97,6 +97,7 @@ impl RuleParams {
             early_warning_pct: e.early_warning_pct,
             enabled: e.enabled,
             params_json: e.params_json.clone(),
+            severity: e.severity.clone(),
         }
     }
 

@@ -424,6 +424,7 @@ pub async fn create_rule_pack(
                     priority: r.priority,
                     enabled: r.enabled,
                     params_json: r.params_json.unwrap_or_else(|| "{}".into()),
+                    severity: r.severity.clone(),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -525,6 +526,7 @@ pub async fn update_rule_pack(
                     priority: r.priority,
                     enabled: r.enabled,
                     params_json: r.params_json.unwrap_or_else(|| "{}".into()),
+                    severity: r.severity.clone(),
                 })
             },
         )
@@ -816,6 +818,8 @@ pub struct RuleEntryDto {
     pub priority: u32,
     pub enabled: bool,
     pub params_json: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -840,21 +844,4 @@ pub struct GetRulePackResponse {
     pub lifecycle: String,
     pub content_hash: String,
     pub json: String,
-}
-
-#[allow(dead_code)]
-#[must_use]
-pub fn build_pipeline(
-    state: &crate::api::server::ServerState,
-) -> Pipeline<InMemoryStore, LogNotifier> {
-    Pipeline::new(
-        state.evaluator.clone(),
-        state.store.clone(),
-        state.notifier.clone(),
-    )
-}
-
-#[allow(dead_code)]
-fn _silence_unused() -> Vec<Violation> {
-    Vec::new()
 }

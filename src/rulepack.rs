@@ -191,10 +191,8 @@ pub struct RuleEntry {
     pub priority: u32,
     /// Whether this rule is enabled in this pack.
     pub enabled: bool,
-    /// Free-form parameters specific to the rule kind, stored as a JSON
-    /// string (the engine never inspects this; the rule implementation
-    /// parses it itself).
     pub params_json: String,
+    pub severity: Option<String>,
 }
 
 impl RuleEntry {
@@ -215,6 +213,7 @@ impl RuleEntry {
             priority: 100,
             enabled: true,
             params_json: "{}".into(),
+            severity: None,
         }
     }
 }

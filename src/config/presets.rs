@@ -198,7 +198,8 @@ pub fn ftmo_1step() -> ChallengePlan {
     p.max_loss_reference = LossReference::EodTrailing;
     p.drawdown_on_balance = false;
     p.min_trading_days = 0; // 1-Step has no min days.
-    p.time_limit_days = None; // unlimited + inactivity termination (P1 future).
+    p.time_limit_days = None; // unlimited + inactivity termination.
+    p.inactivity_days = Some(30); // P1.5: FTMO 1-Step terminates after 30 days of no trading.
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
     p.weekend_holding_allowed = false;
@@ -254,6 +255,7 @@ pub fn fundednext_1step() -> ChallengePlan {
     p.max_loss_reference = LossReference::EodTrailing;
     p.min_trading_days = 0;
     p.time_limit_days = None;
+    p.inactivity_days = Some(30); // P1.5: FundedNext terminates after 30 days of no trading.
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
     p.weekend_holding_allowed = true;
@@ -285,6 +287,7 @@ pub fn topstep_futures() -> ChallengePlan {
     p.per_trade_max_loss_pct = Some(Pct(dec!(0.02)));
     p.min_trading_days = 5;
     p.time_limit_days = None;
+    p.inactivity_days = Some(30);
     p.news_trading_allowed = true;
     p.overnight_holding_allowed = true;
     p.weekend_holding_allowed = true;

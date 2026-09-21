@@ -97,7 +97,6 @@ pub mod engine;
 pub mod equity_input;
 pub mod events;
 pub mod liquidation;
-pub mod news_calendar;
 pub mod notifications;
 pub mod override_engine;
 pub mod persistence;

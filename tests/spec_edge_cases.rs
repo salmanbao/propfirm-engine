@@ -367,3 +367,191 @@ fn a1_effective_money_none_must_return_none_not_reference() {
     let result = params.effective_money("test_rule", reference).unwrap();
     assert_eq!(result, Some(Money(dec!(5000))));
 }
+
+#[test]
+fn p1_1_auto_rollover_on_future_tick() {
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::core::account::Account;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::tick::{Quote, Tick};
+    use propfirm::core::types::{Price, Symbol};
+    use propfirm::engine::evaluator::Evaluator;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let plan = ftmo_phase1();
+    let account = Account::new(AccountId::new(), plan.clone());
+    let store = InMemoryStore::new();
+    store.put(account.clone()).unwrap();
+    let evaluator = Evaluator::new(&plan);
+    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+
+    pipeline
+        .process(
+            account.id,
+            PipelineEvent::AccountStarted { at: chrono::Utc::now() },
+        )
+        .unwrap();
+
+    let pre = pipeline.store.get(account.id).unwrap().unwrap();
+    assert_eq!(pre.trading_day_index, 0, "start at day 0");
+
+    let tomorrow = chrono::Utc::now() + chrono::Duration::days(1);
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: tomorrow,
+        },
+    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: account.equity,
+                broker_balance: account.balance,
+            },
+        )
+        .unwrap();
+
+    let post = pipeline.store.get(account.id).unwrap().unwrap();
+    assert!(
+        post.trading_day_index >= 1,
+        "auto-rollover must have fired: trading_day_index={}, events={:?}",
+        post.trading_day_index,
+        result.events.iter().map(|e| format!("{:?}", e.kind)).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        post.day_start_balance, pre.balance,
+        "day_start_balance must snapshot the prior close"
+    );
+}
+
+#[test]
+fn p1_1_auto_rollover_not_triggered_for_current_day() {
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::core::account::Account;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::tick::{Quote, Tick};
+    use propfirm::core::types::{Price, Symbol};
+    use propfirm::engine::evaluator::Evaluator;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let plan = ftmo_phase1();
+    let account = Account::new(AccountId::new(), plan.clone());
+    let store = InMemoryStore::new();
+    store.put(account.clone()).unwrap();
+    let evaluator = Evaluator::new(&plan);
+    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+
+    pipeline
+        .process(
+            account.id,
+            PipelineEvent::AccountStarted { at: chrono::Utc::now() },
+        )
+        .unwrap();
+
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: account.equity,
+                broker_balance: account.balance,
+            },
+        )
+        .unwrap();
+
+    let post = pipeline.store.get(account.id).unwrap().unwrap();
+    assert_eq!(
+        post.trading_day_index, 0,
+        "same-day tick must NOT trigger auto-rollover"
+    );
+    let rollovers: Vec<_> = result
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, propfirm::core::events::DomainEventKind::DayRollover { .. }))
+        .collect();
+    assert!(
+        rollovers.is_empty(),
+        "no DayRollover event expected on same-day tick"
+    );
+}
+
+#[test]
+fn p1_2_eod_trailing_floor_resets_once_per_day() {
+    use propfirm::config::plan::LossReference;
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::core::account::Account;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::{dec, Money};
+    use propfirm::engine::state::AccountState;
+
+    let plan = ftmo_phase1().with_loss_reference(LossReference::EodTrailing);
+    let mut account = Account::new(AccountId::new(), plan);
+    account.balance = Money(dec!(100_000));
+    account.equity = Money(dec!(100_000));
+    account.day_start_balance = Money(dec!(100_000));
+    account.day_start_equity = Money(dec!(100_000));
+
+    let floor_day0 = account.max_dd_limit_eod_trailing();
+
+    let mut state = AccountState::new(account.clone());
+
+    state = state.apply_realized_pnl(
+        Money(dec!(2_000)),
+        Money::ZERO,
+        Money::ZERO,
+        chrono::Utc::now(),
+    );
+    let floor_after_profit = state.account.max_dd_limit_eod_trailing();
+    assert_eq!(
+        floor_after_profit, floor_day0,
+        "EOD floor must NOT change mid-day after a profitable trade"
+    );
+
+    let floor_before_rollover = state.account.max_dd_limit_eod_trailing();
+    assert_eq!(
+        floor_before_rollover.0, floor_day0.0,
+        "floor must stay at day-0 value until rollover"
+    );
+
+    state = state.rollover_day(true);
+    let floor_after_rollover = state.account.max_dd_limit_eod_trailing();
+    assert!(
+        floor_after_rollover.0 > floor_day0.0,
+        "EOD floor MUST reset upward after rollover: day0_floor={floor_day0}, post_rollover_floor={floor_after_rollover}"
+    );
+    assert_eq!(
+        state.account.day_start_balance,
+        Money(dec!(102_000)),
+        "day_start_balance must capture the prior day's close (100k + 2k profit)"
+    );
+
+    state = state.apply_realized_pnl(
+        Money(dec!(3_000)),
+        Money::ZERO,
+        Money::ZERO,
+        chrono::Utc::now(),
+    );
+    let floor_mid_day2 = state.account.max_dd_limit_eod_trailing();
+    assert_eq!(
+        floor_mid_day2, floor_after_rollover,
+        "floor must NOT change again until the next rollover"
+    );
+}

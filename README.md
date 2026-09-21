@@ -329,13 +329,16 @@ Rule packs are versioned JSON data, not compiled Rust. This is the binding spec'
 
 ## Testing
 
-**54 tests, all passing:**
+**103 tests, all passing:**
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Integration tests (`tests/integration.rs`) | 37 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
+| Unit tests (`src/`) | 19 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
+| Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
+| P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
+| P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
 | Property tests (`tests/property_tests.rs`) | 6 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 10 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop. |
+| Spec edge cases (`tests/spec_edge_cases.rs`) | 14 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none. |
 | Doctests | 1 | README example compiles. |
 
 ```bash

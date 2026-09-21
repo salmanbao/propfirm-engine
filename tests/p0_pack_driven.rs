@@ -61,6 +61,7 @@ fn make_pack(max_drawdown_pct: rust_decimal::Decimal) -> RulePack {
             priority: 1000,
             enabled: true,
             params_json: "{}".into(),
+            severity: None,
         }],
         initial_balance: Money(dec!(100_000)),
         leverage: 100,

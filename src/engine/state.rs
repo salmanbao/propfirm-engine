@@ -100,6 +100,11 @@ impl AccountState {
             if today_net.0 < self.account.largest_day_loss.0 {
                 self.account.largest_day_loss = today_net;
             }
+            if today_net.0 > rust_decimal::Decimal::ZERO {
+                self.account.sum_positive_days_profit = Money(
+                    self.account.sum_positive_days_profit.0 + today_net.0,
+                );
+            }
             self.account.active_trading_days += 1;
         }
         self.account.trading_day_index += 1;

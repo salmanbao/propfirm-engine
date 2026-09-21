@@ -143,6 +143,11 @@ pub struct Account {
     pub largest_day_profit: Money,
     /// Smallest single-day loss observed so far.
     pub largest_day_loss: Money,
+    /// **P1.3 fix**: sum of all positive daily profits (days where
+    /// `today_realized_pnl > 0` at rollover). Used as the denominator
+    /// by the consistency rule — industry-standard denominator, not
+    /// `total_realized_pnl` which includes losses.
+    pub sum_positive_days_profit: Money,
 
     /// **P1.1 fix**: equity at the start of the current server day. Used
     /// by `daily_drawdown()` when `drawdown_on_balance = false` (the
@@ -212,6 +217,7 @@ impl Account {
             total_swaps: Money::ZERO,
             largest_day_profit: Money::ZERO,
             largest_day_loss: Money::ZERO,
+            sum_positive_days_profit: Money::ZERO,
             day_start_equity: initial,
             target_reached_at: None,
             target_reached_on_day: None,

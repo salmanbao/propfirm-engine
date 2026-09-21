@@ -93,6 +93,26 @@ pub enum PipelineEvent {
     },
 }
 
+impl PipelineEvent {
+    /// Returns the wall-clock timestamp associated with this event.
+    /// Used by the auto-rollover check to determine whether the event
+    /// crosses a trading day boundary.
+    pub fn event_timestamp(&self) -> Timestamp {
+        match self {
+            PipelineEvent::AccountStarted { at } => *at,
+            PipelineEvent::OrderSubmitted { order } => order.submitted_at,
+            PipelineEvent::TradeFilled { trade } => trade.executed_at,
+            PipelineEvent::Tick { tick, .. } => tick.quote.ts,
+            PipelineEvent::TickEstimated { tick } => tick.quote.ts,
+            PipelineEvent::DayRollover { .. } => chrono::Utc::now(),
+            PipelineEvent::EndOfDay => chrono::Utc::now(),
+            PipelineEvent::OnDemand => chrono::Utc::now(),
+            PipelineEvent::EmergencyStop { at, .. } => *at,
+            PipelineEvent::OverrideBreach { override_record } => override_record.at,
+        }
+    }
+}
+
 /// The result of processing a pipeline event: snapshot + emitted events + rule-evaluation result.
 #[derive(Debug, Clone)]
 pub struct PipelineResult {
@@ -203,8 +223,32 @@ where
     ) -> crate::Result<PipelineResult> {
         let account_id = account.id;
         let expected_version = account.version;
-        let state = AccountState::new(account);
+        let mut state = AccountState::new(account);
         let mut events: Vec<DomainEvent> = Vec::new();
+
+        // P1.1 auto-rollover: if the event's timestamp falls in a new
+        // trading day compared to the account's current day, rollover
+        // automatically so correctness never depends on the caller
+        // sending DayRollover.
+        if !matches!(ev, PipelineEvent::DayRollover { .. }) {
+            let event_ts = ev.event_timestamp();
+            let event_day_start = state.account.plan.trading_day_start(event_ts);
+            let current_day_start =
+                state.account.plan.trading_day_start(chrono::Utc::now());
+            if event_day_start > current_day_start {
+                let had_trades = !state.account.today_realized_pnl.0.is_zero();
+                let rollover_ts = event_ts;
+                state = state.rollover_day(had_trades);
+                events.push(DomainEvent::new(
+                    account_id,
+                    DomainEventKind::DayRollover {
+                        new_day_index: state.account.trading_day_index,
+                        day_start: state.account.day_start_balance,
+                    },
+                    rollover_ts,
+                ));
+            }
+        }
 
         // Apply state transitions.
         let applied = self.apply_event(state, &ev, &mut events)?;
