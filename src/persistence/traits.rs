@@ -58,9 +58,6 @@ pub trait AccountStore: Send + Sync {
     /// Closes a position by id.
     fn close_position(&self, position_id: PositionId) -> Result<(), Error>;
 
-    /// Returns today's trades for an account (naive 24h window).
-    fn today_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error>;
-
     /// Returns trades for an account executed since `since`.
     /// Used by the pipeline to get trades for the current trading day
     /// based on the plan's timezone and day_reset_time.

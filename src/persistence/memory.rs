@@ -123,18 +123,6 @@ impl AccountStore for InMemoryStore {
         }
         Err(Error::NotFound(format!("position {position_id} not found")))
     }
-    fn today_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
-        let now = Utc::now();
-        Ok(self
-            .trades
-            .read()
-            .get(&id)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| (now - t.executed_at).num_hours() < 24)
-            .collect())
-    }
     fn today_trades_since(
         &self,
         id: AccountId,
