@@ -260,32 +260,3 @@ pub fn equity_after_tick(
         .fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
     Money(balance.0 + unreal.0)
 }
-
-/// **P1.11 fix**: applies a tick revaluation to equity using a
-/// per-symbol quote map. Each open position is valued against its own
-/// symbol's quote — correct for multi-symbol books.
-///
-/// Positions whose symbol is missing from the quote map contribute zero
-/// unrealized P&L (display-only path; broker-reported equity is the
-/// source of truth for breach decisions per P1-5).
-#[must_use]
-pub fn equity_after_tick_multi(
-    balance: Money,
-    positions: &[crate::core::position::Position],
-    quotes: &std::collections::HashMap<String, crate::core::tick::Quote>,
-) -> Money {
-    let unreal: Money = positions
-        .iter()
-        .filter(|p| p.is_open())
-        .map(|p| {
-            // Look up the quote for this position's symbol.
-            // If missing, the position contributes zero unrealized P&L
-            // (display-only; broker-reported equity is the source of truth).
-            match quotes.get(&p.symbol.0) {
-                Some(q) => p.unrealized_pnl(q),
-                None => Money::ZERO,
-            }
-        })
-        .fold(Money::ZERO, |acc, x| Money(acc.0 + x.0));
-    Money(balance.0 + unreal.0)
-}

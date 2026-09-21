@@ -329,17 +329,19 @@ Rule packs are versioned JSON data, not compiled Rust. This is the binding spec'
 
 ## Testing
 
-**105 tests, all passing:**
+**104 tests, all passing:**
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Unit tests (`src/`) | 20 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
+| Unit tests (`src/`) | 0 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
 | Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
 | P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
 | P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
 | Property tests (`tests/property_tests.rs`) | 6 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering. |
 | Spec edge cases (`tests/spec_edge_cases.rs`) | 15 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent. |
 | Doctests | 1 | README example compiles. |
+| API integration tests (`tests/api_integration.rs`) | 9 | Binding spec HTTP endpoints: evaluate, override, manual-run, breach-report, evaluate-order. |
+| API P0 fixes (`tests/api_p0_fixes.rs`) | 10 | Contract enforcement: idempotency, error-shape, overrides, etc. |
 
 ```bash
 # Run the full suite
