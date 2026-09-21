@@ -1,8 +1,12 @@
 //! Consistency rule.
 //!
 //! Prop firms require that no single trading day's profit exceeds a certain
-//! percentage (often 30–50%) of the total cumulative profit. This discourages
-//! lucky single-day wins and rewards steady performance.
+//! percentage (often 30–50%) of the sum of all positive trading days' profits.
+//! This discourages lucky single-day wins and rewards steady performance.
+//!
+//! The consistency cap is: `consistency_pct × total_realized_pnl`. The
+//! percentage itself is derived from `sum_positive_days_profit` (P1.3 fix)
+//! when a pack entry provides it.
 
 use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};

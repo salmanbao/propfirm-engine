@@ -303,9 +303,9 @@ impl Account {
     ///
     /// For now, the EOD reference is the same as `day_start_balance`
     /// (the closing balance from the prior trading day, captured at
-    /// rollover). When P1.5 lands a real timezone-aware day model,
-    /// `eod_reference_balance` becomes a separately-tracked field
-    /// stamped at midnight in the plan's timezone.
+    /// rollover). A future timezone-aware day model may make
+    /// `eod_reference_balance` a separately-tracked field stamped at
+    /// midnight in the plan's timezone.
     #[must_use]
     pub fn max_dd_limit_eod_trailing(&self) -> Money {
         let plan_dd = self.plan.max_total_drawdown_pct;

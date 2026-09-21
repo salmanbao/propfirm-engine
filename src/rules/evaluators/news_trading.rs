@@ -1,9 +1,9 @@
 //! News trading rule.
 //!
 //! Many prop firms forbid opening or closing positions around scheduled
-//! high-impact news events (e.g. NFP, FOMC, CPI). The rule uses a built-in
-//! calendar of well-known recurring events as an illustration; production
-//! deployments should supply a real-time news calendar via the engine's
+//! high-impact news events (e.g. NFP, FOMC, CPI). This module includes a
+//! hardcoded illustrative calendar of well-known recurring events. Production
+//! deployments should replace or augment the built-in list via the engine's
 //! configuration API.
 
 use crate::core::ids::RuleId;
