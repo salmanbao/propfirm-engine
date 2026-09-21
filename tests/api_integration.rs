@@ -22,6 +22,7 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt; // for collect()
+use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
@@ -41,6 +42,23 @@ fn test_tenant_id_str() -> String {
     test_tenant_id().to_string()
 }
 
+/// **§A.1 fix**: the test config now carries real credentials. The
+/// tenant key is bound to `test-tenant`, the service token authenticates
+/// `/internal/*`.
+fn test_auth_config() -> AuthConfig {
+    AuthConfig {
+        api_keys: std::sync::Arc::new(
+            [(test_tenant_id(), "tenant-secret".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        service_token: Some("service-secret".to_string()),
+        allow_insecure: false,
+    }
+}
+
+const SERVICE_KEY: &str = "service-secret";
+
 /// Builds a `ServerState` with one seeded account.
 async fn make_state_with_account() -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1();
@@ -48,7 +66,10 @@ async fn make_state_with_account() -> (Arc<parking_lot::RwLock<ServerState>>, Ac
         .with_tenant(test_tenant_id())
         .start(chrono::Utc::now())
         .unwrap();
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(plan)));
+    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(
+        plan,
+        test_auth_config(),
+    )));
     state.read().store.put(account.clone()).unwrap();
     (state, account)
 }
@@ -64,7 +85,8 @@ async fn send(
     let req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("X-Tenant-Id", tenant_id);
+        .header("X-Tenant-Id", tenant_id)
+        .header("Authorization", format!("Bearer {SERVICE_KEY}"));
     let req = if let Some(b) = body {
         req.header("content-type", "application/json")
             .body(Body::from(b))
@@ -317,7 +339,7 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let state = ServerState::new(plan);
+    let state = ServerState::new(plan, test_auth_config());
     state.store.put(account.clone()).unwrap();
     // Clone the state — this used to discard the seeded account.
     let cloned = state.clone();

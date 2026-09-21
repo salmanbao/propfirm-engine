@@ -1,5 +1,14 @@
 //! HTTP server.
+//!
+//! **§A.1 fix**: authentication is now real. The old `ServerState.api_key:
+//! Option<String>` was never set from any environment or config source and
+//! the old middleware short-circuited on `None` — the shipped server was
+//! unauthenticated behind auth-looking scaffolding. Credentials now come
+//! from the environment at startup, fail closed (see
+//! [`AuthConfig::from_env`]), and the middleware resolves a per-tenant
+//! identity from the presented key.
 
+use crate::api::auth::AuthConfig;
 use crate::api::handlers::SharedState;
 use crate::api::idempotency::IdempotencyStore;
 use crate::config::plan::ChallengePlan;
@@ -17,7 +26,10 @@ pub struct ServerState {
     pub event_store: crate::events::store::EventStore,
     pub rule_pack_store: InMemoryRulePackStore,
     pub idempotency: IdempotencyStore,
-    pub api_key: Option<String>,
+    /// **§A.1 fix**: parsed auth configuration (per-tenant keys + service
+    /// token). Required to build the router; an unauthenticated server
+    /// needs an explicit `PROPFIRM_ALLOW_INSECURE=1` escape hatch.
+    pub auth: AuthConfig,
 }
 
 impl Clone for ServerState {
@@ -38,14 +50,14 @@ impl Clone for ServerState {
             event_store: self.event_store.clone(),
             rule_pack_store: self.rule_pack_store.clone(),
             idempotency: self.idempotency.clone(),
-            api_key: self.api_key.clone(),
+            auth: self.auth.clone(),
         }
     }
 }
 
 impl ServerState {
     #[must_use]
-    pub fn new(plan: ChallengePlan) -> Self {
+    pub fn new(plan: ChallengePlan, auth: AuthConfig) -> Self {
         ServerState {
             evaluator: Evaluator::new(&plan),
             store: InMemoryStore::new(),
@@ -53,7 +65,7 @@ impl ServerState {
             event_store: crate::events::store::EventStore::in_memory(),
             rule_pack_store: InMemoryRulePackStore::new(),
             idempotency: IdempotencyStore::with_defaults(),
-            api_key: None,
+            auth,
         }
     }
 
@@ -70,34 +82,28 @@ impl ServerState {
     }
 }
 
+/// Builds and runs the HTTP server. **Fail closed**: refuses to start
+/// when no credentials are configured unless the explicit insecure
+/// escape hatch is set (a loud warning is printed in that case).
 pub async fn run_server(addr: &str, plan: ChallengePlan) -> Result<(), Box<dyn std::error::Error>> {
-    let state: SharedState = Arc::new(RwLock::new(ServerState::new(plan)));
+    let auth = AuthConfig::from_env()?;
+    for warning in auth.insecure_warnings() {
+        eprintln!("{warning}");
+    }
+    run_server_with_auth(addr, plan, auth).await
+}
+
+/// Runs the server with an explicit [`AuthConfig`] (used by tests and by
+/// embedders that build configuration themselves).
+pub async fn run_server_with_auth(
+    addr: &str,
+    plan: ChallengePlan,
+    auth: AuthConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state: SharedState = Arc::new(RwLock::new(ServerState::new(plan, auth)));
     let app = crate::api::routes::router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("propfirm-engine HTTP server listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-pub async fn auth_layer(
-    req: axum::http::Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> Result<axum::http::Response<axum::body::Body>, axum::http::StatusCode> {
-    let expected = match req
-        .extensions()
-        .get::<Option<String>>()
-        .and_then(|k| k.as_ref())
-    {
-        Some(k) => k.clone(),
-        None => return Ok(next.run(req).await),
-    };
-    let auth_header = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(axum::http::StatusCode::UNAUTHORIZED)?;
-    if auth_header != format!("Bearer {expected}") {
-        return Err(axum::http::StatusCode::UNAUTHORIZED);
-    }
-    Ok(next.run(req).await)
 }

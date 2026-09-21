@@ -24,26 +24,49 @@ use uuid::Uuid;
 
 pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
 
-/// Extracts `TenantId` from the `X-Tenant-Id` header.
+/// Extracts `TenantId` for the request.
 ///
-/// P1-9: every production call site takes a `TenantId`.  The header is
-/// **required** — callers that omit it get `BAD_REQUEST`.
-fn extract_tenant_id(headers: &HeaderMap) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
-    headers
-        .get("X-Tenant-Id")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                "missing X-Tenant-Id header".to_string(),
-            )
-        })?
-        .parse::<crate::tenant::TenantId>()
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+/// **§A.1 fix**: the tenant now comes from the *authenticated credential*
+/// (the per-tenant API key resolved by the auth middleware), **not** from
+/// the untrusted `X-Tenant-Id` header. The middleware already rejects a
+/// presented `X-Tenant-Id` that mismatches the key's tenant with 403, so
+/// by the time a handler runs the two agree. The service identity may
+/// act on any tenant — for it, the header IS the selection (validated as
+/// a UUID, then trusted because the platform bridge is the caller).
+fn extract_tenant_id(
+    identity: &crate::api::auth::AuthedIdentity,
+    headers: &HeaderMap,
+) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
+    match identity {
+        crate::api::auth::AuthedIdentity::Tenant(t) => Ok(*t),
+        crate::api::auth::AuthedIdentity::Service => {
+            // Platform service: picks the tenant explicitly per call.
+            headers
+                .get("X-Tenant-Id")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "missing X-Tenant-Id header (required for service identity)".to_string(),
+                    )
+                })?
+                .parse::<crate::tenant::TenantId>()
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        }
+    }
 }
 
 pub async fn health() -> &'static str {
     "ok"
+}
+
+/// `GET /ready` — readiness probe (§E.2; unauthenticated per §A.1).
+/// Distinct from `/health` (liveness): readiness reflects whether the
+/// service can process work. Currently both always succeed on a live
+/// server; the separation exists so readiness can degrade (e.g. store
+/// checks) without failing liveness.
+pub async fn ready() -> &'static str {
+    "ready"
 }
 
 /// `POST /internal/v1/evaluate` — the stateless evaluate contract.
@@ -77,6 +100,7 @@ pub async fn health() -> &'static str {
 pub async fn evaluate_internal(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<InternalEvaluateRequest>,
 ) -> Result<Json<InternalEvaluateResponse>, (StatusCode, String)> {
     // P0.8: idempotency — key → first response, conflicting bodies 409.
@@ -101,7 +125,7 @@ pub async fn evaluate_internal(
             crate::api::idempotency::IdempotencyOutcome::Fresh => {}
         }
     }
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let response = evaluate_internal_impl(&state, tenant_id, req)?;
     if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
@@ -239,9 +263,10 @@ fn evaluate_internal_impl(
 pub async fn override_breach(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -277,9 +302,10 @@ pub async fn override_breach(
 pub async fn manual_run(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -305,9 +331,10 @@ pub async fn manual_run(
 pub async fn breach_report(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(account_id_str): Path<String>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&account_id_str).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -344,9 +371,10 @@ pub async fn breach_report(
 pub async fn evaluate_order(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -406,9 +434,10 @@ pub async fn evaluate_order(
 pub async fn get_account(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<AccountSnapshotDto>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let uuid = Uuid::from_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let account_id = AccountId::from_uuid(uuid);
     let s = state.read();
@@ -426,6 +455,7 @@ pub async fn get_account(
 pub async fn create_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let rules: Vec<crate::rulepack::RuleEntry> =
@@ -451,7 +481,7 @@ pub async fn create_rule_pack(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-    let tenant = extract_tenant_id(&headers)?;
+    let tenant = extract_tenant_id(&identity.0, &headers)?;
     let pack = RulePack {
         id: req.id,
         version: req.version,
@@ -486,9 +516,10 @@ pub async fn create_rule_pack(
 pub async fn get_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<GetRulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&headers)?;
+    let tenant = extract_tenant_id(&identity.0, &headers)?;
     let s = state.read();
     let pack = s
         .rule_pack_store
@@ -514,10 +545,11 @@ pub async fn get_rule_pack(
 pub async fn update_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&headers)?;
+    let tenant = extract_tenant_id(&identity.0, &headers)?;
     let s = state.read();
     let mut pack = s
         .rule_pack_store
@@ -576,9 +608,10 @@ pub async fn update_rule_pack(
 pub async fn activate_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&headers)?;
+    let tenant = extract_tenant_id(&identity.0, &headers)?;
     let s = state.read();
     let mut pack = s
         .rule_pack_store
@@ -612,10 +645,11 @@ pub async fn activate_rule_pack(
 pub async fn supersed_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
     body: Option<Json<SupersedeRequest>>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&headers)?;
+    let tenant = extract_tenant_id(&identity.0, &headers)?;
     let s = state.read();
     let mut pack = s
         .rule_pack_store

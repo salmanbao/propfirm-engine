@@ -43,6 +43,8 @@ thiserror = "1.0"
 parking_lot = "0.12"
 anyhow = "1.0"
 sha2 = "0.10"
+# §A.1: constant-time comparison for API keys / service tokens.
+subtle = { version = "2.6", default-features = false }
 
 # Tracing
 tracing = { version = "0.1", optional = true }

@@ -1,5 +1,6 @@
 //! Optional HTTP API layer (axum-based).
 
+pub mod auth;
 pub mod dto;
 pub mod handlers;
 pub mod idempotency;

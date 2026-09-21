@@ -1,17 +1,23 @@
 //! HTTP routes.
 //!
-//! **P2-API fix**: the HTTP surface now covers the binding spec's engine
-//! contract. Endpoints:
+//! **§A.1 fix**: every route is behind [`auth_layer`](crate::api::auth::auth_layer)
+//! except `/health` and `/ready` (readiness probes). `/internal/*` routes
+//! accept only the service token; `/v1/*` routes accept tenant keys (or
+//! the service token). Endpoints:
 //!
-//! - `GET /health`
+//! - `GET /health` — liveness (unauthenticated)
+//! - `GET /ready` — readiness (unauthenticated)
 //! - `POST /internal/v1/evaluate` — the stateless evaluate contract
-//!   (takes `{account_id, state, rule_pack, tick}`, returns
-//!   `{verdict, state_after, metrics}`). This is what the platform's LCC
-//!   module calls.
-//! - `POST /internal/v1/override` — clear a false-positive breach.
-//! - `POST /internal/v1/manual-run` — force re-evaluation of an account.
+//!   (takes `{account_id, rule_pack, tick}`, returns
+//!   `{verdict, input_hash, metrics}`). This is what the platform's LCC
+//!   module calls; **service token required**.
+//! - `POST /internal/v1/override` — clear a false-positive breach
+//!   (**service token required**).
+//! - `POST /internal/v1/manual-run` — force re-evaluation of an account
+//!   (**service token required**).
 //! - `GET /internal/v1/breach-report/:account_id` — the trader-facing
-//!   "why did I fail" view with evidence (TD-25).
+//!   "why did I fail" view with evidence (TD-25) (**service token
+//!   required**).
 //! - `POST /v1/rule-packs` — create a new rule pack (draft).
 //! - `GET /v1/rule-packs/:id` — get a rule pack by id.
 //! - `PATCH /v1/rule-packs/:id` — update a draft rule pack.
@@ -24,9 +30,10 @@
 //! treats idempotency as non-negotiable everywhere). The server tracks the
 //! last N idempotency keys per endpoint to deduplicate retries.
 
+use crate::api::auth::auth_layer;
 use crate::api::handlers::{
     activate_rule_pack, breach_report, create_rule_pack, evaluate_internal, evaluate_order,
-    get_account, get_rule_pack, health, manual_run, override_breach, supersed_rule_pack,
+    get_account, get_rule_pack, health, manual_run, override_breach, ready, supersed_rule_pack,
     update_rule_pack, SharedState,
 };
 use axum::{
@@ -35,9 +42,10 @@ use axum::{
 };
 
 pub fn router(state: SharedState) -> Router {
-    let api_key = state.read().api_key.clone();
+    let auth = state.read().auth.clone();
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/internal/v1/evaluate", post(evaluate_internal))
         .route("/internal/v1/override", post(override_breach))
         .route("/internal/v1/manual-run", post(manual_run))
@@ -49,7 +57,13 @@ pub fn router(state: SharedState) -> Router {
         .route("/v1/rule-packs/:id", patch(update_rule_pack))
         .route("/v1/rule-packs/:id/activate", post(activate_rule_pack))
         .route("/v1/rule-packs/:id/supersede", post(supersed_rule_pack))
-        .layer(axum::Extension(api_key))
-        .layer(axum::middleware::from_fn(crate::api::server::auth_layer))
+        // §A.1: the auth config rides in the request extensions so the
+        // middleware can authenticate each call; the middleware then
+        // injects the resolved AuthedIdentity. Layer order matters: the
+        // LAST-added layer is outermost, so `Extension` must be added
+        // AFTER `from_fn` — the request passes Extension (config inserted)
+        // before reaching auth_layer.
+        .layer(axum::middleware::from_fn(auth_layer))
+        .layer(axum::Extension(auth))
         .with_state(state)
 }

@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use chrono::Datelike;
 use http_body_util::BodyExt;
+use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
@@ -34,6 +35,21 @@ fn test_tenant_id_str() -> String {
     test_tenant_id().to_string()
 }
 
+const TENANT_KEY: &str = "tenant-secret";
+const SERVICE_KEY: &str = "service-secret";
+
+fn test_auth_config() -> AuthConfig {
+    AuthConfig {
+        api_keys: std::sync::Arc::new(
+            [(test_tenant_id(), TENANT_KEY.to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        service_token: Some(SERVICE_KEY.to_string()),
+        allow_insecure: false,
+    }
+}
+
 /// Builds a `ServerState` with one seeded account at the given equity.
 async fn make_state_at(equity: i64) -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1(); // 10k static max loss: breach below 9k equity
@@ -43,7 +59,10 @@ async fn make_state_at(equity: i64) -> (Arc<parking_lot::RwLock<ServerState>>, A
         .unwrap();
     account.equity = Money::new(rust_decimal::Decimal::new(equity, 0));
     account.balance = account.equity;
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(plan)));
+    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(
+        plan,
+        test_auth_config(),
+    )));
     state.read().store.put(account.clone()).unwrap();
     (state, account)
 }
@@ -60,7 +79,8 @@ async fn send_with_headers(
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("X-Tenant-Id", &tid);
+        .header("X-Tenant-Id", &tid)
+        .header("Authorization", format!("Bearer {SERVICE_KEY}"));
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
