@@ -112,6 +112,22 @@ pub fn default_factory_for_kind(kind: &str) -> Option<RuleFactory> {
                 crate::rules::evaluators::inactivity::InactivityRule::from_entry(e),
             ))
         },
+        // §C.2: rules for the previously-unenforced plan fields.
+        "max_total_lots" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                crate::rules::evaluators::plan_caps::MaxTotalLotsRule::from_entry(e),
+            ))
+        },
+        "trading_hours" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                crate::rules::evaluators::plan_caps::TradingHoursRule::from_entry(e),
+            ))
+        },
+        "margin" => |e: &RuleEntry| {
+            Ok(Arc::new(
+                crate::rules::evaluators::plan_caps::MarginRule::from_entry(e),
+            ))
+        },
         _ => return None,
     })
 }
@@ -148,8 +164,8 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::{
         consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
         inactivity, max_daily_trades, max_drawdown, max_open_positions, max_position_size,
-        min_trading_days, news_trading, overnight_holding, per_trade_max_loss, profit_target,
-        sl_required, time_limit, tp_required, trailing_drawdown, weekend_holding,
+        min_trading_days, news_trading, overnight_holding, per_trade_max_loss, plan_caps,
+        profit_target, sl_required, time_limit, tp_required, trailing_drawdown, weekend_holding,
     };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
@@ -179,6 +195,10 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
         Arc::new(per_trade_max_loss::PerTradeMaxLossRule::default()),
         // P1.4/P1.5: inactivity termination (unlimited-time programs).
         Arc::new(inactivity::InactivityRule::default()),
+        // §C.2: previously-unenforced plan fields now enforced.
+        Arc::new(plan_caps::MaxTotalLotsRule::default()),
+        Arc::new(plan_caps::TradingHoursRule),
+        Arc::new(plan_caps::MarginRule),
     ]
 }
 

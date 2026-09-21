@@ -59,7 +59,7 @@ impl Rule for MaxPositionSizeRule {
     }
 
     fn description(&self) -> &'static str {
-        "Forbids orders exceeding the maximum lot size per order."
+        "Forbids orders exceeding the maximum lot size per order (order units are converted to lots via the instrument spec)."
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
@@ -84,13 +84,22 @@ impl Rule for MaxPositionSizeRule {
         let Some(order) = &ctx.pending_order else {
             return Ok(RuleVerdict::Pass);
         };
-        let order_lots = order.quantity.0;
+        // **§C.1 fix**: order quantity is in *units*; the limit is in
+        // *lots*. Convert via the instrument spec — comparing raw units
+        // against a lots limit was wrong by the contract size (×100,000
+        // for an FX major). Unregistered symbols use the 1-unit-per-lot
+        // fallback, preserving pre-§C.1 behaviour for them.
+        let spec = ctx.instruments.get(&order.symbol);
+        let order_lots = spec.units_to_lots(order.quantity).0;
         if order_lots > max_lots {
             let v = build_violation(
                 self,
                 ctx,
                 ViolationSeverity::Hard,
-                format!("Order lot size {order_lots} exceeds per-order limit {max_lots}"),
+                format!(
+                    "Order size {} units ({} lots) exceeds per-order limit {} lots",
+                    order.quantity.0, order_lots, max_lots
+                ),
             );
             return Ok(RuleVerdict::Fail(v));
         }

@@ -108,12 +108,22 @@ impl LiquidationInstruction {
             .filter(|p| p.is_open())
             .map(LiquidationPosition::from_position)
             .collect();
-        // Estimate notional: sum of |open_quantity × avg_entry_price|.
-        // Real notional computation requires an instrument spec table
-        // (P1.9 future); for now, this is a unit-less estimate.
+        // **§C.1 fix**: real notional via the instrument registry —
+        // `Σ lots × contract_size × price` per position. Positions whose
+        // symbol is unregistered use the 1-unit-per-lot fallback spec,
+        // which reduces to the old units×price estimate for them.
+        let registry = crate::core::instrument::InstrumentRegistry::new();
         let est_notional: rust_decimal::Decimal = liq_positions
             .iter()
-            .map(|p| (p.open_quantity.0 * p.avg_entry_price.0).abs())
+            .map(|p| {
+                let spec = registry.get(&p.symbol);
+                spec.notional(
+                    crate::core::types::Lots(spec.units_to_lots(p.open_quantity).0),
+                    p.avg_entry_price,
+                )
+                .0
+                .abs()
+            })
             .sum();
         LiquidationInstruction {
             id: crate::core::ids::EventId::new(),

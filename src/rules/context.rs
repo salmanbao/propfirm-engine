@@ -59,6 +59,11 @@ pub struct RuleContext {
     /// correlates its latest fill against this list; the old self-referential
     /// scan of `recent_events` could structurally never detect copying.
     pub cross_reference_trades: Vec<Trade>,
+    /// **§C.1 fix**: instrument specifications for units↔lots conversion
+    /// and notional valuation. Shared by max_position_size, the new
+    /// max_total_lots / margin rules, and liquidation. Falls back to a
+    /// 1-unit-per-lot default for unregistered symbols.
+    pub instruments: crate::core::instrument::InstrumentRegistry,
     pub server_time: ServerTime,
     pub kind: RuleContextKind,
     pub rule_config: RuleConfig,
@@ -81,6 +86,7 @@ impl RuleContext {
             latest_tick: None,
             recent_events: Vec::new(),
             cross_reference_trades: Vec::new(),
+            instruments: crate::core::instrument::InstrumentRegistry::new(),
             server_time: ServerTime::now(),
             kind: RuleContextKind::OnDemand,
             rule_config: RuleConfig::empty(),

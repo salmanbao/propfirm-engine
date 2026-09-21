@@ -7,6 +7,7 @@
 pub mod account;
 pub mod events;
 pub mod ids;
+pub mod instrument;
 pub mod order;
 pub mod position;
 pub mod tick;

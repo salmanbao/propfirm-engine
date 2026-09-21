@@ -138,9 +138,15 @@ impl Position {
 
     /// Computes the unrealized P&L given a current market quote.
     ///
-    /// `PnL` = (`current_price` - `entry_price`) * sign * volume * `contract_size`
-    /// For simplicity, `contract_size` = 1 here; multipliers should be applied
-    /// upstream by the adapter layer.
+    /// `PnL` = (`current_price` - `entry_price`) * sign * volume
+    ///
+    /// **§C.1 note**: `volume` here is the raw open quantity in units and
+    /// the computation implicitly uses `contract_size = 1`. Instrument-
+    /// aware valuation lives on
+    /// [`InstrumentSpec`](crate::core::instrument::InstrumentSpec)
+    /// (units↔lots + notional); estimators that need contract-size-correct
+    /// P&L should scale through it. Unregistered symbols behave exactly
+    /// as this function does (1 unit = 1 lot).
     #[must_use]
     pub fn unrealized_pnl(&self, quote: &Quote) -> Money {
         if !self.is_open() {

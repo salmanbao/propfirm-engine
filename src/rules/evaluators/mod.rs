@@ -25,6 +25,7 @@ pub mod min_trading_days;
 pub mod news_trading;
 pub mod overnight_holding;
 pub mod per_trade_max_loss;
+pub mod plan_caps;
 pub mod profit_target;
 pub mod sl_required;
 pub mod time_limit;
