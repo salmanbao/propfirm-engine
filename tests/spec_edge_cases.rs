@@ -568,3 +568,76 @@ fn p1_2_eod_trailing_floor_resets_once_per_day() {
         "floor must NOT change again until the next rollover"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Edge 14: mark_active_trading_day is wired and idempotent (A.6 fix).
+// ---------------------------------------------------------------------------
+
+/// **A.6 fix**: `mark_active_trading_day` was a no-op (`let _ = &mut self; self`),
+/// so `active_trading_days` only ever incremented at rollover — making the first
+/// day with trades count one day late. This test pins the corrected behavior:
+/// the first trade of a day increments immediately, and rollover does not
+/// double-count.
+#[test]
+fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
+    let plan = ftmo_phase1();
+    let acc = Account::new(AccountId::new(), plan)
+        .start(chrono::Utc::now())
+        .unwrap();
+    let mut state = AccountState::new(acc);
+
+    // Day 0 has no trades yet — count must be 0.
+    assert_eq!(
+        state.account.active_trading_days, 0,
+        "day 0 with no trades must not be counted"
+    );
+    assert!(
+        !state.account.day_counted_today,
+        "day_counted_today must start false"
+    );
+
+    // First trade of day 0: count must increment to 1.
+    state = state.mark_active_trading_day();
+    assert_eq!(
+        state.account.active_trading_days, 1,
+        "first trade of day 0 must count immediately"
+    );
+    assert!(
+        state.account.day_counted_today,
+        "day_counted_today must be set after mark"
+    );
+
+    // Second trade of the same day: idempotent — must NOT increment again.
+    state = state.mark_active_trading_day();
+    assert_eq!(
+        state.account.active_trading_days, 1,
+        "second trade on the same day must not double-count"
+    );
+
+    // Rollover with had_trades_today=true: the flag is already set, so
+    // rollover must NOT increment again (no double-count across the two paths).
+    state = state.rollover_day(true);
+    assert_eq!(
+        state.account.active_trading_days, 1,
+        "rollover must not double-count a day already marked"
+    );
+    assert!(
+        !state.account.day_counted_today,
+        "day_counted_today must reset to false at rollover"
+    );
+
+    // New day, first trade: count increments to 2.
+    state = state.mark_active_trading_day();
+    assert_eq!(
+        state.account.active_trading_days, 2,
+        "first trade of day 1 must count"
+    );
+
+    // Rollover with had_trades_today=false (no trades): flag is false, so
+    // rollover must NOT increment (a day with no trades is not a trading day).
+    state = state.rollover_day(false);
+    assert_eq!(
+        state.account.active_trading_days, 2,
+        "rollover without trades must not count the day"
+    );
+}

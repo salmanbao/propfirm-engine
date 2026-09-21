@@ -129,6 +129,11 @@ pub struct Account {
     pub trading_day_index: u32,
     /// Number of distinct trading days (days with at least one trade).
     pub active_trading_days: u32,
+    /// **A.6 fix**: whether the current trading day has already been
+    /// counted in `active_trading_days` (via [`AccountState::mark_active_trading_day`]).
+    /// Reset to `false` at each rollover. Prevents double-counting
+    /// when the first trade is counted immediately rather than at rollover.
+    pub day_counted_today: bool,
 
     /// Running tally of daily P&L for the current day.
     pub today_realized_pnl: Money,
@@ -211,6 +216,7 @@ impl Account {
             day_start_balance: initial,
             trading_day_index: 0,
             active_trading_days: 0,
+            day_counted_today: false,
             today_realized_pnl: Money::ZERO,
             total_realized_pnl: Money::ZERO,
             total_commissions: Money::ZERO,

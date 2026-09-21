@@ -437,7 +437,9 @@ where
                     Some(info) => (info.realized_pnl, trade.commission, trade.swap),
                     None => (Money::ZERO, trade.commission, trade.swap),
                 };
-                let new_state = state.apply_realized_pnl(pnl, commission, swap, trade.executed_at);
+                let new_state = state
+                    .apply_realized_pnl(pnl, commission, swap, trade.executed_at)
+                    .mark_active_trading_day();
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::TradeFilled {

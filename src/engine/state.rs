@@ -80,10 +80,6 @@ impl AccountState {
         self
     }
 
-    /// Rolls over a new trading day. Resets `today_realized_pnl`, updates
-    /// `day_start_balance` to the current balance, bumps day index, and
-    /// increments `active_trading_days` if the previous day had any trades.
-    ///
     /// **P1.7 fix**: also stamps `largest_day_profit` / `largest_day_loss`
     /// from the frozen `today_realized_pnl` (per-DAY tracking, not
     /// per-trade). This is the value the consistency rule checks
@@ -104,21 +100,36 @@ impl AccountState {
                 self.account.sum_positive_days_profit =
                     Money(self.account.sum_positive_days_profit.0 + today_net.0);
             }
-            self.account.active_trading_days += 1;
+            // A.6 fix: only count at rollover if mark_active_trading_day
+            // was NOT already called today (prevents double-count).
+            if !self.account.day_counted_today {
+                self.account.active_trading_days += 1;
+            }
         }
         self.account.trading_day_index += 1;
         self.account.day_start_balance = self.account.balance;
         self.account.day_start_equity = self.account.equity;
         self.account.today_realized_pnl = Money::ZERO;
+        // A.6 fix: reset the idempotency flag for the new day.
+        self.account.day_counted_today = false;
         self
     }
 
     /// Marks an active trading day (called on the first trade of a day).
+    ///
+    /// **A.6 fix**: this was a no-op (`let _ = &mut self; self`), so
+    /// `active_trading_days` only ever incremented at rollover — making
+    /// the first day with trades count one day late. Now it increments
+    /// `active_trading_days` and sets `day_counted_today` (idempotent).
+    ///
+    /// `rollover_day` skips its own increment when the flag is already
+    /// set, so the two paths cannot double-count.
     #[must_use]
     pub fn mark_active_trading_day(mut self) -> Self {
-        // active_trading_days is incremented at rollover if had_trades_today;
-        // here we just ensure today counts. The increment happens at rollover.
-        let _ = &mut self;
+        if !self.account.day_counted_today {
+            self.account.active_trading_days += 1;
+            self.account.day_counted_today = true;
+        }
         self
     }
 
