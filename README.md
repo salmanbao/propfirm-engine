@@ -72,12 +72,12 @@ Benchmarks are in `benches/engine.rs` and run via `cargo bench --features serial
 
 | Benchmark | Time | Throughput | Notes |
 |-----------|------|------------|-------|
-| `evaluate_tick_single` | ~3 µs | — | One tick evaluation against an account with all 19 rules registered. |
-| `evaluate_order_single` | ~3 µs | — | Pre-trade order evaluation against an account with all 19 rules registered. |
-| `pure_evaluate` | **1.85 µs** | ~540,000 evals/sec | The stateless pure-evaluate function (P1-7). What the platform's `/internal/v1/evaluate` endpoint calls. |
-| `realistic_load/10` | 13.3 µs | **~750,000 evals/sec** | 10 accounts × 1 tick (smallest realistic batch). |
-| `realistic_load/100` | 133 µs | **~750,000 evals/sec** | 100 accounts × 1 tick. |
-| `realistic_load/1000` | **1.31 ms** | **~763,000 evals/sec** | 1000 accounts × 1 tick. This is the platform's expected scale (60s cadence × 1000 accounts). |
+| `evaluate_tick_single` | ~4.2 µs | — | One tick evaluation against an account with all 22 rules registered. |
+| `evaluate_order_single` | ~3.5 µs | — | Pre-trade order evaluation against an account with all 22 rules registered. |
+| `pure_evaluate` | **19 µs** | ~52,600 evals/sec | The stateless pure-evaluate function (P1-7). What the platform's `/internal/v1/evaluate` endpoint calls. |
+| `realistic_load/10` | 48.8 µs | **~205,000 evals/sec** | 10 accounts × 1 tick (smallest realistic batch). |
+| `realistic_load/100` | 469.6 µs | **~213,000 evals/sec** | 100 accounts × 1 tick. |
+| `realistic_load/1000` | **4.87 ms** | **~205,000 evals/sec** | 1000 accounts × 1 tick. This is the platform's expected scale (60s cadence × 1000 accounts). |
 
 ### Headroom analysis
 
@@ -87,12 +87,12 @@ The platform spec calls for serving a per-account evaluation on every bridge tic
 1000 accounts / 60 seconds = ~17 evaluations/second required
 ```
 
-The engine sustains **763,000 evals/sec** at 1000-account batches — a **45,000× headroom** over the platform's required throughput. Single-account evaluations (`pure_evaluate`) run in under 2 microseconds, leaving ample budget for HTTP serialization, storage I/O, and network latency in the real deployment.
+The engine sustains **205,000 evals/sec** at 1000-account batches — a **12,000× headroom** over the platform's required throughput. Single-account evaluations (`pure_evaluate`) run in ~19 microseconds, leaving ample budget for HTTP serialization, storage I/O, and network latency in the real deployment.
 
 ### Benchmark methodology
 
 - **Tool**: `criterion 0.5` with statistical analysis (100 samples, 1s warmup, 2s measurement window).
-- **What's measured**: end-to-end evaluation including rule registry iteration, context construction, all 19 rule evaluations, decision aggregation. No I/O.
+- **What's measured**: end-to-end evaluation including rule registry iteration, context construction, all 22 rule evaluations, decision aggregation. No I/O.
 - **What's NOT measured**: HTTP serialization, storage reads/writes, network. Add ~50-200 µs per request for those in production.
 - **Run the benchmarks yourself**:
   ```bash
@@ -102,18 +102,18 @@ The engine sustains **763,000 evals/sec** at 1000-account batches — a **45,000
 ### Benchmark output (sample run)
 
 ```
-evaluate_tick_single      time:   [3.0785 µs  3.0897 µs  3.1025 µs]
-evaluate_order_single    time:   [3.0123 µs  3.0289 µs  3.0512 µs]
-pure_evaluate            time:   [1.8435 µs  1.8489 µs  1.8575 µs]
+evaluate_tick_single      time:   [4.1120 µs  4.2032 µs  4.2981 µs]
+evaluate_order_single    time:   [3.4109 µs  3.5046 µs  3.6079 µs]
+pure_evaluate            time:   [18.241 µs  19.057 µs  20.075 µs]
 
-realistic_load/10        time:   [13.20 µs  13.32 µs  13.47 µs]
-                         thrpt:  [742.98 Kelem/s  751.60 Kelem/s  757.47 Kelem/s]
+realistic_load/10        time:   [47.367 µs  48.755 µs  50.330 µs]
+                         thrpt:  [198.69 Kelem/s  205.11 Kelem/s  211.12 Kelem/s]
 
-realistic_load/100       time:   [132.02 µs  133.05 µs  134.59 µs]
-                         thrpt:  [742.98 Kelem/s  751.60 Kelem/s  757.47 Kelem/s]
+realistic_load/100       time:   [457.06 µs  469.59 µs  483.30 µs]
+                         thrpt:  [206.91 Kelem/s  212.95 Kelem/s  218.79 Kelem/s]
 
-realistic_load/1000      time:   [1.3069 ms  1.3095 ms  1.3123 ms]
-                         thrpt:  [762.05 Kelem/s  763.66 Kelem/s  765.16 Kelem/s]
+realistic_load/1000      time:   [4.7542 ms  4.8719 ms  4.9978 ms]
+                         thrpt:  [200.09 Kelem/s  205.26 Kelem/s  210.34 Kelem/s]
 ```
 
 ### Why it's fast
@@ -329,16 +329,16 @@ Rule packs are versioned JSON data, not compiled Rust. This is the binding spec'
 
 ## Testing
 
-**103 tests, all passing:**
+**105 tests, all passing:**
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Unit tests (`src/`) | 19 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
+| Unit tests (`src/`) | 20 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
 | Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
 | P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
 | P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
 | Property tests (`tests/property_tests.rs`) | 6 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 14 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none. |
+| Spec edge cases (`tests/spec_edge_cases.rs`) | 15 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent. |
 | Doctests | 1 | README example compiles. |
 
 ```bash
