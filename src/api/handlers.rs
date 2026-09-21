@@ -9,11 +9,8 @@ use crate::api::dto::{AccountSnapshotDto, EvaluateOrderRequest, EvaluateOrderRes
 use crate::core::ids::AccountId;
 use crate::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
 use crate::core::types::{Price, Quantity, Symbol};
-use crate::core::violation::Violation;
-use crate::engine::pipeline::{Pipeline, PipelineEvent};
-use crate::notifications::log::LogNotifier;
+use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
-use crate::persistence::memory::InMemoryStore;
 use crate::persistence::rulepack_store::RulePackStore;
 use crate::persistence::traits::AccountStore;
 use crate::rulepack::RulePack;

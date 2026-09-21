@@ -391,7 +391,9 @@ fn p1_1_auto_rollover_on_future_tick() {
     pipeline
         .process(
             account.id,
-            PipelineEvent::AccountStarted { at: chrono::Utc::now() },
+            PipelineEvent::AccountStarted {
+                at: chrono::Utc::now(),
+            },
         )
         .unwrap();
 
@@ -423,7 +425,11 @@ fn p1_1_auto_rollover_on_future_tick() {
         post.trading_day_index >= 1,
         "auto-rollover must have fired: trading_day_index={}, events={:?}",
         post.trading_day_index,
-        result.events.iter().map(|e| format!("{:?}", e.kind)).collect::<Vec<_>>(),
+        result
+            .events
+            .iter()
+            .map(|e| format!("{:?}", e.kind))
+            .collect::<Vec<_>>(),
     );
     assert_eq!(
         post.day_start_balance, pre.balance,
@@ -454,7 +460,9 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
     pipeline
         .process(
             account.id,
-            PipelineEvent::AccountStarted { at: chrono::Utc::now() },
+            PipelineEvent::AccountStarted {
+                at: chrono::Utc::now(),
+            },
         )
         .unwrap();
 
@@ -485,7 +493,12 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
     let rollovers: Vec<_> = result
         .events
         .iter()
-        .filter(|e| matches!(e.kind, propfirm::core::events::DomainEventKind::DayRollover { .. }))
+        .filter(|e| {
+            matches!(
+                e.kind,
+                propfirm::core::events::DomainEventKind::DayRollover { .. }
+            )
+        })
         .collect();
     assert!(
         rollovers.is_empty(),
