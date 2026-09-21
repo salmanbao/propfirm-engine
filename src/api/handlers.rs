@@ -177,6 +177,31 @@ fn evaluate_internal_impl(
     if let Some(first) = trade_errors.first() {
         return Err((StatusCode::BAD_REQUEST, first.clone()));
     }
+    // §A.2: cross-account reference trades for the copy-trading rule.
+    // Each is decoded against a *synthetic* account id placeholder; the
+    // real origin account id is not transmitted. A reference that somehow
+    // carries this account's own id is dropped defensively.
+    let cross_ref_account_id = AccountId::from_uuid(Uuid::new_v4());
+    let mut cross_errors: Vec<String> = Vec::new();
+    let cross_reference_trades: Vec<crate::core::trade::Trade> = req
+        .cross_reference_trades
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|t| match t.into_domain(cross_ref_account_id) {
+            Ok(tr) => Some(tr),
+            Err(e) => {
+                cross_errors.push(e);
+                None
+            }
+        })
+        .collect();
+    if let Some(first) = cross_errors.first() {
+        return Err((StatusCode::BAD_REQUEST, first.clone()));
+    }
+    let cross_reference_trades: Vec<crate::core::trade::Trade> = cross_reference_trades
+        .into_iter()
+        .filter(|t| t.account_id != account_id)
+        .collect();
     // Pure evaluate (P1-7) — no storage mutation. P0-C: server_time is
     // explicit so the verdict is reproducible from recorded inputs. On
     // the stateless path server_time derives from the tick's own
@@ -191,6 +216,7 @@ fn evaluate_internal_impl(
         crate::rules::context::RuleContextKind::OnTick,
         server_time,
         crate::pure::EvaluateInputs::for_tick(&positions, &trades, &tick)
+            .with_cross_reference_trades(cross_reference_trades)
             .with_equity_source(equity_source),
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -738,6 +764,11 @@ pub struct InternalEvaluateRequest {
     /// **P0.6 fix**: today's trades for trade-dependent rules.
     #[serde(default)]
     pub today_trades: Option<Vec<TradeDto>>,
+    /// **§A.2 fix**: fills from *other* accounts (cross-account reference
+    /// feed) for the copy-trading rule. Never include this account's own
+    /// trades — they are ignored (defensively filtered) by the rule.
+    #[serde(default)]
+    pub cross_reference_trades: Option<Vec<TradeDto>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

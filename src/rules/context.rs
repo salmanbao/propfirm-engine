@@ -53,6 +53,12 @@ pub struct RuleContext {
     pub latest_trade: Option<Trade>,
     pub latest_tick: Option<Tick>,
     pub recent_events: Vec<DomainEvent>,
+    /// **§A.2 fix**: cross-account reference trades — fills from *other*
+    /// accounts supplied by the platform bridge (never this account's own
+    /// trades). [`CopyTradingRule`](crate::rules::evaluators::copy_trading::CopyTradingRule)
+    /// correlates its latest fill against this list; the old self-referential
+    /// scan of `recent_events` could structurally never detect copying.
+    pub cross_reference_trades: Vec<Trade>,
     pub server_time: ServerTime,
     pub kind: RuleContextKind,
     pub rule_config: RuleConfig,
@@ -74,6 +80,7 @@ impl RuleContext {
             latest_trade: None,
             latest_tick: None,
             recent_events: Vec::new(),
+            cross_reference_trades: Vec::new(),
             server_time: ServerTime::now(),
             kind: RuleContextKind::OnDemand,
             rule_config: RuleConfig::empty(),

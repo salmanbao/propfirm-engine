@@ -245,8 +245,15 @@ impl StateDelta {
 }
 
 /// Helper: applies a tick revaluation to equity given open positions.
-/// (Single-symbol variant — used by the broker-reported path where the
-/// engine does NOT recompute equity; kept for backwards compatibility.)
+///
+/// **Single-quote valuation (§A.2 — documented limitation)**: every open
+/// position, regardless of its symbol, is valued with the ONE quote on
+/// the tick. A book holding GBPUSD while the tick carries an EURUSD
+/// quote gets an economically meaningless P&L — the caller must only use
+/// this on single-symbol books, or accept that the estimate is display-
+/// only (breach rules refuse to terminate on estimates, P1-5).
+/// `equity_after_tick_multi` (per-symbol quotes) was deleted as dead
+/// code; reintroduce per-symbol valuation here if a caller needs it.
 #[must_use]
 pub fn equity_after_tick(
     balance: Money,

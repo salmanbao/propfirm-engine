@@ -1,8 +1,18 @@
 //! Grid / martingale trading rule.
 //!
-//! Detects grid patterns: multiple orders on the same symbol with evenly
-//! spaced prices and increasing (martingale) or uniform (grid) lot sizes.
-//! Uses a simple heuristic on the recent trades.
+//! Detects grid patterns: multiple entry orders on the same symbol with
+//! evenly spaced prices (low coefficient of variation of the price gaps).
+//!
+//! **Pack-driven resolution (§B fix)**: two thresholds are pack-settable —
+//!
+//! - the entry's `value` is the **minimum entry count** that constitutes a
+//!   grid (interpreted through `unit` via [`RuleParams::effective_count`];
+//!   uninterpretable units fail closed);
+//! - the coefficient-of-variation threshold may additionally be set via
+//!   `params_json: {"cv_threshold": 0.05}` (default 0.05).
+//!
+//! When `None` (constructed via `Default`), the rule falls back to the
+//! built-in defaults (3 entries, CV < 0.05).
 
 use crate::core::ids::RuleId;
 use crate::core::types::dec;
@@ -11,16 +21,46 @@ use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::params::{ParameterizedRule, RuleParams};
 use crate::rules::registry::build_violation;
 use crate::rules::traits::{Rule, RuleVerdict};
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::MathematicalOps;
 
 #[derive(Debug, Clone, Default)]
 pub struct GridTradingRule {
-    /// **P0-D fix**: pack-derived parameters. When `Some`, rule reads
-    /// `value`/`basis`/`tolerance_cents`/`priority` from here instead of
-    /// from `ctx.account.plan` — so a tenant editing the pack actually
-    /// changes the verdict. When `None` (constructed via `Default`), the
-    /// rule falls back to plan-derived config.
+    /// **P0-D fix**: pack-derived parameters. When `Some`, the rule reads
+    /// the min-entry count from the entry's `value` and the CV threshold
+    /// from `params_json`. When `None` (constructed via `Default`), the
+    /// rule falls back to the built-in defaults.
     pub params: Option<RuleParams>,
+}
+
+/// Default coefficient-of-variation threshold below which entry spacing is
+/// considered "uniform" (grid-like).
+pub const DEFAULT_CV_THRESHOLD: rust_decimal::Decimal = dec!(0.05);
+/// Default minimum number of same-symbol entries that constitute a grid.
+pub const DEFAULT_MIN_ENTRIES: usize = 3;
+
+impl GridTradingRule {
+    /// Resolves the effective minimum-entry count (pack value → default).
+    fn effective_min_entries(&self) -> Result<usize, crate::core::Error> {
+        if let Some(p) = &self.params {
+            let n = p.effective_count("grid_trading")?;
+            return n.to_i64().map(|v| v as usize).ok_or_else(|| {
+                crate::core::Error::invalid_config(
+                    "grid_trading: pack value is not a valid entry count",
+                )
+            });
+        }
+        Ok(DEFAULT_MIN_ENTRIES)
+    }
+
+    /// Resolves the effective CV threshold (pack `params_json` → default).
+    #[must_use]
+    fn effective_cv_threshold(&self) -> rust_decimal::Decimal {
+        self.params
+            .as_ref()
+            .and_then(|p| p.json_decimal("cv_threshold"))
+            .unwrap_or(DEFAULT_CV_THRESHOLD)
+    }
 }
 
 impl Rule for GridTradingRule {
@@ -41,7 +81,7 @@ impl Rule for GridTradingRule {
     }
 
     fn description(&self) -> &'static str {
-        "Detects suspicious grid / martingale patterns from recent trades."
+        "Detects suspicious grid patterns: many same-symbol entries at uniform price spacing."
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
@@ -57,9 +97,11 @@ impl Rule for GridTradingRule {
         if ctx.account.plan.grid_trading_allowed {
             return Ok(RuleVerdict::Pass);
         }
+        let min_entries = self.effective_min_entries()?;
+        let cv_threshold = self.effective_cv_threshold();
         // We look at recent entry trades on the same symbol as the pending
-        // order. If we see >= 3 entries at evenly-spaced prices (within 5%
-        // coefficient of variation of price gaps), call it a grid.
+        // order. If we see >= min_entries at evenly-spaced prices (CV of the
+        // price gaps below the pack-configured threshold), call it a grid.
         let Some(order) = &ctx.pending_order else {
             return Ok(RuleVerdict::Pass);
         };
@@ -70,7 +112,7 @@ impl Rule for GridTradingRule {
             .filter(|t| t.symbol == *symbol && t.trade_side == crate::core::trade::TradeSide::Entry)
             .collect();
         entries.sort_by_key(|t| t.executed_at);
-        if entries.len() < 3 {
+        if entries.len() < min_entries {
             return Ok(RuleVerdict::Pass);
         }
         // Take the last 5 entries.
@@ -105,7 +147,7 @@ impl Rule for GridTradingRule {
             / rust_decimal::Decimal::from(gaps.len());
         let std = var.sqrt().unwrap_or(dec!(0));
         let cv = std / mean;
-        if cv < dec!(0.05) {
+        if cv < cv_threshold {
             // Very uniform spacing → grid-like
             let v = build_violation(
                 self,

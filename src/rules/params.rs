@@ -217,6 +217,30 @@ impl RuleParams {
         }
     }
 
+    /// Extracts a decimal-valued key from the entry's `params_json`
+    /// (e.g. `{"cv_threshold": 0.05}` → `0.05`). Used by rules with
+    /// secondary thresholds that don't fit the single `value` slot
+    /// (grid CV threshold, copy-trading window, …).
+    ///
+    /// Requires the `serialization` feature to parse JSON; without it
+    /// this returns `None` and callers fall back to their documented
+    /// defaults (documented limitation, not silent misconfiguration —
+    /// the primary `value` slot is still honoured on every build).
+    #[must_use]
+    pub fn json_decimal(&self, key: &str) -> Option<rust_decimal::Decimal> {
+        #[cfg(feature = "serialization")]
+        {
+            let v: serde_json::Value = serde_json::from_str(&self.params_json).ok()?;
+            let n = v.get(key)?.as_f64()?;
+            rust_decimal::Decimal::try_from(n).ok()
+        }
+        #[cfg(not(feature = "serialization"))]
+        {
+            let _ = key;
+            None
+        }
+    }
+
     /// **P0.3 fix**: interprets the entry's `value` for rules whose
     /// limit is a *count* (min_trading_days, max_open_positions,
     /// max_daily_trades) or a *quantity* (max_position_size,

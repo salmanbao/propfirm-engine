@@ -68,6 +68,7 @@ pub fn evaluate(
     ctx.open_positions = inputs.open_positions.to_vec();
     ctx.today_trades = inputs.today_trades.to_vec();
     ctx.recent_events = inputs.recent_events;
+    ctx.cross_reference_trades = inputs.cross_reference_trades.clone();
     ctx.rule_config = crate::config::rule_config::RuleConfig::from_plan(&account.plan);
     // P0-C: explicit server_time — rules read this instead of `Utc::now()`.
     ctx.server_time = server_time;
@@ -191,6 +192,10 @@ pub struct EvaluateInputs<'a> {
     pub today_trades: &'a [Trade],
     /// Recent domain events (for event-scanning rules).
     pub recent_events: Vec<DomainEvent>,
+    /// **§A.2 fix**: fills from *other* accounts (cross-account reference
+    /// feed) used by the copy-trading rule. Never include this account's
+    /// own trades here.
+    pub cross_reference_trades: Vec<Trade>,
     /// Pending (pre-trade) order, if evaluating an order.
     pub pending_order: Option<&'a Order>,
     /// Most recent fill, if evaluating a trade.
@@ -227,6 +232,15 @@ impl<'a> EvaluateInputs<'a> {
     #[must_use]
     pub fn with_equity_source(mut self, src: EquitySource) -> Self {
         self.equity_source = src;
+        self
+    }
+
+    /// **§A.2 fix**: supplies the cross-account reference trades used by
+    /// the copy-trading rule. The caller (platform bridge) must only
+    /// pass fills from *other* accounts.
+    #[must_use]
+    pub fn with_cross_reference_trades(mut self, trades: Vec<Trade>) -> Self {
+        self.cross_reference_trades = trades;
         self
     }
 }

@@ -1,10 +1,14 @@
 //! News trading rule.
 //!
 //! Many prop firms forbid opening or closing positions around scheduled
-//! high-impact news events (e.g. NFP, FOMC, CPI). This module includes a
-//! hardcoded illustrative calendar of well-known recurring events. Production
-//! deployments should replace or augment the built-in list via the engine's
-//! configuration API.
+//! high-impact news events (e.g. NFP, FOMC, CPI).
+//!
+//! **Calendar source (§A.2 fix — documented limitation)**: the calendar is
+//! the private, hardcoded [`builtin_events`] list in this module. It is
+//! **not pluggable** — the pluggable calendar trait this doc once
+//! referenced was removed. Production deployments that need a live
+//! calendar feed must extend `builtin_events` (or replace this rule via
+//! the registry); there is no configuration seam.
 
 use crate::core::ids::RuleId;
 use crate::core::violation::{ViolationKind, ViolationSeverity};
@@ -33,8 +37,9 @@ pub struct NewsEvent {
     pub minute: u32,
 }
 
-/// Returns the built-in list of recurring news events. Real deployments
-/// should augment or replace this list with a live calendar feed.
+/// Returns the built-in list of recurring news events. **Hardcoded and
+/// not pluggable** (§A.2): there is no calendar-provider seam; the
+/// pluggable API this list once promised was removed.
 #[must_use]
 pub fn builtin_events() -> Vec<NewsEvent> {
     vec![

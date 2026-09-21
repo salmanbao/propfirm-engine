@@ -576,12 +576,15 @@ fn test_news_window_detection() {
 
 #[test]
 fn test_copy_trading_detection() {
-    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    // REWRITTEN with the §A.2 cross-account fix (was: three same-account
+    // events in recent_events — structurally self-referential). Copy
+    // trading is now detected by correlating the trader's fill against a
+    // reference feed of OTHER accounts' fills via
+    // `RuleContext::cross_reference_trades`.
     let plan = ftmo_phase1();
-    let account = Account::new(AccountId::new(), plan)
+    let mut acc = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    let mut acc = account;
     acc.plan.copy_trading_allowed = false;
     let evaluator = Evaluator::new(&acc.plan);
     let now = chrono::Utc::now();
@@ -596,24 +599,32 @@ fn test_copy_trading_detection() {
         Money::ZERO,
         now,
     );
-    let ref_trade = Trade { ..trade.clone() };
-    let mut events = Vec::new();
-    for _ in 0..3 {
-        let ev = DomainEvent::new(
-            acc.id,
-            DomainEventKind::TradeFilled {
-                trade: ref_trade.clone(),
-            },
-            now,
-        );
-        events.push(ev);
-    }
-    let result = evaluator
-        .evaluate_trade(&acc, &trade, &[], &[], events)
-        .unwrap();
+    // Three fills from three OTHER accounts, same symbol/side/size, same
+    // instant — the copied-signal signature.
+    let reference: Vec<Trade> = (0..3)
+        .map(|_| {
+            Trade::new(
+                propfirm::core::ids::OrderId::new(),
+                AccountId::new(), // a different account
+                Symbol::new("EURUSD"),
+                OrderSide::Buy,
+                TradeSide::Entry,
+                Price(dec!(1.08)),
+                Quantity(dec!(1)),
+                Money::ZERO,
+                now,
+            )
+        })
+        .collect();
+    use propfirm::rules::context::RuleContext;
+    let mut ctx = RuleContext::for_trade_fill(acc.clone(), &trade);
+    ctx.open_positions = Vec::new();
+    ctx.today_trades = Vec::new();
+    ctx.cross_reference_trades = reference;
+    let result = evaluator.evaluate(&ctx).unwrap();
     assert!(
         result.decision.kind.is_fail(),
-        "expected copy-trading failure, got {:?}",
+        "expected cross-account copy-trading failure, got {:?}",
         result.decision.kind
     );
 }

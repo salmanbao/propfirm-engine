@@ -91,7 +91,6 @@
 #![allow(clippy::missing_errors_doc)]
 
 pub mod config;
-pub mod copy_trading;
 pub mod core;
 pub mod engine;
 pub mod equity_input;
