@@ -302,7 +302,9 @@ fn test_consistency_rule_warns() {
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    account.total_realized_pnl = Money(dec!(1_000));
+    // Consistency uses sum_positive_days_profit as the denominator
+    // (industry standard), not total_realized_pnl (which includes losses).
+    account.sum_positive_days_profit = Money(dec!(1_000));
     account.largest_day_profit = Money(dec!(700)); // 70% > 50% cap
     let evaluator = Evaluator::new(&account.plan);
     // Use OnDemand context so all rules (including Periodic) run.

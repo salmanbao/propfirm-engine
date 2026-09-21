@@ -188,6 +188,21 @@ pub struct Account {
     /// Updated by the pipeline on every `TradeFilled` event; used by
     /// the inactivity-termination rule (N days without a trade).
     pub last_trade_at: Option<Timestamp>,
+
+    /// **§D.2 fix**: number of payouts executed on this account.
+    /// Drives the scaling-plan tier selection (80 → 90 → 100).
+    pub payout_count: u32,
+    /// **§D.2 fix**: balance watermark stamped at the last approved
+    /// payout. The next payout's profit basis is `balance −` this value
+    /// (or `initial_balance` before the first payout), so profit already
+    /// paid out is never paid again.
+    pub balance_at_last_payout: Money,
+    /// **§D.2 fix**: when the last payout was approved (cycle enforcement).
+    pub last_payout_at: Option<Timestamp>,
+    /// **§D.2 fix**: whether the enrolment-fee refund has already been
+    /// consumed (paid out once alongside the first payout when the plan
+    /// is refundable).
+    pub refund_used: bool,
 }
 
 impl Account {
@@ -230,6 +245,10 @@ impl Account {
             version: 0,
             last_tick_ts: None,
             last_trade_at: None,
+            payout_count: 0,
+            balance_at_last_payout: initial,
+            last_payout_at: None,
+            refund_used: false,
         }
     }
 
@@ -307,11 +326,10 @@ impl Account {
     /// floor floats up *once per day* at the trading-session rollover —
     /// distinct from continuous `Trailing` (which floats intraday).
     ///
-    /// For now, the EOD reference is the same as `day_start_balance`
-    /// (the closing balance from the prior trading day, captured at
-    /// rollover). A future timezone-aware day model may make
-    /// `eod_reference_balance` a separately-tracked field stamped at
-    /// midnight in the plan's timezone.
+    /// The EOD reference is `day_start_balance` (the closing balance from
+    /// the prior trading day, captured at rollover). The timezone-aware
+    /// day model (P1.5) provides the rollover boundaries in the plan's
+    /// configured timezone.
     #[must_use]
     pub fn max_dd_limit_eod_trailing(&self) -> Money {
         let plan_dd = self.plan.max_total_drawdown_pct;

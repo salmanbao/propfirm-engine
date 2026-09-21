@@ -79,6 +79,8 @@ Benchmarks are in `benches/engine.rs` and run via `cargo bench --features serial
 | `realistic_load/100` | 469.6 µs | **~213,000 evals/sec** | 100 accounts × 1 tick. |
 | `realistic_load/1000` | **4.87 ms** | **~205,000 evals/sec** | 1000 accounts × 1 tick. This is the platform's expected scale (60s cadence × 1000 accounts). |
 
+*Benchmarks measured with `cargo bench --features serialization,in-memory-store --bench engine` on the current rule set (22 rules).*
+
 ### Headroom analysis
 
 The platform spec calls for serving a per-account evaluation on every bridge tick at a 60-second cadence across potentially thousands of accounts. At 1000 accounts, that's:
@@ -87,7 +89,7 @@ The platform spec calls for serving a per-account evaluation on every bridge tic
 1000 accounts / 60 seconds = ~17 evaluations/second required
 ```
 
-The engine sustains **205,000 evals/sec** at 1000-account batches — a **12,000× headroom** over the platform's required throughput. Single-account evaluations (`pure_evaluate`) run in ~19 microseconds, leaving ample budget for HTTP serialization, storage I/O, and network latency in the real deployment.
+The engine sustains **~205,000 evals/sec** at 1000-account batches — over **12,000×** the required throughput for the core evaluation path. Single-account evaluations (`pure_evaluate`) run in ~19 microseconds. Note: these benchmarks cover the pure evaluation path only (rule evaluation, decision aggregation); they do not include HTTP serialization, storage I/O, or network latency.
 
 ### Benchmark methodology
 
@@ -329,19 +331,22 @@ Rule packs are versioned JSON data, not compiled Rust. This is the binding spec'
 
 ## Testing
 
-**104 tests, all passing:**
+**136 tests + 1 doctest, all passing:**
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Unit tests (`src/`) | 0 | Core logic: account, money, types, pipeline, config, rulepack, risk metrics. |
+| Unit tests (`src/`) | 16 | Core logic: auth (7), instrument registry (4), payout engine (4), plus doctests. |
 | Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
 | P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
 | P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
 | Property tests (`tests/property_tests.rs`) | 6 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 15 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent. |
-| Doctests | 1 | README example compiles. |
+| Spec edge cases (`tests/spec_edge_cases.rs`) | 16 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent, phase-progression-emits-plan-upgraded. |
+| Doctests | 1 | README example compiles (1 ignored). |
 | API integration tests (`tests/api_integration.rs`) | 9 | Binding spec HTTP endpoints: evaluate, override, manual-run, breach-report, evaluate-order. |
 | API P0 fixes (`tests/api_p0_fixes.rs`) | 10 | Contract enforcement: idempotency, error-shape, overrides, etc. |
+| Auth A.1 tests (`tests/auth_a1.rs`) | 10 | HTTP authentication: missing/wrong credentials ⇒ 401, valid key ⇒ 200, tenant mismatch ⇒ 403, /health & /ready exempt, /internal/* service-token-only, env fail-closed. |
+| Batch A.2/C.1/C.2 tests (`tests/ab_batch.rs`, `tests/c_batch.rs`) | 18 | Cross-account copy-trading detection (3), pack-driven time_limit/grid/copy Trading thresholds (3), instrument spec units→lots conversion (3), margin/max_total_lots/trading_hours rules (9). |
+| D.1 martingale/grid tests (`tests/d1_martingale.rs`) | 7 | Lot-escalation-on-loss detection (3), grid spacing regularity (2), severity/configurable knobs (2). |
 
 ```bash
 # Run the full suite

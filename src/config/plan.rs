@@ -11,7 +11,7 @@ use crate::core::Error;
 use chrono_tz::Tz;
 
 /// Phase of the challenge lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ChallengePhase {
     Phase1,
     Phase2,
@@ -50,7 +50,9 @@ impl std::fmt::Display for ChallengePhase {
 /// reads this field to decide which reference to use. Plans that do not
 /// set it explicitly default to `Trailing` for backward compatibility —
 /// but every preset in [`crate::config::presets`] sets it deliberately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum LossReference {
     /// Drawdown is measured from the initial deposit; the floor never
     /// moves. This is the mode most V1 phase-1/phase-2 challenges use for
@@ -98,7 +100,7 @@ impl std::str::FromStr for LossReference {
 }
 
 /// Metadata about the plan (firm name, version, currency).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlanMeta {
     pub firm_name: String,
     pub program_name: String,
@@ -120,7 +122,7 @@ impl Default for PlanMeta {
 }
 
 /// The full challenge plan.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChallengePlan {
     pub id: ChallengeId,
     pub phase: ChallengePhase,
@@ -188,6 +190,10 @@ pub struct ChallengePlan {
     /// calculations. The offset is applied to `chrono::Utc::now()` to
     /// determine the plan's "server day" boundary (midnight in this
     /// timezone). When `None`, UTC is assumed (existing behaviour).
+    #[serde(
+        serialize_with = "serialize_timezone",
+        deserialize_with = "deserialize_timezone"
+    )]
     pub timezone: Option<Tz>,
 
     /// **P1.1 fix**: hour-of-day (0..23) when the server day resets.
@@ -220,6 +226,15 @@ pub struct ChallengePlan {
     /// termination" (several 2026 programs). When `Some(n)`, the account
     /// is terminated after `n` consecutive days without a trade.
     pub inactivity_days: Option<u32>,
+    /// **§D.2 fix**: enrolment-fee refund amount for refundable plans,
+    /// added to the trader's first payout on top of the profit split.
+    /// `Money::ZERO` when the plan is not refundable. This is the
+    /// consumer of the previously-dead `refundable` field.
+    pub refund_fee_amount: Money,
+    /// **§D.2 fix**: payout policy — minimum payout, cycle, scaling
+    /// tiers. `None` means the tenant has not configured payouts (the
+    /// payout endpoints are inert for this plan).
+    pub payout_config: Option<crate::payout::PayoutConfig>,
 }
 
 impl ChallengePlan {
@@ -456,6 +471,32 @@ impl Default for ChallengePlan {
             hft_ban_enabled: false,
             hft_min_round_trip_seconds: 60,
             inactivity_days: None,
+            refund_fee_amount: Money::ZERO,
+            payout_config: Some(crate::payout::PayoutConfig::default()),
         }
+    }
+}
+
+fn serialize_timezone<S>(tz: &Option<Tz>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match tz {
+        Some(tz) => serializer.serialize_str(tz.name()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_timezone<'de, D>(deserializer: D) -> Result<Option<Tz>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    match value {
+        Some(name) => {
+            let tz = name.parse::<Tz>().map_err(serde::de::Error::custom)?;
+            Ok(Some(tz))
+        }
+        None => Ok(None),
     }
 }

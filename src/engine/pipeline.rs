@@ -91,6 +91,16 @@ pub enum PipelineEvent {
     OverrideBreach {
         override_record: crate::override_engine::Override,
     },
+    /// **§D.2 fix**: a payout request. Evaluates the payout via the
+    /// plan's [`PayoutConfig`](crate::payout::PayoutConfig); a permitted
+    /// request transitions the account to `PayoutPending` and emits
+    /// `PayoutRequested`; a rejected request returns an error carrying
+    /// the reason.
+    PayoutRequest,
+    /// **§D.2 fix**: approval of a pending payout. Executes the payout
+    /// (balance deduction, watermark/tier bookkeeping), resolves
+    /// `PayoutPending` → `Funded`, and emits `PayoutApproved`.
+    PayoutApprove,
 }
 
 impl PipelineEvent {
@@ -109,6 +119,8 @@ impl PipelineEvent {
             PipelineEvent::OnDemand => chrono::Utc::now(),
             PipelineEvent::EmergencyStop { at, .. } => *at,
             PipelineEvent::OverrideBreach { override_record } => override_record.at,
+            // Payout events use wall-clock now (they are ops-initiated).
+            PipelineEvent::PayoutRequest | PipelineEvent::PayoutApprove => chrono::Utc::now(),
         }
     }
 }
@@ -215,6 +227,18 @@ where
 
     /// Common path for `process` and `process_for_tenant` once the
     /// account is loaded. Owns the OCC write.
+    /// Returns the next phase for a successful phase completion.
+    fn next_phase_for(
+        phase: &crate::config::plan::ChallengePhase,
+    ) -> crate::config::plan::ChallengePhase {
+        use crate::config::plan::ChallengePhase::{Funded, Phase1, Phase2};
+        match phase {
+            Phase1 => Phase2,
+            Phase2 => Funded,
+            Funded => Phase1, // unreachable in practice; keeps the match exhaustive
+        }
+    }
+
     fn process_with_loaded_account(
         &mut self,
         account: Account,
@@ -295,6 +319,22 @@ where
                 },
                 ctx.server_time.ts(),
             ));
+            // §D.3: phase progression — when a phase's success conditions are
+            // met (target hit + min trading days), upgrade to the next phase.
+            // The new phase's limits take effect on the next evaluation.
+            let from_phase = final_state.account.plan.phase;
+            let to_phase = Self::next_phase_for(&from_phase);
+            if let Ok(upped) = final_state.clone().upgrade_phase(to_phase) {
+                final_state = upped;
+                events.push(DomainEvent::new(
+                    account_id,
+                    DomainEventKind::PlanUpgraded {
+                        from_phase,
+                        to_phase,
+                    },
+                    ctx.server_time.ts(),
+                ));
+            }
         }
         if let Some(target_status) = result.decision.account_status_target() {
             let from = final_state.account.status;
@@ -593,6 +633,96 @@ where
                         to: crate::core::account::AccountStatus::Active,
                     },
                     override_record.at,
+                ));
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnDemand,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
+            }
+            // §D.2: payout request — evaluate via the plan's payout
+            // config; a permitted request moves the funded account to
+            // PayoutPending. A rejected request is a typed error.
+            PipelineEvent::PayoutRequest => {
+                let account_id = state.account.id;
+                let config = state.account.plan.payout_config.clone().ok_or_else(|| {
+                    crate::Error::invalid_state("plan has no payout configuration")
+                })?;
+                let now = chrono::Utc::now();
+                let quote = crate::payout::quote_payout(
+                    &state.account,
+                    &config,
+                    state.account.last_payout_at,
+                    Some(state.account.balance_at_last_payout),
+                    state.account.refund_used,
+                    now,
+                );
+                if let Some(rejected) = &quote.rejected {
+                    return Err(crate::Error::invalid_state(format!(
+                        "payout request rejected: {rejected:?}"
+                    )));
+                }
+                let from = state.account.status;
+                let new_state = state.mark_payout_pending()?;
+                events.push(DomainEvent::new(
+                    account_id,
+                    DomainEventKind::PayoutRequested {
+                        profit_basis: quote.profit_basis,
+                        amount: quote.amount,
+                    },
+                    now,
+                ));
+                if from != new_state.account.status {
+                    events.push(DomainEvent::new(
+                        account_id,
+                        DomainEventKind::AccountStatusChanged {
+                            from,
+                            to: new_state.account.status,
+                        },
+                        now,
+                    ));
+                }
+                Ok(AppliedEvent {
+                    state: new_state,
+                    ctx_kind: OnDemand,
+                    open_positions,
+                    today_trades,
+                    recent_events,
+                })
+            }
+            // §D.2: payout approval — execute the payout (bookkeeping +
+            // balance deduction), resolve PayoutPending → Funded.
+            PipelineEvent::PayoutApprove => {
+                let account_id = state.account.id;
+                let config = state.account.plan.payout_config.clone().ok_or_else(|| {
+                    crate::Error::invalid_state("plan has no payout configuration")
+                })?;
+                let now = chrono::Utc::now();
+                let quote = crate::payout::quote_payout(
+                    &state.account,
+                    &config,
+                    state.account.last_payout_at,
+                    Some(state.account.balance_at_last_payout),
+                    state.account.refund_used,
+                    now,
+                );
+                if let Some(rejected) = &quote.rejected {
+                    return Err(crate::Error::invalid_state(format!(
+                        "payout approval rejected: {rejected:?}"
+                    )));
+                }
+                let mut new_state = state;
+                let amount = quote.amount;
+                let fee_refund = quote.fee_refund;
+                crate::payout::record_payout(&mut new_state.account, amount, fee_refund, now)?;
+                new_state.account.refund_used =
+                    new_state.account.refund_used || fee_refund.0 > rust_decimal::Decimal::ZERO;
+                events.push(DomainEvent::new(
+                    account_id,
+                    DomainEventKind::PayoutApproved { amount, fee_refund },
+                    now,
                 ));
                 Ok(AppliedEvent {
                     state: new_state,

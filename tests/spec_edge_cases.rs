@@ -641,3 +641,234 @@ fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
         "rollover without trades must not count the day"
     );
 }
+
+/// §D.3: phase progression — when a phase's success conditions are met
+/// (target hit + min trading days), the account upgrades to the next phase
+/// and emits a `PlanUpgraded` event.
+#[test]
+fn spec_d3_phase_progression_emits_plan_upgraded() {
+    use propfirm::core::events::DomainEventKind;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let plan = ftmo_phase1().with_min_days(1); // meet min days quickly
+    let account = Account::new(AccountId::new(), plan.clone())
+        .with_tenant(propfirm::tenant::TenantId::named("phase-test"))
+        .start(chrono::Utc::now())
+        .unwrap();
+    let store = InMemoryStore::new();
+    store.put(account.clone()).unwrap();
+    let notifier = LogNotifier::new();
+    let evaluator = propfirm::engine::evaluator::Evaluator::new(&plan);
+    let mut pipeline = Pipeline::new(evaluator, store.clone(), notifier);
+
+    // Account is already started (status=Active from Account::start()).
+    // Submit an order and fill it to get a trade.
+    let order = propfirm::core::order::Order::market_open(
+        account.id,
+        Symbol::new("EURUSD"),
+        propfirm::core::order::OrderSide::Buy,
+        propfirm::core::types::Quantity(dec!(1)),
+        Some(Price(dec!(1.05))),
+        Some(Price(dec!(1.10))),
+        chrono::Utc::now(),
+    );
+    pipeline
+        .process(account.id, PipelineEvent::OrderSubmitted { order })
+        .unwrap();
+
+    let trade = propfirm::core::trade::Trade {
+        id: propfirm::core::ids::TradeId::new(),
+        order_id: propfirm::core::ids::OrderId::new(),
+        account_id: account.id,
+        symbol: Symbol::new("EURUSD"),
+        side: propfirm::core::order::OrderSide::Buy,
+        trade_side: propfirm::core::trade::TradeSide::Exit,
+        price: Price(dec!(1.10)),
+        quantity: propfirm::core::types::Quantity(dec!(1)),
+        commission: Money::ZERO,
+        swap: Money::ZERO,
+        executed_at: chrono::Utc::now(),
+        exit_info: Some(propfirm::core::trade::TradeExit {
+            position_id: propfirm::core::ids::PositionId::new(),
+            realized_pnl: Money(dec!(5000)),
+            closed_quantity: propfirm::core::types::Quantity(dec!(1)),
+            entry_price: Price(dec!(1.05)),
+            exit_price: Price(dec!(1.10)),
+        }),
+        comment: Some(String::new()),
+    };
+    pipeline
+        .process(account.id, PipelineEvent::TradeFilled { trade })
+        .unwrap();
+
+    // Now hit the profit target with a broker tick.
+    // Initial balance = 10,000, target = 8% = 800. We already made 5,000.
+    // So we've already exceeded the target. Send a tick to trigger evaluation.
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.10)),
+            ask: Price(dec!(1.1002)),
+            ts: chrono::Utc::now(),
+        },
+    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: Money(dec!(15000)),
+                broker_balance: Money(dec!(15000)),
+            },
+        )
+        .unwrap();
+
+    // Check that we got a PlanUpgraded event (Phase1 → Phase2).
+    let plan_upgraded = result
+        .events
+        .iter()
+        .any(|e| matches!(e.kind, DomainEventKind::PlanUpgraded { .. }));
+    assert!(
+        plan_upgraded,
+        "expected PlanUpgraded event when phase success conditions are met"
+    );
+
+    // Verify the account is now in Phase2.
+    let stored = store.get(account.id).unwrap().unwrap();
+    assert_eq!(
+        stored.plan.phase,
+        propfirm::config::plan::ChallengePhase::Phase2,
+        "account should be upgraded to Phase2"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge 14 (D.4): LiquidationRequested lists the correct open positions.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spec_d4_liquidation_requested_lists_correct_positions() {
+    use propfirm::core::events::DomainEventKind;
+    use propfirm::core::position::{Position, PositionSide};
+    use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let plan = ftmo_phase1();
+    let mut account = Account::new(AccountId::new(), plan)
+        .start(chrono::Utc::now())
+        .unwrap();
+    // ftmo_phase1 starts at $10,000 with 10% static max total loss → floor $9,000.
+    // Broker-reported equity below the floor must Liquidate.
+    account.equity = Money(dec!(8_900));
+    account.balance = Money(dec!(8_900));
+
+    let store = InMemoryStore::new();
+    store.put(account.clone()).unwrap();
+
+    let evaluator = Evaluator::new(&account.plan);
+    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+
+    // Seed two open positions in the store so the pipeline can build the
+    // liquidation instruction from `open_positions`.
+    let p1 = Position::open(
+        account.id,
+        Symbol::new("EURUSD"),
+        PositionSide::Long,
+        Price(dec!(1.0800)),
+        Quantity(dec!(1)),
+        chrono::Utc::now(),
+        Money::ZERO,
+        None,
+        None,
+        None,
+        None,
+    );
+    let p2 = Position::open(
+        account.id,
+        Symbol::new("GBPUSD"),
+        PositionSide::Short,
+        Price(dec!(1.2500)),
+        Quantity(dec!(2)),
+        chrono::Utc::now(),
+        Money::ZERO,
+        None,
+        None,
+        None,
+        None,
+    );
+    pipeline.store.add_position(p1.clone()).unwrap();
+    pipeline.store.add_position(p2.clone()).unwrap();
+
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
+
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: Money(dec!(8_900)),
+                broker_balance: Money(dec!(8_900)),
+            },
+        )
+        .unwrap();
+
+    // A Liquidate decision must have been emitted.
+    assert!(
+        matches!(
+            result.result.decision.kind,
+            DecisionKind::Liquidate | DecisionKind::Emergency
+        ),
+        "expected liquidation decision, got {:?}",
+        result.result.decision.kind
+    );
+
+    // Extract the LiquidationRequested event.
+    let liq_events: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            DomainEventKind::LiquidationRequested { instruction } => Some(instruction),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        liq_events.len(),
+        1,
+        "expected exactly one LiquidationRequested event"
+    );
+    let instruction = liq_events[0];
+
+    // The instruction must list both open positions, in deterministic order.
+    let expected_ids = vec![p1.id, p2.id];
+    let actual_ids: Vec<_> = instruction
+        .positions
+        .iter()
+        .map(|p| p.position_id)
+        .collect();
+    assert_eq!(
+        actual_ids, expected_ids,
+        "liquidation instruction must list both open positions"
+    );
+
+    // Positions that are closed must not appear.
+    assert!(
+        instruction
+            .positions
+            .iter()
+            .all(|p| p.open_quantity.0 > rust_decimal::Decimal::ZERO),
+        "liquidation instruction must not include closed positions"
+    );
+}

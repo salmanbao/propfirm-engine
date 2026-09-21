@@ -98,6 +98,7 @@ pub mod events;
 pub mod liquidation;
 pub mod notifications;
 pub mod override_engine;
+pub mod payout;
 pub mod persistence;
 pub mod pure;
 pub mod reporting;

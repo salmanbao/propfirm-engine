@@ -208,6 +208,25 @@ impl AccountState {
         self
     }
 
+    /// **§D.2 fix**: transitions a funded account to
+    /// [`AccountStatus::PayoutPending`] after a permitted payout request.
+    /// Idempotent: requesting twice from `PayoutPending` is a no-op.
+    /// Only valid from `Funded` (or already-pending); anything else is a
+    /// state error.
+    pub fn mark_payout_pending(mut self) -> Result<Self, Error> {
+        use crate::core::account::AccountStatus::{Funded, PayoutPending};
+        match self.account.status {
+            Funded => {
+                self.account.status = PayoutPending;
+                Ok(self)
+            }
+            PayoutPending => Ok(self),
+            other => Err(Error::invalid_state(format!(
+                "cannot request a payout from status {other:?} — only funded accounts can be paid"
+            ))),
+        }
+    }
+
     /// Delta description (used by the pipeline to emit events).
     #[must_use]
     pub fn delta(&self) -> StateDelta {

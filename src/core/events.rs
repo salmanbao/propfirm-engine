@@ -57,6 +57,24 @@ pub enum DomainEventKind {
         from_phase: crate::config::plan::ChallengePhase,
         to_phase: crate::config::plan::ChallengePhase,
     },
+    /// **§D.2 fix**: a payout was requested for the account. Transitions
+    /// a funded account to [`AccountStatus::PayoutPending`]; the payout
+    /// subsystem evaluates and approves/rejects the request.
+    PayoutRequested {
+        /// Profit basis at request time.
+        profit_basis: Money,
+        /// Requested amount (basis × trader share).
+        amount: Money,
+    },
+    /// **§D.2 fix**: a payout request was approved and executed. Resolves
+    /// `PayoutPending` back to `Funded` and stamps the payout
+    /// bookkeeping on the account.
+    PayoutApproved {
+        /// Final paid amount.
+        amount: Money,
+        /// Fee refund included in the payout (0 when none).
+        fee_refund: Money,
+    },
     /// **P1.10 fix**: liquidation requested. The bridge must close all
     /// listed positions immediately. Carries the full instruction
     /// (positions, reason, audit metadata) so the bridge has everything

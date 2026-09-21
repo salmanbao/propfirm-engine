@@ -4,9 +4,10 @@
 //! percentage (often 30–50%) of the sum of all positive trading days' profits.
 //! This discourages lucky single-day wins and rewards steady performance.
 //!
-//! The consistency cap is: `consistency_pct × total_realized_pnl`. The
-//! percentage itself is derived from `sum_positive_days_profit` (P1.3 fix)
-//! when a pack entry provides it.
+//! The consistency cap is: `consistency_pct × sum_positive_days_profit`.
+//! The denominator is the sum of all positive days' profits (not net
+//! `total_realized_pnl` which includes losses) — this is the industry-
+//! standard definition used by FTMO and others.
 
 use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
@@ -78,7 +79,7 @@ impl Rule for ConsistencyRule {
     }
 
     fn description(&self) -> &'static str {
-        "Largest single-day profit must not exceed X% of total cumulative profit."
+        "Largest single-day profit must not exceed X% of the sum of all positive days' profits."
     }
 
     fn is_enabled(&self, ctx: &RuleContext) -> bool {
@@ -101,9 +102,9 @@ impl Rule for ConsistencyRule {
             return Ok(RuleVerdict::Pass);
         };
         let cap_pct = crate::core::types::Pct(cap_pct_raw);
-        let total_profit = ctx.account.total_realized_pnl;
+        let total_profit = ctx.account.sum_positive_days_profit;
         if total_profit.0 <= dec!(0) {
-            // No profit yet → nothing to check
+            // No positive days yet → nothing to check
             return Ok(RuleVerdict::Pass);
         }
         let largest_day = ctx.account.largest_day_profit;
@@ -117,7 +118,7 @@ impl Rule for ConsistencyRule {
                 ctx,
                 ViolationSeverity::Warning,
                 format!(
-                    "Largest single-day profit {largest_day} exceeds {}% of total profit {total_profit} (cap {cap})",
+                    "Largest single-day profit {largest_day} exceeds {}% of sum of positive days' profits {total_profit} (cap {cap})",
                     cap_pct.0 * dec!(100)
                 ),
             );

@@ -28,6 +28,14 @@ default = ["serialization", "in-memory-store"]
 serialization = ["serde", "serde_json", "chrono/serde"]
 server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:tokio"]
 in-memory-store = []
+postgres = [
+    "dep:sqlx",
+    "dep:sqlx-postgres",
+    "dep:tokio-postgres",
+    "dep:deadpool-postgres",
+    "dep:tokio",
+    "serialization",
+]
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 
 [dependencies]
@@ -55,6 +63,12 @@ axum = { version = "0.7", optional = true }
 tower = { version = "0.5", optional = true }
 tower-http = { version = "0.6", features = ["trace", "cors"], optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
+
+# §E.1 Postgres persistence
+sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal"] }
+sqlx-postgres = { version = "0.8", optional = true }
+tokio-postgres = { version = "0.5", optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
