@@ -318,5 +318,3 @@ fn c2_margin_accounts_for_existing_exposure() {
         "existing exposure must consume free margin; got {v:?}"
     );
 }
-
-
