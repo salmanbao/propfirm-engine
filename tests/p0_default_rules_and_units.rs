@@ -646,3 +646,209 @@ fn p0_4_pack_edit_changes_cooldown_verdict() {
 const _: Option<ChallengePhase> = None;
 const _: Option<ServerTime> = None;
 const _: Option<Timestamp> = None;
+
+// ---------------------------------------------------------------------------
+// Item 4 — false-positive tests: plan ALLOWS the feature → rule must Pass
+// even if the rule IS registered and the triggering behavior is present.
+// ---------------------------------------------------------------------------
+
+/// grid_trading: plan allows grid → rule must Pass even with grid-like trades.
+#[test]
+fn item4_grid_allowed_no_false_positive() {
+    let mut plan = ftmo_phase1();
+    plan.grid_trading_allowed = true;
+    let account = active_account(&plan);
+    let rule = propfirm::rules::evaluators::grid_trading::GridTradingRule::default();
+    let order = Order {
+        id: propfirm::core::ids::OrderId::new(),
+        account_id: account.id,
+        symbol: Symbol::new("EURUSD"),
+        side: OrderSide::Buy,
+        kind: OrderKind::Open,
+        order_type: OrderType::Market,
+        quantity: Quantity(dec!(1)),
+        tif: TimeInForce::Gtc,
+        stop_loss: None,
+        take_profit: None,
+        comment: None,
+        submitted_at: chrono::Utc::now(),
+        status: propfirm::core::order::OrderStatus::Pending,
+        filled_quantity: Quantity::ZERO,
+        avg_fill_price: None,
+    };
+    let mut ctx = RuleContext::for_open_order(account.clone(), &order);
+    ctx.kind = RuleContextKind::OnOrderSubmit;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    assert!(
+        !rule.is_enabled(&ctx),
+        "grid_trading must be disabled when plan.grid_trading_allowed=true"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "grid_trading must Pass when plan allows grid; got {verdict:?}"
+    );
+}
+
+/// copy_trading: plan allows copy → rule must Pass even with correlated trades.
+#[test]
+fn item4_copy_allowed_no_false_positive() {
+    let mut plan = ftmo_phase1();
+    plan.copy_trading_allowed = true;
+    let account = active_account(&plan);
+    let rule = propfirm::rules::evaluators::copy_trading::CopyTradingRule::default();
+    let mut ctx = RuleContext::new(account.clone());
+    ctx.kind = RuleContextKind::OnTradeFill;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    assert!(
+        !rule.is_enabled(&ctx),
+        "copy_trading must be disabled when plan.copy_trading_allowed=true"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "copy_trading must Pass when plan allows copy trading; got {verdict:?}"
+    );
+}
+
+/// consistency: plan has no consistency_pct → rule must Pass.
+#[test]
+fn item4_consistency_not_configured_no_false_positive() {
+    let plan_no_consistency = ChallengePlan {
+        initial_balance_money: Money(dec!(100_000)),
+        consistency_pct: None,
+        ..ChallengePlan::default()
+    };
+    let account = active_account(&plan_no_consistency);
+    assert!(
+        plan_no_consistency.consistency_pct.is_none(),
+        "default plan must have no consistency_pct"
+    );
+    let rule = propfirm::rules::evaluators::consistency::ConsistencyRule::default();
+    let mut ctx = RuleContext::new(account.clone());
+    ctx.kind = RuleContextKind::OnDemand;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    assert!(
+        !rule.is_enabled(&ctx),
+        "consistency must be disabled when plan.consistency_pct is None"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "consistency must Pass when not configured; got {verdict:?}"
+    );
+}
+
+/// cooldown: plan has cooldown_seconds=0 → rule must Pass even with rapid trades.
+#[test]
+fn item4_cooldown_zero_no_false_positive() {
+    let plan = ChallengePlan {
+        initial_balance_money: Money(dec!(100_000)),
+        cooldown_seconds: 0,
+        ..ChallengePlan::default()
+    };
+    let account = active_account(&plan);
+    let rule = propfirm::rules::evaluators::cooldown::CooldownRule::default();
+    let order = Order {
+        id: propfirm::core::ids::OrderId::new(),
+        account_id: account.id,
+        symbol: Symbol::new("EURUSD"),
+        side: OrderSide::Buy,
+        kind: OrderKind::Open,
+        order_type: OrderType::Market,
+        quantity: Quantity(dec!(1)),
+        tif: TimeInForce::Gtc,
+        stop_loss: None,
+        take_profit: None,
+        comment: None,
+        submitted_at: chrono::Utc::now(),
+        status: propfirm::core::order::OrderStatus::Pending,
+        filled_quantity: Quantity::ZERO,
+        avg_fill_price: None,
+    };
+    let mut ctx = RuleContext::for_open_order(account.clone(), &order);
+    ctx.kind = RuleContextKind::OnOrderSubmit;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    ctx.today_trades = vec![Trade::new(
+        propfirm::core::ids::OrderId::new(),
+        account.id,
+        Symbol::new("EURUSD"),
+        OrderSide::Buy,
+        TradeSide::Entry,
+        Price(dec!(1.08)),
+        Quantity(dec!(1)),
+        Money::ZERO,
+        chrono::Utc::now() - chrono::Duration::seconds(1),
+    )];
+    assert!(
+        !rule.is_enabled(&ctx),
+        "cooldown must be disabled when plan.cooldown_seconds=0"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "cooldown must Pass when seconds=0; got {verdict:?}"
+    );
+}
+
+/// inactivity: plan has no inactivity_days → rule must Pass.
+#[test]
+fn item4_inactivity_not_configured_no_false_positive() {
+    let plan = ChallengePlan {
+        initial_balance_money: Money(dec!(100_000)),
+        inactivity_days: None,
+        ..ChallengePlan::default()
+    };
+    let account = active_account(&plan);
+    let rule = propfirm::rules::evaluators::inactivity::InactivityRule::default();
+    let mut ctx = RuleContext::new(account.clone());
+    ctx.kind = RuleContextKind::OnDemand;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    assert!(
+        !rule.is_enabled(&ctx),
+        "inactivity must be disabled when plan.inactivity_days is None"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "inactivity must Pass when not configured; got {verdict:?}"
+    );
+}
+
+/// news_trading: plan allows news trading → rule must Pass even during a news window.
+#[test]
+fn item4_news_allowed_no_false_positive() {
+    let mut plan = ftmo_phase1();
+    plan.news_trading_allowed = true;
+    let account = active_account(&plan);
+    let rule = propfirm::rules::evaluators::news_trading::NewsTradingRule::default();
+    let order = Order {
+        id: propfirm::core::ids::OrderId::new(),
+        account_id: account.id,
+        symbol: Symbol::new("EURUSD"),
+        side: OrderSide::Buy,
+        kind: OrderKind::Open,
+        order_type: OrderType::Market,
+        quantity: Quantity(dec!(1)),
+        tif: TimeInForce::Gtc,
+        stop_loss: None,
+        take_profit: None,
+        comment: None,
+        submitted_at: chrono::Utc::now(),
+        status: propfirm::core::order::OrderStatus::Pending,
+        filled_quantity: Quantity::ZERO,
+        avg_fill_price: None,
+    };
+    let mut ctx = RuleContext::for_open_order(account.clone(), &order);
+    ctx.kind = RuleContextKind::OnOrderSubmit;
+    ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
+    assert!(
+        !rule.is_enabled(&ctx),
+        "news_trading must be disabled when plan.news_trading_allowed=true"
+    );
+    let verdict = rule.evaluate(&ctx).unwrap();
+    assert!(
+        matches!(verdict, propfirm::rules::traits::RuleVerdict::Pass),
+        "news_trading must Pass when plan allows news trading; got {verdict:?}"
+    );
+}

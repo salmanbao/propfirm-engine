@@ -35,6 +35,15 @@ impl Quote {
 }
 
 /// A market-data tick carrying symbol, quote, and optional last-traded price.
+///
+/// **Data completeness (P2 / review item #2)**: runtime gap-flagging for
+/// missing tick fields is intentionally omitted. `symbol`, `quote.bid`,
+/// `quote.ask`, and `quote.ts` are non-Optional — a Tick cannot be
+/// constructed without them. Optional fields (`last`, `bid_volume`,
+/// `ask_volume`) are extras no breach-capable rule depends on. The
+/// `EquityInput` provenance model (`BrokerReported` vs `Estimated`) already
+/// covers the critical data-quality case. Incomplete data from the bridge
+/// fails at deserialization before reaching the engine.
 #[cfg_attr(
     feature = "serialization",
     derive(serde::Serialize, serde::Deserialize)

@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
     // 1. Build the challenge plan and account.
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
+    let tenant_id = account.tenant_id;
     println!(
         "Account: id={} type={} phase={} initial={}",
         account.id, account.account_type, plan.phase, account.initial_balance
@@ -39,7 +40,7 @@ fn main() -> anyhow::Result<()> {
 
     // 3. Start the account.
     let now = chrono::Utc::now();
-    let result = pipeline.process(account.id, PipelineEvent::AccountStarted { at: now })?;
+    let result = pipeline.process_for_tenant(tenant_id, account.id, PipelineEvent::AccountStarted { at: now })?;
     println!(
         "\n[Started] decision={:?} events={}",
         result.snapshot.decision.kind,
@@ -64,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         filled_quantity: Quantity::ZERO,
         avg_fill_price: None,
     };
-    let result = pipeline.process(account.id, PipelineEvent::OrderSubmitted { order })?;
+    let result = pipeline.process_for_tenant(tenant_id, account.id, PipelineEvent::OrderSubmitted { order })?;
     println!(
         "[Order] decision={:?} passed={} violations={}",
         result.snapshot.decision.kind,
@@ -86,7 +87,8 @@ fn main() -> anyhow::Result<()> {
     // synthesize a broker-reported equity that matches our expected value.
     let broker_equity = Money(dec!(10_200));
     let broker_balance = Money(dec!(10_000));
-    let result = pipeline.process(
+    let result = pipeline.process_for_tenant(
+        tenant_id,
         account.id,
         PipelineEvent::Tick {
             tick,

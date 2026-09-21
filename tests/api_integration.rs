@@ -33,11 +33,19 @@ use propfirm::tenant::TenantId;
 use std::sync::Arc;
 use tower::ServiceExt;
 
+fn test_tenant_id() -> TenantId {
+    TenantId::named("test-tenant")
+}
+
+fn test_tenant_id_str() -> String {
+    test_tenant_id().to_string()
+}
+
 /// Builds a `ServerState` with one seeded account.
 async fn make_state_with_account() -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
-        .with_tenant(TenantId::named("test-tenant"))
+        .with_tenant(test_tenant_id())
         .start(chrono::Utc::now())
         .unwrap();
     let state = Arc::new(parking_lot::RwLock::new(ServerState::new(plan)));
@@ -51,8 +59,12 @@ async fn send(
     method: Method,
     uri: &str,
     body: Option<String>,
+    tenant_id: &str,
 ) -> (StatusCode, String) {
-    let req = Request::builder().method(method).uri(uri);
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-Tenant-Id", tenant_id);
     let req = if let Some(b) = body {
         req.header("content-type", "application/json")
             .body(Body::from(b))
@@ -71,7 +83,8 @@ async fn send(
 async fn p0_a_health_works() {
     let (state, _) = make_state_with_account().await;
     let app = router(state);
-    let (status, body) = send(app, Method::GET, "/health", None).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::GET, "/health", None, &tid).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, "ok");
 }
@@ -83,7 +96,8 @@ async fn p0_a_get_account_returns_seeded_account_not_404() {
     let (state, account) = make_state_with_account().await;
     let app = router(state);
     let uri = format!("/v1/accounts/{}", account.id);
-    let (status, body) = send(app, Method::GET, &uri, None).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -102,7 +116,8 @@ async fn p0_a_get_account_for_unknown_id_returns_404() {
     let app = router(state);
     let random_id = AccountId::new();
     let uri = format!("/v1/accounts/{random_id}");
-    let (status, _body) = send(app, Method::GET, &uri, None).await;
+    let tid = test_tenant_id_str();
+    let (status, _body) = send(app, Method::GET, &uri, None, &tid).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -122,7 +137,8 @@ async fn p0_a_evaluate_order_returns_verdict() {
         "take_profit": "1.10"
     })
     .to_string();
-    let (status, body) = send(app, Method::POST, "/v1/evaluate-order", Some(req_body)).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::POST, "/v1/evaluate-order", Some(req_body), &tid).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -143,7 +159,8 @@ async fn p0_a_manual_run_returns_decision() {
         "account_id": account.id.to_string()
     })
     .to_string();
-    let (status, body) = send(app, Method::POST, "/internal/v1/manual-run", Some(req_body)).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::POST, "/internal/v1/manual-run", Some(req_body), &tid).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -162,7 +179,8 @@ async fn p0_a_breach_report_returns_violations_array() {
     let (state, account) = make_state_with_account().await;
     let app = router(state);
     let uri = format!("/internal/v1/breach-report/{}", account.id);
-    let (status, body) = send(app, Method::GET, &uri, None).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -187,7 +205,8 @@ async fn p0_a_override_for_unknown_account_returns_404() {
         "actor_id": "ops-test"
     })
     .to_string();
-    let (status, _body) = send(app, Method::POST, "/internal/v1/override", Some(req_body)).await;
+    let tid = test_tenant_id_str();
+    let (status, _body) = send(app, Method::POST, "/internal/v1/override", Some(req_body), &tid).await;
     // Override for unknown account → 404 or 500 (the pipeline returns
     // NotFound). Either way, NOT 200 with an empty body.
     assert!(
@@ -240,7 +259,8 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
         "tick": tick_json
     })
     .to_string();
-    let (status, body) = send(app, Method::POST, "/internal/v1/evaluate", Some(req_body)).await;
+    let tid = test_tenant_id_str();
+    let (status, body) = send(app, Method::POST, "/internal/v1/evaluate", Some(req_body), &tid).await;
     assert_eq!(
         status,
         StatusCode::OK,

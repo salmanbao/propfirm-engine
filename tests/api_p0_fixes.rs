@@ -26,6 +26,14 @@ use propfirm::tenant::TenantId;
 use std::sync::Arc;
 use tower::ServiceExt;
 
+fn test_tenant_id() -> TenantId {
+    TenantId::named("test-tenant")
+}
+
+fn test_tenant_id_str() -> String {
+    test_tenant_id().to_string()
+}
+
 /// Builds a `ServerState` with one seeded account at the given equity.
 async fn make_state_at(equity: i64) -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1(); // 10k static max loss: breach below 9k equity
@@ -48,7 +56,11 @@ async fn send_with_headers(
     body: Option<String>,
     headers: &[(&str, &str)],
 ) -> (StatusCode, String) {
-    let mut req = Request::builder().method(method).uri(uri);
+    let tid = test_tenant_id_str();
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-Tenant-Id", &tid);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }

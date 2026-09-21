@@ -27,6 +27,24 @@ use uuid::Uuid;
 
 pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
 
+/// Extracts `TenantId` from the `X-Tenant-Id` header.
+///
+/// P1-9: every production call site takes a `TenantId`.  The header is
+/// **required** — callers that omit it get `BAD_REQUEST`.
+fn extract_tenant_id(headers: &HeaderMap) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
+    headers
+        .get("X-Tenant-Id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "missing X-Tenant-Id header".to_string(),
+            )
+        })?
+        .parse::<crate::tenant::TenantId>()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
 pub async fn health() -> &'static str {
     "ok"
 }
@@ -86,7 +104,8 @@ pub async fn evaluate_internal(
             crate::api::idempotency::IdempotencyOutcome::Fresh => {}
         }
     }
-    let response = evaluate_internal_impl(&state, req)?;
+    let tenant_id = extract_tenant_id(&headers)?;
+    let response = evaluate_internal_impl(&state, tenant_id, req)?;
     if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
         s.idempotency.remember(
@@ -104,6 +123,7 @@ pub async fn evaluate_internal(
 /// readable.
 fn evaluate_internal_impl(
     state: &SharedState,
+    tenant_id: crate::tenant::TenantId,
     req: InternalEvaluateRequest,
 ) -> Result<InternalEvaluateResponse, (StatusCode, String)> {
     let account_id = AccountId::from_uuid(
@@ -118,7 +138,7 @@ fn evaluate_internal_impl(
     let s = state.read().clone();
     let acc = s
         .store
-        .get(account_id)
+        .get_for_tenant(tenant_id, account_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -195,8 +215,10 @@ fn evaluate_internal_impl(
 /// `POST /internal/v1/override` — clear a false-positive breach.
 pub async fn override_breach(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -214,7 +236,8 @@ pub async fn override_breach(
         chrono::Utc::now(),
     );
     let _ = pipeline
-        .process(
+        .process_for_tenant(
+            tenant_id,
             account_id,
             PipelineEvent::OverrideBreach {
                 override_record: override_record.clone(),
@@ -230,15 +253,17 @@ pub async fn override_breach(
 /// `POST /internal/v1/manual-run` — force re-evaluation of an account.
 pub async fn manual_run(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
     let s = state.read().clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
-        .process(account_id, PipelineEvent::OnDemand)
+        .process_for_tenant(tenant_id, account_id, PipelineEvent::OnDemand)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ManualRunResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
@@ -256,15 +281,17 @@ pub async fn manual_run(
 /// violation + the rule that produced it + the `input_hash` for verification.
 pub async fn breach_report(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(account_id_str): Path<String>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&account_id_str).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
     let s = state.read().clone();
     let acc = s
         .store
-        .get(account_id)
+        .get_for_tenant(tenant_id, account_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     // Pull all violations from the event log for this account.
@@ -293,8 +320,10 @@ pub async fn breach_report(
 
 pub async fn evaluate_order(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -330,7 +359,8 @@ pub async fn evaluate_order(
     let s = state.read().clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
-        .process(
+        .process_for_tenant(
+            tenant_id,
             account_id,
             PipelineEvent::OrderSubmitted {
                 order: order.clone(),
@@ -352,14 +382,16 @@ pub async fn evaluate_order(
 
 pub async fn get_account(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<AccountSnapshotDto>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&headers)?;
     let uuid = Uuid::from_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let account_id = AccountId::from_uuid(uuid);
     let s = state.read();
     let acc = s
         .store
-        .get(account_id)
+        .get_for_tenant(tenant_id, account_id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     let snap: crate::core::account::AccountSnapshot = (&acc).into();

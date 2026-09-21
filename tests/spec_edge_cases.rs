@@ -51,8 +51,10 @@ fn account_at(equity: i64, peak: i64, loss_ref: LossReference) -> Account {
     acc.peak_balance = Money(rust_decimal::Decimal::from(peak));
     acc.peak_equity = Money(rust_decimal::Decimal::from(peak));
     acc.initial_balance = Money(dec!(100_000));
-    // Set day_start_balance to equity so daily_dd doesn't trip; tests focus on max_dd.
+    // Set day_start_balance and day_start_equity to equity so daily_dd
+    // doesn't trip; tests focus on max_dd.
     acc.day_start_balance = Money(rust_decimal::Decimal::from(equity));
+    acc.day_start_equity = Money(rust_decimal::Decimal::from(equity));
     acc.status = AccountStatus::Active;
     acc
 }

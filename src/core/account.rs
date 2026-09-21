@@ -247,13 +247,19 @@ impl Account {
     }
 
     /// Returns the maximum daily drawdown as a money amount, derived from
-    /// the day-start balance. Daily drawdown is *always* a day-anchored
-    /// measure (resets at rollover); the static-vs-trailing distinction
-    /// only applies to the *total* drawdown rule, not the daily one.
+    /// the day-start equity (or balance, when `drawdown_on_balance` is set).
+    /// Daily drawdown is *always* a day-anchored measure (resets at rollover);
+    /// the static-vs-trailing distinction only applies to the *total*
+    /// drawdown rule, not the daily one.
     #[must_use]
     pub fn daily_dd_limit(&self) -> Money {
         let plan_dd = self.plan.max_daily_drawdown_pct;
-        Money(plan_dd.0 * self.day_start_balance.0)
+        let day_start = if self.plan.drawdown_on_balance {
+            self.day_start_balance
+        } else {
+            self.day_start_equity
+        };
+        Money(plan_dd.0 * day_start.0)
     }
 
     /// **P0-1 fix**: Returns the *static* maximum total drawdown limit,
@@ -361,14 +367,20 @@ impl Account {
     /// equity) is controlled by `plan.drawdown_on_balance`; defaults to
     /// equity-based (the binding spec's `daily_pnl_cents = equity_now -
     /// day_start_equity_cents`).
+    ///
+    /// **P1.1 fix**: uses `day_start_equity` (not `day_start_balance`)
+    /// as the day-start reference so the drawdown is measured from the
+    /// correct equity snapshot, not the balance snapshot. The limit
+    /// (`daily_dd_limit()`) is also anchored on `day_start_equity` for
+    /// consistency.
     #[must_use]
     pub fn daily_drawdown(&self) -> Money {
-        let current = if self.plan.drawdown_on_balance {
-            self.balance
+        let (day_start, current) = if self.plan.drawdown_on_balance {
+            (self.day_start_balance, self.balance)
         } else {
-            self.equity
+            (self.day_start_equity, self.equity)
         };
-        Money((self.day_start_balance.0 - current.0).max(dec!(0)))
+        Money((day_start.0 - current.0).max(dec!(0)))
     }
 
     /// Net profit (current balance - initial balance).

@@ -19,17 +19,18 @@ use crate::tenant::TenantId;
 
 /// Account + position + trade storage.
 pub trait AccountStore: Send + Sync {
-    /// Reads an account. Returns `None` if not found, or if the account
-    /// belongs to a different tenant than `tenant_id` (P1-9 isolation).
-    fn get(&self, id: AccountId) -> Result<Option<Account>, Error>;
-
     /// Reads an account, scoped to a specific tenant. Returns `None` if
     /// the account doesn't exist OR if it belongs to a different tenant.
-    /// This is the *preferred* read path in multi-tenant deployments.
-    fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
-        let acc = self.get(id)?;
-        Ok(acc.filter(|a| a.tenant_id == tenant_id))
-    }
+    /// This is the *only* read path in multi-tenant deployments.
+    fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error>;
+
+    /// Bootstrap read — fetches an account without tenant scoping.
+    ///
+    /// Intended *only* for internal-API endpoints where the caller needs
+    /// the account's own `tenant_id` before it can issue a scoped read
+    /// (e.g. `Pipeline::process`). Production code that already knows
+    /// the tenant MUST use `get_for_tenant`.
+    fn get(&self, id: AccountId) -> Result<Option<Account>, Error>;
 
     /// Writes an account without optimistic-concurrency checking. Last
     /// write wins. Use [`put_with_version`](Self::put_with_version) in
@@ -40,13 +41,7 @@ pub trait AccountStore: Send + Sync {
     /// Returns [`Error::StateConflict`] if the persisted version does not
     /// match `expected_version`. The caller must re-read, re-evaluate,
     /// and retry on conflict.
-    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
-        // Default implementation falls back to unconditional put (for
-        // stores that don't yet implement OCC). Concrete impls should
-        // override to do the real check.
-        let _ = expected_version;
-        self.put(account)
-    }
+    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error>;
 
     /// Deletes an account.
     fn delete(&self, id: AccountId) -> Result<(), Error>;

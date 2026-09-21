@@ -848,6 +848,7 @@ fn p0_4_reordering_rules_produces_same_decision() {
     account.peak_balance = Money(dec!(100_000));
     account.peak_equity = Money(dec!(100_000));
     account.day_start_balance = Money(dec!(100_000));
+    account.day_start_equity = Money(dec!(100_000));
     // daily_dd also breaches: 100k → 90k = 10k drop, limit = 5% of 100k = 5k → BREACH.
     account.plan.max_loss_reference = propfirm::config::plan::LossReference::Trailing;
 
@@ -1322,4 +1323,102 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
     );
     assert_eq!(v1.pack_version, 1);
     assert_eq!(v1.pack_id, "test-pack-v1");
+}
+
+#[test]
+fn p1_1_daily_dd_equity_vs_balance_basis_divergence() {
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::rules::context::RuleContext;
+    use propfirm::rules::evaluators::daily_drawdown::DailyDrawdownRule;
+    use propfirm::rules::registry::RuleRegistry;
+    use std::sync::Arc;
+
+    let plan = ftmo_phase1();
+    let mut account = Account::new(AccountId::new(), plan)
+        .start(chrono::Utc::now())
+        .unwrap();
+
+    // Simulate: day starts at 100k, then balance drops to 95k (realized
+    // loss) AND equity drops further to 90k (open floating loss on top).
+    account.day_start_balance = Money(dec!(100_000));
+    account.day_start_equity = Money(dec!(100_000));
+    account.balance = Money(dec!(95_000));
+    account.equity = Money(dec!(90_000));
+
+    // max_daily_drawdown_pct = 0.05 → limit = 5% of day-start.
+    //
+    // Equity basis: drawdown = 100k - 90k = 10k > 5k limit → BREACH.
+    // Balance basis: drawdown = 100k - 95k = 5k == 5k limit → PASS.
+    //
+    // The rule must fire on equity basis (the binding spec default).
+
+    let mut reg = RuleRegistry::empty();
+    reg.register(Arc::new(DailyDrawdownRule::default()));
+
+    let tick = propfirm::core::tick::Tick::new(
+        Symbol::new("EURUSD"),
+        propfirm::core::tick::Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
+    let mut ctx = RuleContext::for_tick(account.clone(), &tick);
+    ctx = ctx.with_broker_equity(account.equity, account.balance);
+
+    let reports = reg.evaluate(&ctx).unwrap();
+    let decision = propfirm::engine::decision::Decision::from_reports(&reports);
+
+    assert!(
+        decision.is_terminating(),
+        "daily drawdown must breach on equity basis (10k drop > 5k limit), \
+         got {:?}",
+        decision.kind
+    );
+}
+
+#[test]
+fn p1_1_daily_dd_balance_basis_does_not_terminate() {
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::rules::context::RuleContext;
+    use propfirm::rules::evaluators::daily_drawdown::DailyDrawdownRule;
+    use propfirm::rules::registry::RuleRegistry;
+    use std::sync::Arc;
+
+    let plan = ftmo_phase1();
+    let mut account = Account::new(AccountId::new(), plan)
+        .start(chrono::Utc::now())
+        .unwrap();
+
+    // Same scenario but with drawdown_on_balance = true.
+    account.plan.drawdown_on_balance = true;
+    account.day_start_balance = Money(dec!(100_000));
+    account.day_start_equity = Money(dec!(100_000));
+    account.balance = Money(dec!(95_000));
+    account.equity = Money(dec!(90_000));
+
+    // Balance basis: drawdown = 100k - 95k = 5k == 5k limit → PASS.
+    let mut reg = RuleRegistry::empty();
+    reg.register(Arc::new(DailyDrawdownRule::default()));
+
+    let tick = propfirm::core::tick::Tick::new(
+        Symbol::new("EURUSD"),
+        propfirm::core::tick::Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
+    let mut ctx = RuleContext::for_tick(account.clone(), &tick);
+    ctx = ctx.with_broker_equity(account.equity, account.balance);
+
+    let reports = reg.evaluate(&ctx).unwrap();
+    let decision = propfirm::engine::decision::Decision::from_reports(&reports);
+
+    assert!(
+        !decision.is_terminating(),
+        "balance-basis daily drawdown must NOT breach when drawdown equals limit exactly, \
+         got {:?}",
+        decision.kind
+    );
 }

@@ -74,7 +74,15 @@ impl Rule for DailyDrawdownRule {
             return Ok(RuleVerdict::Pass);
         }
         // P0-D: compute limit using the pack entry's value (overrides plan).
-        let limit = crate::core::types::Money(plan_pct * ctx.account.day_start_balance.0);
+        // P1.1: when drawdown_on_balance is false (default), the limit is
+        // anchored on day_start_equity, not day_start_balance, matching the
+        // drawdown computation in Account::daily_drawdown().
+        let day_start = if ctx.account.plan.drawdown_on_balance {
+            ctx.account.day_start_balance
+        } else {
+            ctx.account.day_start_equity
+        };
+        let limit = crate::core::types::Money(plan_pct * day_start.0);
         let dd = ctx.account.daily_drawdown();
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
         let tolerance = self.tolerance_money();

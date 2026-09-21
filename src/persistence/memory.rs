@@ -29,6 +29,14 @@ impl AccountStore for InMemoryStore {
     fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
         Ok(self.accounts.read().get(&id).cloned())
     }
+    fn get_for_tenant(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+        Ok(self
+            .accounts
+            .read()
+            .get(&id)
+            .filter(|a| a.tenant_id == tenant_id)
+            .cloned())
+    }
     fn put(&self, account: Account) -> Result<(), Error> {
         // Last-write-wins path; bumps version unconditionally.
         let mut accounts = self.accounts.write();
