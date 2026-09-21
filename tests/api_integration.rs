@@ -138,7 +138,14 @@ async fn p0_a_evaluate_order_returns_verdict() {
     })
     .to_string();
     let tid = test_tenant_id_str();
-    let (status, body) = send(app, Method::POST, "/v1/evaluate-order", Some(req_body), &tid).await;
+    let (status, body) = send(
+        app,
+        Method::POST,
+        "/v1/evaluate-order",
+        Some(req_body),
+        &tid,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -160,7 +167,14 @@ async fn p0_a_manual_run_returns_decision() {
     })
     .to_string();
     let tid = test_tenant_id_str();
-    let (status, body) = send(app, Method::POST, "/internal/v1/manual-run", Some(req_body), &tid).await;
+    let (status, body) = send(
+        app,
+        Method::POST,
+        "/internal/v1/manual-run",
+        Some(req_body),
+        &tid,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -206,7 +220,14 @@ async fn p0_a_override_for_unknown_account_returns_404() {
     })
     .to_string();
     let tid = test_tenant_id_str();
-    let (status, _body) = send(app, Method::POST, "/internal/v1/override", Some(req_body), &tid).await;
+    let (status, _body) = send(
+        app,
+        Method::POST,
+        "/internal/v1/override",
+        Some(req_body),
+        &tid,
+    )
+    .await;
     // Override for unknown account → 404 or 500 (the pipeline returns
     // NotFound). Either way, NOT 200 with an empty body.
     assert!(
@@ -260,7 +281,14 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
     })
     .to_string();
     let tid = test_tenant_id_str();
-    let (status, body) = send(app, Method::POST, "/internal/v1/evaluate", Some(req_body), &tid).await;
+    let (status, body) = send(
+        app,
+        Method::POST,
+        "/internal/v1/evaluate",
+        Some(req_body),
+        &tid,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,

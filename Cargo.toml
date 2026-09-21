@@ -6,7 +6,7 @@ authors = ["Prop Firm Engine Team"]
 description = "Enterprise-grade risk and rule evaluation engine for proprietary trading firms"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/salman/propfirm-engine"
+repository = "https://github.com/salmanbao/propfirm-engine"
 keywords = ["trading", "risk", "prop-firm", "fintech", "rules"]
 categories = ["finance", "data-structures"]
 

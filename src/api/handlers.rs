@@ -402,6 +402,7 @@ pub async fn get_account(
 
 pub async fn create_rule_pack(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let rules: Vec<crate::rulepack::RuleEntry> =
@@ -426,12 +427,11 @@ pub async fn create_rule_pack(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+    let tenant = extract_tenant_id(&headers)?;
     let pack = RulePack {
         id: req.id,
         version: req.version,
-        tenant_id: crate::tenant::TenantId::from_uuid(
-            Uuid::from_str(&req.tenant_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
-        ),
+        tenant_id: tenant,
         lifecycle: crate::rulepack::PackLifecycle::Draft,
         effective_from: chrono::Utc::now(),
         superseded_by: None,
@@ -449,13 +449,9 @@ pub async fn create_rule_pack(
         lifecycle: format!("{}", pack.lifecycle),
         content_hash: pack.content_hash(),
     };
-    // P0.7: persist the draft so get/update/activate/supersede work.
     let s = state.read();
-    let tenant = crate::tenant::TenantId::named("default");
-    let mut stored = pack;
-    stored.tenant_id = tenant;
     s.rule_pack_store
-        .insert_pack(stored)
+        .insert_pack(pack)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(response))
 }
@@ -465,11 +461,11 @@ pub async fn create_rule_pack(
 /// **P0.7 fix**: real store-backed read (was a 404 stub).
 pub async fn get_rule_pack(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<GetRulePackResponse>, (StatusCode, String)> {
+    let tenant = extract_tenant_id(&headers)?;
     let s = state.read();
-    // Single-tenant server: all packs live under the server's tenant.
-    let tenant = crate::tenant::TenantId::named("default");
     let pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
@@ -493,11 +489,12 @@ pub async fn get_rule_pack(
 /// non-draft pack is an illegal lifecycle transition → 409.
 pub async fn update_rule_pack(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
+    let tenant = extract_tenant_id(&headers)?;
     let s = state.read();
-    let tenant = crate::tenant::TenantId::named("default");
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
@@ -553,10 +550,11 @@ pub async fn update_rule_pack(
 /// transitions (active/superseded → active) → 409.
 pub async fn activate_rule_pack(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
+    let tenant = extract_tenant_id(&headers)?;
     let s = state.read();
-    let tenant = crate::tenant::TenantId::named("default");
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
@@ -588,11 +586,12 @@ pub async fn activate_rule_pack(
 /// replacing pack id when the body supplies one.
 pub async fn supersed_rule_pack(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     body: Option<Json<SupersedeRequest>>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
+    let tenant = extract_tenant_id(&headers)?;
     let s = state.read();
-    let tenant = crate::tenant::TenantId::named("default");
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)

@@ -35,22 +35,21 @@ use axum::{
 };
 
 pub fn router(state: SharedState) -> Router {
+    let api_key = state.read().api_key.clone();
     Router::new()
-        // Health & readiness.
         .route("/health", get(health))
-        // Internal API (platform-side, called by LCC/bridge).
         .route("/internal/v1/evaluate", post(evaluate_internal))
         .route("/internal/v1/override", post(override_breach))
         .route("/internal/v1/manual-run", post(manual_run))
         .route("/internal/v1/breach-report/:account_id", get(breach_report))
-        // Public API (tenant-facing).
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/accounts/:id", get(get_account))
-        // Rule-pack CRUD.
         .route("/v1/rule-packs", post(create_rule_pack))
         .route("/v1/rule-packs/:id", get(get_rule_pack))
         .route("/v1/rule-packs/:id", patch(update_rule_pack))
         .route("/v1/rule-packs/:id/activate", post(activate_rule_pack))
         .route("/v1/rule-packs/:id/supersede", post(supersed_rule_pack))
+        .layer(axum::Extension(api_key))
+        .layer(axum::middleware::from_fn(crate::api::server::auth_layer))
         .with_state(state)
 }

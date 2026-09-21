@@ -358,9 +358,10 @@ where
             .store
             .open_positions(state.account.id)
             .unwrap_or_default();
+        let day_start = state.account.plan.trading_day_start(chrono::Utc::now());
         let today_trades = self
             .store
-            .today_trades(state.account.id)
+            .today_trades_since(state.account.id, day_start)
             .unwrap_or_default();
         let recent_events = self.event_store.recent(state.account.id, 50);
         match ev {

@@ -40,7 +40,11 @@ fn main() -> anyhow::Result<()> {
 
     // 3. Start the account.
     let now = chrono::Utc::now();
-    let result = pipeline.process_for_tenant(tenant_id, account.id, PipelineEvent::AccountStarted { at: now })?;
+    let result = pipeline.process_for_tenant(
+        tenant_id,
+        account.id,
+        PipelineEvent::AccountStarted { at: now },
+    )?;
     println!(
         "\n[Started] decision={:?} events={}",
         result.snapshot.decision.kind,
@@ -65,7 +69,11 @@ fn main() -> anyhow::Result<()> {
         filled_quantity: Quantity::ZERO,
         avg_fill_price: None,
     };
-    let result = pipeline.process_for_tenant(tenant_id, account.id, PipelineEvent::OrderSubmitted { order })?;
+    let result = pipeline.process_for_tenant(
+        tenant_id,
+        account.id,
+        PipelineEvent::OrderSubmitted { order },
+    )?;
     println!(
         "[Order] decision={:?} passed={} violations={}",
         result.snapshot.decision.kind,

@@ -59,7 +59,7 @@ impl PerTradeMaxLossRule {
                 Some(crate::rulepack::RuleUnit::Money) => {
                     Ok(Some(crate::core::types::Money(p.value.unwrap_or_default())))
                 }
-                _ => Ok(Some(p.effective_money("per_trade_max_loss", reference)?)),
+                _ => p.effective_money("per_trade_max_loss", reference),
             };
         }
         // Plan fallback (P0.1): the tighter of pct-of-balance and the

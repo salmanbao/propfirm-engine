@@ -354,6 +354,41 @@ impl ChallengePlan {
         self
     }
 
+    /// Returns the start of the current trading day based on the plan's
+    /// timezone and day_reset_time. When timezone is None, UTC is assumed.
+    #[must_use]
+    pub fn trading_day_start(&self, now: Timestamp) -> Timestamp {
+        let reset_hour = self.day_reset_time as u32;
+        match self.timezone {
+            Some(tz) => {
+                let local_now = now.with_timezone(&tz);
+                let reset_today = local_now
+                    .date_naive()
+                    .and_hms_opt(reset_hour, 0, 0)
+                    .expect("valid hour")
+                    .and_local_timezone(tz)
+                    .unwrap();
+                if local_now >= reset_today {
+                    reset_today.with_timezone(&chrono::Utc)
+                } else {
+                    (reset_today - chrono::Duration::days(1)).with_timezone(&chrono::Utc)
+                }
+            }
+            None => {
+                let reset_today = now
+                    .date_naive()
+                    .and_hms_opt(reset_hour, 0, 0)
+                    .expect("valid hour")
+                    .and_utc();
+                if now >= reset_today {
+                    reset_today
+                } else {
+                    reset_today - chrono::Duration::days(1)
+                }
+            }
+        }
+    }
+
     /// Builder-style setter for the HFT/scalping ban (P0.1).
     #[must_use]
     pub fn with_hft_ban(mut self, min_round_trip_seconds: u64) -> Self {

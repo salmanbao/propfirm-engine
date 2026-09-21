@@ -15,12 +15,9 @@ pub struct ServerState {
     pub store: InMemoryStore,
     pub notifier: LogNotifier,
     pub event_store: crate::events::store::EventStore,
-    /// **P0.7 fix**: real rule-pack storage backing the rule-pack CRUD
-    /// endpoints (previously 404/501 stubs).
     pub rule_pack_store: InMemoryRulePackStore,
-    /// **P0.8 fix**: per-endpoint idempotency store backing the
-    /// `Idempotency-Key` handling (previously read-and-discarded).
     pub idempotency: IdempotencyStore,
+    pub api_key: Option<String>,
 }
 
 impl Clone for ServerState {
@@ -41,6 +38,7 @@ impl Clone for ServerState {
             event_store: self.event_store.clone(),
             rule_pack_store: self.rule_pack_store.clone(),
             idempotency: self.idempotency.clone(),
+            api_key: self.api_key.clone(),
         }
     }
 }
@@ -55,6 +53,7 @@ impl ServerState {
             event_store: crate::events::store::EventStore::in_memory(),
             rule_pack_store: InMemoryRulePackStore::new(),
             idempotency: IdempotencyStore::with_defaults(),
+            api_key: None,
         }
     }
 
@@ -78,4 +77,27 @@ pub async fn run_server(addr: &str, plan: ChallengePlan) -> Result<(), Box<dyn s
     println!("propfirm-engine HTTP server listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+pub async fn auth_layer(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::http::Response<axum::body::Body>, axum::http::StatusCode> {
+    let expected = match req
+        .extensions()
+        .get::<Option<String>>()
+        .and_then(|k| k.as_ref())
+    {
+        Some(k) => k.clone(),
+        None => return Ok(next.run(req).await),
+    };
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(axum::http::StatusCode::UNAUTHORIZED)?;
+    if auth_header != format!("Bearer {expected}") {
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(req).await)
 }

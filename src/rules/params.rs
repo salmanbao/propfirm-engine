@@ -137,30 +137,39 @@ impl RuleParams {
         self.early_warning_pct
     }
 
-    /// **P0.3 fix**: interprets the entry's `value` according to its
-    /// `unit` and returns the effective limit as a `Money` amount.
+    /// **P0.3 / A.1 fix**: interprets the entry's `value` according to
+    /// its `unit` and returns the effective limit as `Option<Money>`.
     ///
-    /// - `Percent` → `value × reference` (the caller picks the
-    ///   reference: initial balance, day-start balance, etc.).
-    /// - `Money` → `value` directly.
+    /// - `None` value → `Ok(None)` — the caller **must** fall back to
+    ///   the plan-derived limit. Returning `Ok(reference)` here was the
+    ///   original fail-open bug: a caller that forgot to guard received
+    ///   a limit equal to 100% of the reference — effectively "never
+    ///   breach".
+    /// - `Percent` → `Ok(Some(value × reference))`.
+    /// - `Money` → `Ok(Some(value))`.
+    /// - Unknown unit → `Err` (fail closed — a mis-encoded pack must
+    ///   never silently produce a limit that can never breach).
     ///
-    /// Returns `Err` when the unit cannot be interpreted for this rule
-    /// kind (fail closed — a mis-encoded pack must never silently
-    /// produce a limit that can never breach).
+    /// **Contract**: every caller of `effective_money` **must** handle
+    /// the `Ok(None)` case by falling back to the plan. Callers that
+    /// treat `None` as "no limit configured" (pass) are correct for
+    /// rules that are optional; callers that treat it as "use plan
+    /// default" are correct for rules that are always present.
     pub fn effective_money(
         &self,
         unit_context: &str,
         reference: crate::core::types::Money,
-    ) -> Result<crate::core::types::Money, crate::core::Error> {
+    ) -> Result<Option<crate::core::types::Money>, crate::core::Error> {
         let Some(v) = self.value else {
-            // No pack value at all — caller falls back to plan. This is
-            // the `Default`-constructed path, not a mis-encoding.
-            return Ok(reference);
+            // A.1 fix: no pack value → caller falls back to plan.
+            // Returning the reference here was fail-open (100% limit =
+            // never breach). Now the caller must handle `None` explicitly.
+            return Ok(None);
         };
         match self.unit {
-            Some(RuleUnit::Percent) => Ok(crate::core::types::Money(v * reference.0)),
-            Some(RuleUnit::Money) => Ok(crate::core::types::Money(v)),
-            None => Ok(crate::core::types::Money(v * reference.0)),
+            Some(RuleUnit::Percent) => Ok(Some(crate::core::types::Money(v * reference.0))),
+            Some(RuleUnit::Money) => Ok(Some(crate::core::types::Money(v))),
+            None => Ok(Some(crate::core::types::Money(v * reference.0))),
             #[allow(unreachable_patterns)]
             Some(_) => Err(crate::core::Error::invalid_config(format!(
                 "rule-pack entry: unit '{}' cannot be interpreted for {unit_context} \

@@ -29,7 +29,11 @@ impl AccountStore for InMemoryStore {
     fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
         Ok(self.accounts.read().get(&id).cloned())
     }
-    fn get_for_tenant(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+    fn get_for_tenant(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+        id: AccountId,
+    ) -> Result<Option<Account>, Error> {
         Ok(self
             .accounts
             .read()
@@ -129,6 +133,21 @@ impl AccountStore for InMemoryStore {
             .unwrap_or_default()
             .into_iter()
             .filter(|t| (now - t.executed_at).num_hours() < 24)
+            .collect())
+    }
+    fn today_trades_since(
+        &self,
+        id: AccountId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Trade>, Error> {
+        Ok(self
+            .trades
+            .read()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.executed_at >= since)
             .collect())
     }
     fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {

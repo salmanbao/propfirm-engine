@@ -323,3 +323,47 @@ fn spec_3_4_edge_12_emergency_stop_short_circuits() {
         result.snapshot.account.status
     );
 }
+
+/// §A.1 — `effective_money` with `value: None` must return `Ok(None)`.
+///
+/// Before the fix, `effective_money` returned `Ok(reference)` when
+/// `self.value` was `None` — a fail-open bug. The caller received
+/// a limit equal to 100% of the reference, which can never breach.
+/// After the fix, the caller receives `Ok(None)` and must explicitly
+/// fall back to the plan-derived limit.
+#[test]
+fn a1_effective_money_none_must_return_none_not_reference() {
+    use propfirm::core::types::{dec, Money};
+    use propfirm::rulepack::RuleUnit;
+    use propfirm::rules::params::RuleParams;
+
+    let reference = Money(dec!(100_000));
+
+    let params = RuleParams {
+        value: None,
+        unit: None,
+        ..Default::default()
+    };
+    let result = params.effective_money("test_rule", reference).unwrap();
+    assert!(
+        result.is_none(),
+        "effective_money(None, _) must return None — fail-closed, got Some({:?})",
+        result.unwrap()
+    );
+
+    let params = RuleParams {
+        value: Some(dec!(0.05)),
+        unit: Some(RuleUnit::Percent),
+        ..Default::default()
+    };
+    let result = params.effective_money("test_rule", reference).unwrap();
+    assert_eq!(result, Some(Money(dec!(5000))));
+
+    let params = RuleParams {
+        value: Some(dec!(5000)),
+        unit: Some(RuleUnit::Money),
+        ..Default::default()
+    };
+    let result = params.effective_money("test_rule", reference).unwrap();
+    assert_eq!(result, Some(Money(dec!(5000))));
+}

@@ -185,8 +185,8 @@ pub fn custom(name: &str, balance: Money) -> ChallengePlan {
 /// Phase 2, drawdown rules are tighter (often trailing-EOD), and there's
 /// no min-trading-days requirement (1-Step is meant to be fast).
 ///
-/// Note: real 1-Step plans use EOD-reset trailing max loss; the engine
-/// supports this via `LossReference::EodTrailing` once P1.6 lands.
+/// Note: real 1-Step plans use EOD-reset trailing max loss — the engine
+/// supports this via `LossReference::EodTrailing`.
 #[must_use]
 pub fn ftmo_1step() -> ChallengePlan {
     let mut p = base_plan("FTMO", "1-Step Challenge", Money(dec!(10_000)));
