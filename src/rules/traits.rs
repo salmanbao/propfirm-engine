@@ -7,7 +7,6 @@
 use crate::core::ids::RuleId;
 use crate::core::violation::{Violation, ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
-use crate::rules::outcome::Outcome;
 
 /// The result of a single rule evaluation.
 #[derive(Debug, Clone)]
@@ -98,20 +97,6 @@ impl RuleVerdict {
     pub fn severity(&self) -> Option<ViolationSeverity> {
         self.violation().map(|v| v.severity)
     }
-
-    #[must_use]
-    pub fn into_outcome(self) -> Outcome {
-        match self {
-            RuleVerdict::Pass => Outcome::Pass,
-            RuleVerdict::Skip => Outcome::Skip,
-            RuleVerdict::Warn(v) => Outcome::Warn(v),
-            RuleVerdict::Fail(v) => Outcome::Fail(v),
-            RuleVerdict::Liquidate(v) => Outcome::Liquidate(v),
-            RuleVerdict::TargetHit(v) => Outcome::TargetHit(v),
-            RuleVerdict::Emergency(v) => Outcome::Emergency(v),
-            RuleVerdict::EarlyWarning(v) => Outcome::EarlyWarning(v),
-        }
-    }
 }
 
 /// A rule report produced after evaluation. Includes the verdict plus
@@ -161,9 +146,6 @@ impl RuleReport {
         self
     }
 }
-
-/// Outcome alias for backward compatibility.
-pub type RuleOutcome = RuleVerdict;
 
 /// The Rule trait. Implement this for any custom rule and register it with
 /// the [`RuleRegistry`](crate::rules::registry::RuleRegistry).

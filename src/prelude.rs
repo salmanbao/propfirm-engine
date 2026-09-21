@@ -28,9 +28,8 @@ pub use crate::config::{
 
 pub use crate::rules::{
     context::{EvaluationScope, RuleContext, RuleContextKind},
-    outcome::Outcome,
     registry::RuleRegistry,
-    traits::{Rule, RuleOutcome, RuleReport, RuleVerdict},
+    traits::{Rule, RuleReport, RuleVerdict},
 };
 
 pub use crate::engine::{

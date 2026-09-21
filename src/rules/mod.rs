@@ -2,7 +2,6 @@
 
 pub mod context;
 pub mod evaluators;
-pub mod outcome;
 pub mod params;
 pub mod registry;
 pub mod traits;
