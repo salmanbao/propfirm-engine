@@ -104,31 +104,28 @@ impl Rule for TrailingDrawdownRule {
         else {
             return Ok(RuleVerdict::Pass);
         };
+        if let Err(msg) = ctx.require_started() {
+            let v = build_violation(self, ctx, ViolationSeverity::Info, msg);
+            return Ok(RuleVerdict::GapFlagged(v));
+        }
+        let Ok(equity) = ctx.require_broker_equity() else {
+            let v = build_violation(self, ctx, ViolationSeverity::Info, ctx.require_broker_equity().unwrap_err());
+            return Ok(RuleVerdict::GapFlagged(v));
+        };
         let peak = ctx.account.peak_equity;
         let floor = Money(peak.0 - trail_amount.0);
-        let equity = ctx.account.equity;
         if equity.0 < floor.0 {
-            // P1-5 fix: refuse to terminate on estimated equity.
-            let severity = if ctx.equity_is_broker_reported() {
-                ViolationSeverity::Liquidate
-            } else {
-                ViolationSeverity::Warning
-            };
             let breach = Money(floor.0 - equity.0);
             let mut v = build_violation(
                 self,
                 ctx,
-                severity,
+                ViolationSeverity::Liquidate,
                 format!(
-                    "Trailing drawdown breach{}: equity {equity} below floor {floor} (trail={trail_amount})",
-                    if ctx.equity_is_broker_reported() { "" } else { " [ESTIMATED — not terminating]" },
+                    "Trailing drawdown breach: equity {equity} below floor {floor} (trail={trail_amount})",
                 ),
             );
             v = v.with_breach(breach, trail_amount);
-            return Ok(match severity {
-                ViolationSeverity::Liquidate => RuleVerdict::Liquidate(v),
-                _ => RuleVerdict::Warn(v),
-            });
+            return Ok(RuleVerdict::Liquidate(v));
         }
         // P1-13: EarlyWarning at 80% of trail distance.
         let warn_floor = Money(floor.0 + trail_amount.0 * dec!(0.2));

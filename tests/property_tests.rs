@@ -237,4 +237,72 @@ proptest! {
             let _ = lots.0 > units.0;
         };
     }
+
+    // Invariant 11: every rule-level RuleVerdict variant should have a
+    // producer under src/rules/evaluators/, except engine-only verdicts
+    // (`Emergency`) and control-flow verdicts (`Skip`) that are not
+    // emitted by concrete rules. This guards against accidentally dead
+    // rule-level variants.
+    #[test]
+    fn prop_rule_level_verdict_variants_have_producer(_ in any::<()>()) {
+        use std::path::PathBuf;
+        let evaluators_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/rules/evaluators");
+        let mut files = std::fs::read_dir(&evaluators_dir)
+            .expect("evaluators dir must exist")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect::<Vec<_>>();
+        files.sort();
+        let mut sources = String::new();
+        for f in &files {
+            if let Ok(c) = std::fs::read_to_string(f) {
+                sources.push_str(&c);
+                sources.push('\n');
+            }
+        }
+        let rule_level_variants = [
+            "RuleVerdict::Pass",
+            "RuleVerdict::Warn(",
+            "RuleVerdict::Fail(",
+            "RuleVerdict::Liquidate(",
+            "RuleVerdict::TargetHit(",
+            "RuleVerdict::EarlyWarning(",
+            "RuleVerdict::GapFlagged(",
+        ];
+        for v in &rule_level_variants {
+            let has_producer = sources.contains(v);
+            prop_assert!(has_producer,
+                "RuleVerdict variant {} has no producer in src/rules/evaluators/; add one or remove the variant",
+                v);
+        }
+    }
+
+    // Invariant 12: GapFlagged is produced when an unstarted account is evaluated.
+    #[test]
+    fn prop_gap_flagged_on_unstarted_account(balance in 80_000i64..120_000) {
+        use propfirm::config::presets::ftmo_phase1;
+        use propfirm::core::account::{Account, AccountStatus};
+        use propfirm::core::ids::AccountId;
+        use propfirm::engine::evaluator::Evaluator;
+        let plan = ftmo_phase1();
+        let mut account = Account::new(AccountId::new(), plan);
+        account.balance = Money(rust_decimal::Decimal::from(balance));
+        account.equity = account.balance;
+        account.peak_balance = account.balance;
+        account.peak_equity = account.balance;
+        // intentionally NOT started — no started_at, no day_start fields
+        account.status = AccountStatus::Active;
+        let evaluator = Evaluator::new(&account.plan);
+        let tick = Tick::new(Symbol::new("EURUSD"), Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        });
+        let result = evaluator
+            .evaluate_tick(&account, &tick, &[], &[], vec![])
+            .expect("evaluate_tick should succeed for property inputs");
+        let reports: Vec<_> = result.reports.iter().filter(|r| r.verdict.is_gap_flagged()).collect();
+        prop_assert!(!reports.is_empty(),
+            "at least one rule must GapFlagged on an unstarted account; got {} gap reports",
+            reports.len());
+    }
 }

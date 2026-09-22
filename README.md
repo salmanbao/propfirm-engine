@@ -244,6 +244,10 @@ fn main() -> anyhow::Result<()> {
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+### Persistence
+
+- **Postgres is the source of truth** for all persisted state — accounts, events, overrides, rule packs — and is the only backend where `AccountStore::get_for_tenant()` enforces row-level tenant isolation. The in-memory and serialization backends are for testing/benchmarks only.
+
 ---
 
 ## HTTP API Surface

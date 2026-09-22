@@ -140,6 +140,14 @@ impl Rule for MaxDrawdownRule {
         if plan_pct <= dec!(0) {
             return Ok(RuleVerdict::Pass);
         }
+        if let Err(msg) = ctx.require_started() {
+            let v = build_violation(self, ctx, ViolationSeverity::Info, msg);
+            return Ok(RuleVerdict::GapFlagged(v));
+        }
+        let Ok(equity) = ctx.require_broker_equity() else {
+            let v = build_violation(self, ctx, ViolationSeverity::Info, ctx.require_broker_equity().unwrap_err());
+            return Ok(RuleVerdict::GapFlagged(v));
+        };
         // P0-D + P1.6: compute the limit and drawdown against the
         // *effective* basis (pack entry overrides plan; supports static,
         // trailing, and eod_trailing). Both use the same reference.
@@ -153,39 +161,25 @@ impl Rule for MaxDrawdownRule {
         let current = if ctx.account.plan.drawdown_on_balance {
             ctx.account.balance
         } else {
-            ctx.account.equity
+            equity
         };
         let dd = Money((reference.0 - current.0).max(dec!(0)));
 
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
         let tolerance = self.tolerance_money();
         if dd.0 > limit.0 + tolerance.0 {
-            // P1-5 fix: refuse to terminate on an *estimated* equity.
-            let severity = if ctx.equity_is_broker_reported() {
-                ViolationSeverity::Liquidate
-            } else {
-                ViolationSeverity::Warning
-            };
             let mut v = build_violation(
                 self,
                 ctx,
-                severity,
+                ViolationSeverity::Liquidate,
                 format!(
-                    "Maximum drawdown breach{} ({:?} mode): {dd} > {limit}+{tolerance} ({}%)",
-                    if ctx.equity_is_broker_reported() {
-                        ""
-                    } else {
-                        " [ESTIMATED — not terminating]"
-                    },
+                    "Maximum drawdown breach ({:?} mode): {dd} > {limit}+{tolerance} ({}%)",
                     basis,
                     plan_pct * dec!(100)
                 ),
             );
             v = v.with_breach(dd, limit);
-            return Ok(match severity {
-                ViolationSeverity::Liquidate => RuleVerdict::Liquidate(v),
-                _ => RuleVerdict::Warn(v),
-            });
+            return Ok(RuleVerdict::Liquidate(v));
         }
         // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
         let warn_pct = self

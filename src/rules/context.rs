@@ -206,6 +206,33 @@ impl RuleContext {
     pub fn today_trade_count(&self) -> usize {
         self.today_trades.len()
     }
+
+    /// Returns the broker-reported equity if this context carries one.
+    ///
+    /// This makes the equity-source requirement explicit at the accessor
+    /// layer instead of silently defaulting to zero/estimated values inside
+    /// each rule. Breach-capable rules should call this instead of reading
+    /// `equity_input` directly when they need a terminating verdict.
+    #[must_use]
+    pub fn require_broker_equity(&self) -> Result<crate::core::types::Money, &'static str> {
+        match self.equity_input.broker_equity() {
+            Some(equity) => Ok(equity),
+            None => Err("equity is estimated; broker-reported equity required for terminating verdicts"),
+        }
+    }
+
+    /// Returns `Err` if the account has not yet been started.
+    ///
+    /// Required fields such as day-start references and deadline-based
+    /// limits are not meaningful until the account is active.
+    #[must_use]
+    pub fn require_started(&self) -> Result<(), &'static str> {
+        if self.account.started_at.is_some() {
+            Ok(())
+        } else {
+            Err("account has not been started; cannot evaluate drawdown/target rules")
+        }
+    }
 }
 
 /// Stub account used as a fallback when contexts are constructed directly
