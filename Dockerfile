@@ -26,6 +26,10 @@ COPY benches ./benches
 COPY tests ./tests
 COPY examples ./examples
 
+# Invalidate the dependency-cache build artifacts so the real source
+# is compiled instead of reusing the dummy-tree binaries.
+RUN rm -rf target
+
 # Build the actual binaries
 RUN cargo build --release --features server,tracing --bin propfirm-server --bin propfirm-cli
 
