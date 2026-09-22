@@ -91,13 +91,11 @@ fn parse_service_token_spec(
             continue;
         }
         let mut parts = entry.split(':');
-        let service = parts
-            .next()
-            .ok_or_else(|| {
-                crate::core::Error::invalid_config(format!(
-                    "{ENV_SERVICE_TOKENS}: missing service name in entry '{entry}'"
-                ))
-            })?;
+        let service = parts.next().ok_or_else(|| {
+            crate::core::Error::invalid_config(format!(
+                "{ENV_SERVICE_TOKENS}: missing service name in entry '{entry}'"
+            ))
+        })?;
         let service = service.trim();
         if service.is_empty() {
             return Err(crate::core::Error::invalid_config(format!(
@@ -302,7 +300,10 @@ pub async fn auth_layer(
     // and response header so downstream handlers/loggers can include it
     // in audit records.
     let correlation_id = Uuid::new_v4().to_string();
-    let tenant_id = req.headers().get(TENANT_HEADER).and_then(|v| v.to_str().ok());
+    let tenant_id = req
+        .headers()
+        .get(TENANT_HEADER)
+        .and_then(|v| v.to_str().ok());
     info!(
         service = %identity.service_name,
         correlation_id = %correlation_id,
@@ -314,7 +315,9 @@ pub async fn auth_layer(
     req.extensions_mut().insert(correlation_id.clone());
     let mut response = next.run(req).await;
     if let Ok(header_value) = correlation_id.parse::<axum::http::HeaderValue>() {
-        response.headers_mut().insert(CORRELATION_ID_HEADER, header_value);
+        response
+            .headers_mut()
+            .insert(CORRELATION_ID_HEADER, header_value);
     }
     Ok(response)
 }
@@ -331,10 +334,7 @@ mod tests {
             let active_digest = hex_fmt(&Sha256::digest(service.as_bytes()));
             let previous_digest =
                 maybe_previous.map(|prev| hex_fmt(&Sha256::digest(prev.as_bytes())));
-            map.insert(
-                service.to_string(),
-                (active_digest, previous_digest),
-            );
+            map.insert(service.to_string(), (active_digest, previous_digest));
         }
         AuthConfig {
             service_tokens: Arc::new(map),

@@ -78,7 +78,12 @@ impl Rule for DailyDrawdownRule {
             return Ok(RuleVerdict::GapFlagged(v));
         }
         if ctx.require_broker_equity().is_err() {
-            let v = build_violation(self, ctx, ViolationSeverity::Info, ctx.require_broker_equity().unwrap_err());
+            let v = build_violation(
+                self,
+                ctx,
+                ViolationSeverity::Info,
+                ctx.require_broker_equity().unwrap_err(),
+            );
             return Ok(RuleVerdict::GapFlagged(v));
         }
         // P0-D: compute limit using the pack entry's value (overrides plan).

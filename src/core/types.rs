@@ -7,8 +7,8 @@
 
 use crate::core::Error;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::iter::Sum;
+use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::str::FromStr;
 
 /// Re-export of `rust_decimal::Decimal` so callers can write `propfirm::core::types::Decimal`.

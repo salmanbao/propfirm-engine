@@ -145,7 +145,12 @@ impl Rule for MaxDrawdownRule {
             return Ok(RuleVerdict::GapFlagged(v));
         }
         let Ok(equity) = ctx.require_broker_equity() else {
-            let v = build_violation(self, ctx, ViolationSeverity::Info, ctx.require_broker_equity().unwrap_err());
+            let v = build_violation(
+                self,
+                ctx,
+                ViolationSeverity::Info,
+                ctx.require_broker_equity().unwrap_err(),
+            );
             return Ok(RuleVerdict::GapFlagged(v));
         };
         // P0-D + P1.6: compute the limit and drawdown against the

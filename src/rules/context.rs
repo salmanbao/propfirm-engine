@@ -213,11 +213,13 @@ impl RuleContext {
     /// layer instead of silently defaulting to zero/estimated values inside
     /// each rule. Breach-capable rules should call this instead of reading
     /// `equity_input` directly when they need a terminating verdict.
-    #[must_use]
+    #[must_use = "broker-reported equity is required for terminating verdicts; ignore only if you intend to GapFlagged"]
     pub fn require_broker_equity(&self) -> Result<crate::core::types::Money, &'static str> {
         match self.equity_input.broker_equity() {
             Some(equity) => Ok(equity),
-            None => Err("equity is estimated; broker-reported equity required for terminating verdicts"),
+            None => {
+                Err("equity is estimated; broker-reported equity required for terminating verdicts")
+            }
         }
     }
 
@@ -225,7 +227,7 @@ impl RuleContext {
     ///
     /// Required fields such as day-start references and deadline-based
     /// limits are not meaningful until the account is active.
-    #[must_use]
+    #[must_use = "account start check is required for terminating verdicts; ignore only if you intend to GapFlagged"]
     pub fn require_started(&self) -> Result<(), &'static str> {
         if self.account.started_at.is_some() {
             Ok(())

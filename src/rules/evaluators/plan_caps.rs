@@ -95,7 +95,10 @@ impl Rule for MaxTotalLotsRule {
                 self,
                 ctx,
                 ViolationSeverity::Hard,
-                format!("Total exposure {} lots exceeds account limit {} lots", total_lots.0, max_lots),
+                format!(
+                    "Total exposure {} lots exceeds account limit {} lots",
+                    total_lots.0, max_lots
+                ),
             );
             return Ok(RuleVerdict::Fail(v));
         }

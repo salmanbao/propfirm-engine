@@ -38,18 +38,15 @@ fn service_relay() -> &'static str {
     "relay"
 }
 
-fn auth_config_with_services(
-    entries: &[(&str, Option<&str>)],
-) -> AuthConfig {
+fn auth_config_with_services(entries: &[(&str, Option<&str>)]) -> AuthConfig {
     use sha2::{Digest, Sha256};
-    use std::sync::Arc;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     let mut map = HashMap::new();
     for (raw, maybe_previous) in entries {
-        let active_digest = hex_fmt(&Sha256::digest(raw.as_bytes()));
-        let previous_digest =
-            maybe_previous.map(|prev| hex_fmt(&Sha256::digest(prev.as_bytes())));
+        let active_digest = hex_fmt(Sha256::digest(raw.as_bytes()));
+        let previous_digest = maybe_previous.map(|prev| hex_fmt(Sha256::digest(prev.as_bytes())));
         map.insert(raw.to_string(), (active_digest, previous_digest));
     }
     AuthConfig {
@@ -74,11 +71,11 @@ fn make_state() -> Arc<parking_lot::RwLock<ServerState>> {
         .unwrap();
     account.balance = propfirm::core::types::Money(propfirm::core::types::dec!(10_000));
     account.equity = account.balance;
-    let auth = auth_config_with_services(&[(service_web(), Some("web-previous")), (service_relay(), None)]);
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(
-        plan,
-        auth,
-    )));
+    let auth = auth_config_with_services(&[
+        (service_web(), Some("web-previous")),
+        (service_relay(), None),
+    ]);
+    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(plan, auth)));
     {
         let s = state.read();
         propfirm::persistence::traits::AccountStore::put(&s.store, account.clone()).unwrap();
@@ -117,7 +114,11 @@ async fn send_raw(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, String::from_utf8_lossy(&bytes).into_owned(), correlation_id)
+    (
+        status,
+        String::from_utf8_lossy(&bytes).into_owned(),
+        correlation_id,
+    )
 }
 
 #[tokio::test]
@@ -177,8 +178,11 @@ async fn a1_valid_service_bearer_accepted() {
         StatusCode::OK,
         "valid service bearer must authenticate; body: {body}"
     );
-    assert!(correlation_id.is_some(), "correlation_id must be present for audit");
-    assert!(correlation_id.unwrap().len() > 0);
+    assert!(
+        correlation_id.is_some(),
+        "correlation_id must be present for audit"
+    );
+    assert!(!correlation_id.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -56,11 +56,14 @@ fn make_account(
 }
 
 fn eval_tick(evaluator: &Evaluator, account: &Account) -> Decision {
-    let tick = Tick::new(Symbol::new("EURUSD"), Quote {
-        bid: Price(dec!(1.0800)),
-        ask: Price(dec!(1.0802)),
-        ts: chrono::Utc::now(),
-    });
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.0800)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
     let result = evaluator
         .evaluate_tick(account, &tick, &[], &[], vec![])
         .expect("evaluate_tick should succeed for property inputs");
@@ -126,12 +129,6 @@ proptest! {
     fn prop_decision_invariant_under_reordering(balance in 80_000i64..120_000) {
         let plan = make_plan(LossReference::Static);
         let account = make_account(plan, balance, balance, 100_000, 100_000);
-        let tick = Tick::new(Symbol::new("EURUSD"), Quote {
-            bid: Price(dec!(1.0800)), ask: Price(dec!(1.0802)), ts: chrono::Utc::now(),
-        });
-        let mut ctx = propfirm::rules::context::RuleContext::for_tick(account.clone(), &tick);
-        ctx.rule_config = propfirm::config::rule_config::RuleConfig::from_plan(&account.plan);
-        ctx = ctx.with_broker_equity(account.equity, account.balance);
 
         let mut reg_a = RuleRegistry::empty();
         reg_a.register(Arc::new(daily_drawdown::DailyDrawdownRule::default()));
@@ -220,7 +217,7 @@ proptest! {
         peak_equity in 0i64..200_000,
     ) {
         let plan = make_plan(LossReference::Static);
-        let mut acc = make_account(plan, balance, equity, peak_balance, peak_equity);
+        let acc = make_account(plan, balance, equity, peak_balance, peak_equity);
         prop_assert!(acc.balance.0 >= dec!(0), "balance must be non-negative; got {}", acc.balance);
         prop_assert!(acc.equity.0 >= dec!(0), "equity must be non-negative; got {}", acc.equity);
         prop_assert!(acc.peak_balance.0 >= dec!(0), "peak_balance must be non-negative; got {}", acc.peak_balance);

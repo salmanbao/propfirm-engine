@@ -879,10 +879,10 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
 
 #[test]
 fn spec_gap_flagged_decision_surfaces_gap_flag() {
-    use propfirm::engine::decision::{Decision, DecisionKind};
-    use propfirm::rules::traits::{RuleReport, RuleVerdict};
     use propfirm::core::ids::{AccountId, RuleId};
     use propfirm::core::violation::Violation;
+    use propfirm::engine::decision::{Decision, DecisionKind};
+    use propfirm::rules::traits::{RuleReport, RuleVerdict};
 
     let account_id = AccountId::new();
     let rule_id = RuleId::named("max_total_lots");

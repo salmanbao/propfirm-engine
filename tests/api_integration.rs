@@ -56,9 +56,13 @@ fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
 /// and `/v1/*`; `X-Tenant-Id` selects the tenant after service auth.
 fn test_auth_config() -> AuthConfig {
     use sha2::{Digest, Sha256};
-    let active = hex_fmt(&Sha256::digest(SERVICE_KEY.as_bytes()));
+    let active = hex_fmt(Sha256::digest(SERVICE_KEY.as_bytes()));
     AuthConfig {
-        service_tokens: std::sync::Arc::new([(SERVICE_KEY.to_string(), (active, None))].into_iter().collect()),
+        service_tokens: std::sync::Arc::new(
+            [(SERVICE_KEY.to_string(), (active, None))]
+                .into_iter()
+                .collect(),
+        ),
         allow_insecure: false,
     }
 }
