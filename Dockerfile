@@ -10,11 +10,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy lockfile first for caching
 COPY Cargo.lock Cargo.toml ./
 
-# Create a dummy source tree to compile dependencies
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+# Create a dummy source tree matching every declared target so dependency
+# compilation does not fail on missing lib/bin paths.
+RUN mkdir -p src/bin && \
+    touch src/lib.rs && \
+    echo "fn main() {}" > src/bin/server.rs && \
+    echo "fn main() {}" > src/bin/cli.rs
 
 # Build dependencies (cached unless lockfile changes)
-RUN cargo build --release --bin propfirm-server --features server,tracing
+RUN cargo build --release --features server,tracing --bin propfirm-server --bin propfirm-cli
 
 # Now copy the real source
 COPY src ./src
@@ -22,8 +26,8 @@ COPY benches ./benches
 COPY tests ./tests
 COPY examples ./examples
 
-# Build the actual binary
-RUN cargo build --release --bin propfirm-server --features server,tracing
+# Build the actual binaries
+RUN cargo build --release --features server,tracing --bin propfirm-server --bin propfirm-cli
 
 FROM debian:bookworm-slim
 
