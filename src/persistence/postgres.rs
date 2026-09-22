@@ -21,7 +21,9 @@ fn block_on_async<F, T>(future: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    tokio::runtime::Handle::current().block_on(future)
+    tokio::runtime::Runtime::new()
+        .expect("create tokio runtime for postgres store")
+        .block_on(future)
 }
 
 #[derive(Clone)]
@@ -112,7 +114,7 @@ impl AccountStore for PostgresStore {
                    version, last_tick_ts, last_trade_at, payout_count,
                    balance_at_last_payout, last_payout_at, created_at, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+                        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
                 ON CONFLICT (id) DO UPDATE SET
                    tenant_id = EXCLUDED.tenant_id,
                    account_type = EXCLUDED.account_type,
@@ -284,11 +286,11 @@ impl AccountStore for PostgresStore {
         let rows = block_on_async(async {
             sqlx::query_as::<_, PositionRow>(
                 r#"
-                SELECT id, account_id, symbol, side, open_quantity, avg_entry_price,
+                SELECT id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
                        status, opened_at, closed_at, closed_price, realized_pnl,
-                       swap, commission, metadata, created_at, updated_at
+                       swap, commission, stop_loss, take_profit, magic, comment, metadata, created_at, updated_at
                   FROM positions
-                 WHERE account_id = $1 AND status = 'open'
+                 WHERE account_id = $1 AND status = 'Open'
                 "#,
             )
             .bind(id.0)
@@ -306,16 +308,18 @@ impl AccountStore for PostgresStore {
             sqlx::query(
                 r#"
                 INSERT INTO positions
-                  (id, account_id, symbol, side, open_quantity, avg_entry_price,
+                  (id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
                    status, opened_at, closed_at, realized_pnl,
-                   swap, commission, created_at, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                   swap, commission, stop_loss, take_profit, magic, comment,
+                   created_at, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                 "#,
             )
             .bind(row.id)
             .bind(row.account_id)
             .bind(row.symbol)
             .bind(row.side)
+            .bind(row.opened_quantity)
             .bind(row.open_quantity)
             .bind(row.avg_entry_price)
             .bind(row.status)
@@ -324,6 +328,10 @@ impl AccountStore for PostgresStore {
             .bind(row.realized_pnl)
             .bind(row.swap)
             .bind(row.commission)
+            .bind(row.stop_loss)
+            .bind(row.take_profit)
+            .bind(row.magic)
+            .bind(row.comment)
             .bind(row.created_at)
             .bind(row.updated_at)
             .execute(self.pool.as_ref())
@@ -343,14 +351,19 @@ impl AccountStore for PostgresStore {
                    SET account_id = $2,
                        symbol = $3,
                        side = $4,
-                       open_quantity = $5,
-                       avg_entry_price = $6,
-                       status = $7,
-                       opened_at = $8,
-                       closed_at = $9,
-                       realized_pnl = $10,
-                       swap = $11,
-                       commission = $12,
+                       opened_quantity = $5,
+                       open_quantity = $6,
+                       avg_entry_price = $7,
+                       status = $8,
+                       opened_at = $9,
+                       closed_at = $10,
+                       realized_pnl = $11,
+                       swap = $12,
+                       commission = $13,
+                       stop_loss = $14,
+                       take_profit = $15,
+                       magic = $16,
+                       comment = $17,
                        updated_at = NOW()
                  WHERE id = $1
                 "#,
@@ -359,6 +372,7 @@ impl AccountStore for PostgresStore {
             .bind(row.account_id)
             .bind(row.symbol)
             .bind(row.side)
+            .bind(row.opened_quantity)
             .bind(row.open_quantity)
             .bind(row.avg_entry_price)
             .bind(row.status)
@@ -367,6 +381,10 @@ impl AccountStore for PostgresStore {
             .bind(row.realized_pnl)
             .bind(row.swap)
             .bind(row.commission)
+            .bind(row.stop_loss)
+            .bind(row.take_profit)
+            .bind(row.magic)
+            .bind(row.comment)
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| Error::Persistence(e.to_string()))

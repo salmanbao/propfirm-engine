@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS positions (
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,
+    opened_quantity NUMERIC NOT NULL,
     open_quantity NUMERIC NOT NULL,
     avg_entry_price NUMERIC NOT NULL,
     status TEXT NOT NULL,
@@ -13,6 +14,10 @@ CREATE TABLE IF NOT EXISTS positions (
     realized_pnl NUMERIC,
     swap NUMERIC,
     commission NUMERIC,
+    stop_loss NUMERIC,
+    take_profit NUMERIC,
+    magic BIGINT,
+    comment TEXT,
     metadata JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

@@ -14,14 +14,15 @@ mod postgres_tests {
     use propfirm::persistence::postgres::PostgresStore;
     use propfirm::persistence::traits::AccountStore;
 
-    #[tokio::test]
-    async fn postgres_put_and_get_roundtrip() {
+    #[test]
+    fn postgres_put_and_get_roundtrip() {
         let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://propfirm:propfirm@localhost:5432/propfirm_test".to_string()
+            "postgres://postgres:password@localhost:5432/propfirm_test".to_string()
         });
 
-        let store = PostgresStore::connect(&database_url)
-            .await
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        let store = runtime
+            .block_on(PostgresStore::connect(&database_url))
             .expect("failed to connect to postgres");
 
         let plan = ftmo_phase1();
@@ -37,14 +38,15 @@ mod postgres_tests {
         assert_eq!(fetched.equity, account.equity);
     }
 
-    #[tokio::test]
-    async fn postgres_open_positions_and_trades() {
+    #[test]
+    fn postgres_open_positions_and_trades() {
         let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://propfirm:propfirm@localhost:5432/propfirm_test".to_string()
+            "postgres://postgres:password@localhost:5432/propfirm_test".to_string()
         });
 
-        let store = PostgresStore::connect(&database_url)
-            .await
+        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        let store = runtime
+            .block_on(PostgresStore::connect(&database_url))
             .expect("failed to connect to postgres");
 
         let plan = ftmo_phase1();
