@@ -114,7 +114,7 @@ impl AccountStore for InMemoryStore {
     }
     fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
         let mut w = self.positions.write();
-        for (_k, v) in w.iter_mut() {
+        for v in w.values_mut() {
             if let Some(idx) = v.iter().position(|p| p.id == position_id) {
                 v[idx].status = crate::core::position::PositionStatus::Closed;
                 v[idx].closed_at = Some(Utc::now());

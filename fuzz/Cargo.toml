@@ -3,6 +3,9 @@ name = "fuzz"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata]
+cargo-fuzz = true
+
 [dependencies]
 libfuzzer-sys = "0.4"
 propfirm-engine = { path = "..", default-features = false, features = ["serialization", "in-memory-store"] }
