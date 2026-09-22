@@ -40,6 +40,11 @@ pub enum RuleVerdict {
     /// breach threshold on every breach-capable rule (P1-13 fix) so ops
     /// tooling can subscribe to "page ops now" specifically.
     EarlyWarning(Violation),
+    /// **Missing-metric handling**: evaluation could not complete because
+    /// one or more required inputs were absent or incomplete (e.g. a
+    /// required tick field was missing). The rule did not silently evaluate
+    /// against a default; it flagged the data gap.
+    GapFlagged(Violation),
     /// Rule is not applicable to this context kind.
     Skip,
 }
@@ -69,6 +74,10 @@ impl RuleVerdict {
     pub fn is_early_warning(&self) -> bool {
         matches!(self, RuleVerdict::EarlyWarning(_))
     }
+    #[must_use]
+    pub fn is_gap_flagged(&self) -> bool {
+        matches!(self, RuleVerdict::GapFlagged(_))
+    }
 
     /// Returns true if this verdict represents a *terminating* outcome —
     /// i.e. one that should mark the account as failed.
@@ -88,7 +97,8 @@ impl RuleVerdict {
             | RuleVerdict::Liquidate(v)
             | RuleVerdict::TargetHit(v)
             | RuleVerdict::Emergency(v)
-            | RuleVerdict::EarlyWarning(v) => Some(v),
+            | RuleVerdict::EarlyWarning(v)
+            | RuleVerdict::GapFlagged(v) => Some(v),
             _ => None,
         }
     }

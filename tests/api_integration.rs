@@ -42,17 +42,23 @@ fn test_tenant_id_str() -> String {
     test_tenant_id().to_string()
 }
 
-/// **§A.1 fix**: the test config now carries real credentials. The
-/// tenant key is bound to `test-tenant`, the service token authenticates
-/// `/internal/*`.
+fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// **§A.1 fix**: the test config now carries a per-service bearer token
+/// digest. The raw token `service-secret` authenticates `/internal/*`
+/// and `/v1/*`; `X-Tenant-Id` selects the tenant after service auth.
 fn test_auth_config() -> AuthConfig {
+    use sha2::{Digest, Sha256};
+    let active = hex_fmt(&Sha256::digest(SERVICE_KEY.as_bytes()));
     AuthConfig {
-        api_keys: std::sync::Arc::new(
-            [(test_tenant_id(), "tenant-secret".to_string())]
-                .into_iter()
-                .collect(),
-        ),
-        service_token: Some("service-secret".to_string()),
+        service_tokens: std::sync::Arc::new([(SERVICE_KEY.to_string(), (active, None))].into_iter().collect()),
         allow_insecure: false,
     }
 }

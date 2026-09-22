@@ -81,21 +81,21 @@ impl Rule for MaxTotalLotsRule {
         };
         // Aggregate: per-position lots (via each symbol's spec) for open
         // positions across ALL symbols plus the pending order.
-        let mut total_lots = rust_decimal::Decimal::ZERO;
+        let mut total_lots = crate::core::types::Lots::ZERO;
         for p in ctx.open_positions.iter().filter(|p| p.is_open()) {
             let spec = ctx.instruments.get(&p.symbol);
-            total_lots += spec.units_to_lots(p.open_quantity).0;
+            total_lots += spec.units_to_lots(p.open_quantity);
         }
         if let Some(o) = &ctx.pending_order {
             let spec = ctx.instruments.get(&o.symbol);
-            total_lots += spec.units_to_lots(o.quantity).0;
+            total_lots += spec.units_to_lots(o.quantity);
         }
-        if total_lots > max_lots {
+        if total_lots.0 > max_lots {
             let v = build_violation(
                 self,
                 ctx,
                 ViolationSeverity::Hard,
-                format!("Total exposure {total_lots} lots exceeds account limit {max_lots} lots"),
+                format!("Total exposure {} lots exceeds account limit {} lots", total_lots.0, max_lots),
             );
             return Ok(RuleVerdict::Fail(v));
         }
@@ -220,11 +220,8 @@ impl MarginRule {
         let mut used = rust_decimal::Decimal::ZERO;
         for p in ctx.open_positions.iter().filter(|p| p.is_open()) {
             let spec = ctx.instruments.get(&p.symbol);
-            let lots = spec.units_to_lots(p.open_quantity).0;
-            used += spec
-                .notional(crate::core::types::Lots(lots), p.avg_entry_price)
-                .0
-                / rust_decimal::Decimal::from(ctx.account.plan.leverage);
+            let notional = spec.notional(spec.units_to_lots(p.open_quantity), p.avg_entry_price);
+            used += notional.0 / rust_decimal::Decimal::from(ctx.account.plan.leverage);
         }
         equity - used
     }

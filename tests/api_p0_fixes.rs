@@ -38,14 +38,20 @@ fn test_tenant_id_str() -> String {
 const TENANT_KEY: &str = "tenant-secret";
 const SERVICE_KEY: &str = "service-secret";
 
+fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 fn test_auth_config() -> AuthConfig {
+    use sha2::{Digest, Sha256};
+    let active = hex_fmt(&Sha256::digest(SERVICE_KEY.as_bytes()));
     AuthConfig {
-        api_keys: std::sync::Arc::new(
-            [(test_tenant_id(), TENANT_KEY.to_string())]
-                .into_iter()
-                .collect(),
-        ),
-        service_token: Some(SERVICE_KEY.to_string()),
+        service_tokens: std::sync::Arc::new([(SERVICE_KEY.to_string(), (active, None))].into_iter().collect()),
         allow_insecure: false,
     }
 }

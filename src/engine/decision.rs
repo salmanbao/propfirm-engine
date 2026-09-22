@@ -32,6 +32,9 @@ pub enum DecisionKind {
     /// One or more rules produced a hard violation; the account
     /// terminates.
     Fail,
+    /// One or more rules flagged a missing/incomplete required input
+    /// rather than silently evaluating against a default.
+    GapFlagged,
     /// A rule requested liquidation of all open positions.
     Liquidate,
     /// **P1-12 fix**: emergency stop. Beats every other verdict — even
@@ -59,6 +62,10 @@ impl DecisionKind {
     #[must_use]
     pub fn is_fail(self) -> bool {
         matches!(self, DecisionKind::Fail)
+    }
+    #[must_use]
+    pub fn is_gap_flagged(self) -> bool {
+        matches!(self, DecisionKind::GapFlagged)
     }
     #[must_use]
     pub fn is_liquidate(self) -> bool {
@@ -95,6 +102,7 @@ impl DecisionKind {
             DecisionKind::Emergency => 10_000,
             DecisionKind::Liquidate => 1_000,
             DecisionKind::Fail => 900,
+            DecisionKind::GapFlagged => 800,
             DecisionKind::TargetHit => 100,
             DecisionKind::EarlyWarning => 50,
             DecisionKind::Warn => 40,
@@ -116,6 +124,9 @@ pub enum DecisionReason {
     HardViolation(Violation),
     LiquidationRequested(Violation),
     EmergencyStop(Violation),
+    /// Evaluation was skipped because required input data was missing
+    /// or incomplete.
+    GapFlaggedReached(Violation),
 }
 
 /// The decision produced by the evaluator.
@@ -154,6 +165,7 @@ impl Decision {
         let mut fails: Vec<(u32, Violation)> = Vec::new();
         let mut target_hits: Vec<(u32, Violation)> = Vec::new();
         let mut early_warnings: Vec<(u32, Violation)> = Vec::new();
+        let mut gap_flagged: Vec<(u32, Violation)> = Vec::new();
         let mut warnings: Vec<(u32, Violation)> = Vec::new();
 
         for r in reports {
@@ -179,6 +191,10 @@ impl Decision {
                     all_violations.push(v.clone());
                     early_warnings.push((prio, v.clone()));
                 }
+                RuleVerdict::GapFlagged(v) => {
+                    all_violations.push(v.clone());
+                    gap_flagged.push((prio, v.clone()));
+                }
                 RuleVerdict::Warn(v) => {
                     all_violations.push(v.clone());
                     warnings.push((prio, v.clone()));
@@ -187,7 +203,7 @@ impl Decision {
             }
         }
 
-        // Priority-ordered winner selection. Emergency > Liquidate > Fail > TargetHit > EarlyWarning > Warn.
+        // Priority-ordered winner selection. Emergency > Liquidate > Fail > GapFlagged > TargetHit > EarlyWarning > Warn.
         // Within a category, the highest-priority rule wins; ties broken by first-seen.
         let pick_winner = |list: &[(u32, Violation)]| -> Option<(u32, Violation)> {
             list.iter()
@@ -215,6 +231,14 @@ impl Decision {
             return Decision {
                 kind: DecisionKind::Fail,
                 reason: DecisionReason::HardViolation(v.clone()),
+                winning_priority: p,
+                all_violations,
+            };
+        }
+        if let Some((p, v)) = pick_winner(&gap_flagged) {
+            return Decision {
+                kind: DecisionKind::GapFlagged,
+                reason: DecisionReason::GapFlaggedReached(v.clone()),
                 winning_priority: p,
                 all_violations,
             };

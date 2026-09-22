@@ -26,34 +26,25 @@ pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
 
 /// Extracts `TenantId` for the request.
 ///
-/// **§A.1 fix**: the tenant now comes from the *authenticated credential*
-/// (the per-tenant API key resolved by the auth middleware), **not** from
-/// the untrusted `X-Tenant-Id` header. The middleware already rejects a
-/// presented `X-Tenant-Id` that mismatches the key's tenant with 403, so
-/// by the time a handler runs the two agree. The service identity may
-/// act on any tenant — for it, the header IS the selection (validated as
-/// a UUID, then trusted because the platform bridge is the caller).
+/// All authenticated callers are now platform services identified by a
+/// static bearer token. Once the service bearer is valid, `X-Tenant-Id`
+/// is trusted as-given because the caller already proved it is the
+/// platform bridge over the private compose network.
 fn extract_tenant_id(
-    identity: &crate::api::auth::AuthedIdentity,
+    _identity: &crate::api::auth::AuthedIdentity,
     headers: &HeaderMap,
 ) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
-    match identity {
-        crate::api::auth::AuthedIdentity::Tenant(t) => Ok(*t),
-        crate::api::auth::AuthedIdentity::Service => {
-            // Platform service: picks the tenant explicitly per call.
-            headers
-                .get("X-Tenant-Id")
-                .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        "missing X-Tenant-Id header (required for service identity)".to_string(),
-                    )
-                })?
-                .parse::<crate::tenant::TenantId>()
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
-        }
-    }
+    headers
+        .get("X-Tenant-Id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "missing X-Tenant-Id header".to_string(),
+            )
+        })?
+        .parse::<crate::tenant::TenantId>()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 pub async fn health() -> &'static str {

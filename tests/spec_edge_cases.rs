@@ -872,3 +872,39 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
         "liquidation instruction must not include closed positions"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Edge 14: missing-metric handling produces GapFlagged, not silent default.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spec_gap_flagged_decision_surfaces_gap_flag() {
+    use propfirm::engine::decision::{Decision, DecisionKind};
+    use propfirm::rules::traits::{RuleReport, RuleVerdict};
+    use propfirm::core::ids::{AccountId, RuleId};
+    use propfirm::core::violation::Violation;
+
+    let account_id = AccountId::new();
+    let rule_id = RuleId::named("max_total_lots");
+    let violation = Violation::new(
+        account_id,
+        rule_id,
+        "Max Total Lots",
+        propfirm::core::violation::ViolationKind::MaxLotSize,
+        propfirm::core::violation::ViolationSeverity::Hard,
+        "gap-flagged regression",
+        chrono::Utc::now(),
+    );
+    let report = RuleReport::new(
+        rule_id,
+        "Max Total Lots",
+        RuleVerdict::GapFlagged(violation.clone()),
+        propfirm::rules::context::EvaluationScope::PreTrade,
+    )
+    .with_priority(1000);
+    let decision = Decision::from_reports(&[report]);
+    assert_eq!(decision.kind, DecisionKind::GapFlagged);
+    assert!(decision.kind.is_gap_flagged());
+    assert_eq!(decision.all_violations.len(), 1);
+    assert_eq!(decision.all_violations[0].message, "gap-flagged regression");
+}

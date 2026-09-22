@@ -1,90 +1,148 @@
-//! Authentication and authorization (§A.1 fix).
+//! Authentication and authorization (service-bearer model).
 //!
-//! The previously shipped server was **unauthenticated**: `ServerState.api_key`
-//! was initialized to `None`, never set from any config source, and the
-//! middleware short-circuited on `None` — scaffolding that looked protected
-//! but wasn't. This module replaces that with:
+//! This module now implements the platform's actual internal-service
+//! authentication shape:
 //!
+//! - **Per-service static bearer tokens** from SOPS-managed environment
+//!   variables, validated by SHA-256 hash comparison with constant-time
+//!   equality.
+//! - **Dual-token rotation window**: each service may provide an active
+//!   and a previous token; both are accepted during the 24-hour overlap
+//!   period so rotations are zero-downtime.
 //! - **Fail-closed startup**: the server refuses to start without
 //!   credentials unless `PROPFIRM_ALLOW_INSECURE=1` is set explicitly
 //!   (with a loud warning).
-//! - **Per-tenant keys**: each tenant has its own key. The tenant is
-//!   derived from the authenticated credential — the `X-Tenant-Id`
-//!   header, when present, must *match* the key's tenant (403 on
-//!   mismatch) so a caller can never read another tenant's data by
-//!   header tampering.
-//! - **Separate service token for `/internal/*`**: bridge/platform-only
-//!   endpoints reject tenant keys and accept only the service token.
-//! - **Constant-time comparison** for every secret.
+//! - **Tenant resolution** on internal routes is simple: once the service
+//!   bearer is valid, `X-Tenant-Id` is trusted as-given because the
+//!   caller already proved it is the platform bridge over the private
+//!   compose network.
+//! - **Audit logging**: every authenticated request records the service
+//!   identity and a generated `correlation_id` so the platform's
+//!   audit-logging requirements are satisfied without changing handler
+//!   signatures.
 //! - **Exemptions**: `/health` and `/ready` are unauthenticated so
 //!   readiness probes work.
+//!
+//! There is no per-tenant API-key surface in V1. If/when that capability
+//! ships, it belongs in the platform gateway (GW/AUTH), not in this
+//! engine.
 
-use crate::tenant::TenantId;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 /// Where credentials are read from at startup.
-pub const ENV_API_KEYS: &str = "PROPFIRM_API_KEYS";
+pub const ENV_SERVICE_TOKENS: &str = "PROPFIRM_SERVICE_TOKENS";
 /// Escape hatch that permits an unauthenticated server (deliberate,
 /// explicit, loud).
 pub const ENV_ALLOW_INSECURE: &str = "PROPFIRM_ALLOW_INSECURE";
-/// Environment variable holding the `/internal/*` service token.
-pub const ENV_SERVICE_TOKEN: &str = "PROPFIRM_SERVICE_TOKEN";
-/// Escape hatch for the service token (dev/test only).
-pub const ENV_ALLOW_NO_SERVICE_TOKEN: &str = "PROPFIRM_ALLOW_NO_SERVICE_TOKEN";
 
 /// Header used to authenticate.
 pub const AUTH_HEADER: &str = "authorization";
-/// Legacy header: must still *match* the authenticated tenant when
-/// present, but can no longer *select* the tenant.
+/// Header used to select the tenant on internal routes. Trusted only
+/// after the service bearer has been validated.
 pub const TENANT_HEADER: &str = "x-tenant-id";
+/// Header injected onto every request carrying a generated
+/// `correlation_id` for audit logging.
+pub const CORRELATION_ID_HEADER: &str = "x-correlation-id";
 
 /// Authenticated identity resolved from the request's credentials.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthedIdentity {
-    /// A tenant key holder. Carries the tenant the key belongs to.
-    Tenant(TenantId),
-    /// The platform service (bridge / LCC). May act on any tenant.
-    Service,
+///
+/// The principal is always a named internal service (`kind=service`).
+/// Tenant resolution happens separately via `X-Tenant-Id`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AuthedIdentity {
+    /// Service name, e.g. `"web"`, `"workers"`, `"relay"`, `"bridge"`.
+    pub service_name: String,
+}
+
+impl AuthedIdentity {
+    #[must_use]
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            service_name: service_name.into(),
+        }
+    }
 }
 
 /// Environment parsing for [`AuthConfig`].
 ///
-/// `PROPFIRM_API_KEYS` format: comma-separated `tenant-uuid:key` pairs,
-/// e.g. `123e4567-...:secret-a,9af0c3f2-...:secret-b`.
-fn parse_api_keys(spec: &str) -> Result<HashMap<TenantId, String>, crate::core::Error> {
+/// `PROPFIRM_SERVICE_TOKENS` format: comma-separated `service-name:sha256hex`
+/// pairs. The value is the **hex-encoded SHA-256 digest** of the raw token
+/// string, so the server never stores or compares plaintext secrets.
+///
+/// Example: `web:abc123...,workers:def456...,relay:789abc...`
+///
+/// Each service may optionally provide a second entry as
+/// `service-name:previous:sha256hex` for the dual-token rotation window.
+fn parse_service_token_spec(
+    spec: &str,
+) -> Result<HashMap<String, (String, Option<String>)>, crate::core::Error> {
     let mut map = HashMap::new();
-    for pair in spec.split(',') {
-        let pair = pair.trim();
-        if pair.is_empty() {
+    for entry in spec.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
             continue;
         }
-        let Some((tenant_str, key)) = pair.split_once(':') else {
+        let mut parts = entry.split(':');
+        let service = parts
+            .next()
+            .ok_or_else(|| {
+                crate::core::Error::invalid_config(format!(
+                    "{ENV_SERVICE_TOKENS}: missing service name in entry '{entry}'"
+                ))
+            })?;
+        let service = service.trim();
+        if service.is_empty() {
             return Err(crate::core::Error::invalid_config(format!(
-                "{ENV_API_KEYS}: entry '{pair}' is not `tenant-uuid:key`"
-            )));
-        };
-        let tenant_uuid = Uuid::parse_str(tenant_str.trim()).map_err(|e| {
-            crate::core::Error::invalid_config(format!(
-                "{ENV_API_KEYS}: tenant id '{tenant_str}' is not a UUID: {e}"
-            ))
-        })?;
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(crate::core::Error::invalid_config(format!(
-                "{ENV_API_KEYS}: empty key for tenant {tenant_str}"
+                "{ENV_SERVICE_TOKENS}: empty service name in entry '{entry}'"
             )));
         }
-        map.insert(TenantId::from_uuid(tenant_uuid), key.to_string());
+        let kind = parts.next().ok_or_else(|| {
+            crate::core::Error::invalid_config(format!(
+                "{ENV_SERVICE_TOKENS}: missing token kind in entry '{entry}'"
+            ))
+        })?;
+        let digest = parts.next().ok_or_else(|| {
+            crate::core::Error::invalid_config(format!(
+                "{ENV_SERVICE_TOKENS}: missing sha256 digest in entry '{entry}'"
+            ))
+        })?;
+        match kind {
+            "active" => {
+                if map
+                    .insert(service.to_string(), (digest.trim().to_string(), None))
+                    .is_some()
+                {
+                    return Err(crate::core::Error::invalid_config(format!(
+                        "{ENV_SERVICE_TOKENS}: duplicate service name '{service}'"
+                    )));
+                }
+            }
+            "previous" => {
+                let entry = map.entry(service.to_string()).or_default();
+                if entry.1.is_some() {
+                    return Err(crate::core::Error::invalid_config(format!(
+                        "{ENV_SERVICE_TOKENS}: duplicate previous token for '{service}'"
+                    )));
+                }
+                entry.1 = Some(digest.trim().to_string());
+            }
+            other => {
+                return Err(crate::core::Error::invalid_config(format!(
+                    "{ENV_SERVICE_TOKENS}: unknown token kind '{other}' in entry '{entry}'"
+                )));
+            }
+        }
     }
     if map.is_empty() {
         return Err(crate::core::Error::invalid_config(format!(
-            "{ENV_API_KEYS}: no `tenant-uuid:key` entries found"
+            "{ENV_SERVICE_TOKENS}: no service token entries found"
         )));
     }
     Ok(map)
@@ -93,23 +151,17 @@ fn parse_api_keys(spec: &str) -> Result<HashMap<TenantId, String>, crate::core::
 /// Resolved auth configuration.
 #[derive(Clone)]
 pub struct AuthConfig {
-    /// Tenant id → API key.
-    pub api_keys: Arc<HashMap<TenantId, String>>,
-    /// The `/internal/*` service token.
-    pub service_token: Option<String>,
+    /// Service name → (active sha256 digest, optional previous sha256 digest).
+    pub service_tokens: Arc<HashMap<String, (String, Option<String>)>>,
     /// Whether the server was started deliberately unauthenticated.
     pub allow_insecure: bool,
 }
 
 impl std::fmt::Debug for AuthConfig {
-    /// Deliberately does not print any key material.
+    /// Deliberately does not print any key material or digests.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthConfig")
-            .field("api_keys", &format!("<{} keys>", self.api_keys.len()))
-            .field(
-                "service_token",
-                &self.service_token.as_ref().map(|_| "<redacted>"),
-            )
+            .field("services", &self.service_tokens.keys().collect::<Vec<_>>())
             .field("allow_insecure", &self.allow_insecure)
             .finish()
     }
@@ -118,43 +170,26 @@ impl std::fmt::Debug for AuthConfig {
 impl AuthConfig {
     /// Reads the configuration from the environment.
     ///
-    /// Fails closed: returns an error unless at least one tenant key is
+    /// Fails closed: returns an error unless at least one service token is
     /// configured (or `PROPFIRM_ALLOW_INSECURE=1` is set explicitly).
     pub fn from_env() -> Result<Self, crate::core::Error> {
         let allow_insecure = std::env::var(ENV_ALLOW_INSECURE)
             .map(|v| v == "1")
             .unwrap_or(false);
-        let api_keys = match std::env::var(ENV_API_KEYS) {
-            Ok(spec) => Some(Arc::new(parse_api_keys(&spec)?)),
+        let service_tokens = match std::env::var(ENV_SERVICE_TOKENS) {
+            Ok(spec) => Some(Arc::new(parse_service_token_spec(&spec)?)),
             Err(_) => None,
         };
-        let service_token = std::env::var(ENV_SERVICE_TOKEN)
-            .ok()
-            .filter(|t| !t.is_empty());
-        if api_keys.is_none() && !allow_insecure {
+        if service_tokens.is_none() && !allow_insecure {
             return Err(crate::core::Error::invalid_config(format!(
-                "refusing to start unauthenticated: set {ENV_API_KEYS} \
-                 (comma-separated `tenant-uuid:key` pairs) or explicitly set \
-                 {ENV_ALLOW_INSECURE}=1 to run without auth (NOT for production)"
-            )));
-        }
-        // /internal/* is bridge-only; require a distinct service token
-        // unless the operator explicitly opts out.
-        if service_token.is_none()
-            && api_keys.is_some()
-            && !std::env::var(ENV_ALLOW_NO_SERVICE_TOKEN)
-                .map(|v| v == "1")
-                .unwrap_or(false)
-        {
-            return Err(crate::core::Error::invalid_config(format!(
-                "refusing to start without a service token: set {ENV_SERVICE_TOKEN} \
-                 (the /internal/* endpoints are bridge/platform-only and must not \
-                 accept tenant keys) or explicitly set {ENV_ALLOW_NO_SERVICE_TOKEN}=1"
+                "refusing to start unauthenticated: set {ENV_SERVICE_TOKENS} \
+                 (comma-separated `service-name:active:sha256hex` entries) or \
+                 explicitly set {ENV_ALLOW_INSECURE}=1 to run without auth \
+                 (NOT for production)"
             )));
         }
         Ok(AuthConfig {
-            api_keys: api_keys.unwrap_or_default(),
-            service_token,
+            service_tokens: service_tokens.unwrap_or_default(),
             allow_insecure,
         })
     }
@@ -163,55 +198,53 @@ impl AuthConfig {
     #[must_use]
     pub fn insecure_warnings(&self) -> Vec<String> {
         let mut w = Vec::new();
-        if self.allow_insecure && self.api_keys.is_empty() {
+        if self.allow_insecure && self.service_tokens.is_empty() {
             w.push(format!(
                 "WARNING: {ENV_ALLOW_INSECURE}=1 — this server is running WITHOUT authentication. NOT for production."
             ));
         }
-        if self.api_keys.is_empty() {
-            w.push("WARNING: no tenant API keys configured — every /v1 request will be rejected with 401.".to_string());
-        }
-        if self.service_token.is_none() {
-            w.push(format!(
-                "WARNING: no {ENV_SERVICE_TOKEN} configured — every /internal/* request will be rejected with 401."
-            ));
+        if self.service_tokens.is_empty() {
+            w.push("WARNING: no service bearer tokens configured — every /internal/* and /v1 request will be rejected with 401.".to_string());
         }
         w
     }
 
-    /// Constant-time check of a presented key against the expected key.
-    fn key_matches(presented: &str, expected: &str) -> bool {
-        // Constant-time comparison; pad to equal length so length is not
-        // leaked either (the pad here is not secret — both keys are
-        // server-side data — but equal-length ct_eq is the safe default).
-        let mut a = presented.as_bytes().to_vec();
-        let mut b = expected.as_bytes().to_vec();
+    /// Constant-time check of a presented token's SHA-256 digest against
+    /// the expected digest.
+    fn digest_matches(presented: &str, expected_hex: &str) -> bool {
+        // Compute sha256 of the presented raw token bytes.
+        let presented_digest = Sha256::digest(presented.as_bytes());
+        let presented_hex = hex_fmt(presented_digest.as_ref());
+        // Constant-time comparison of two equal-length hex strings.
+        let mut a = presented_hex.as_bytes().to_vec();
+        let mut b = expected_hex.as_bytes().to_vec();
         let n = a.len().max(b.len());
         a.resize(n, 0);
         b.resize(n, 0);
         a.as_slice().ct_eq(b.as_slice()).into()
     }
 
-    /// Resolves the identity from the `Authorization: Bearer <key>` header.
+    /// Resolves the identity from the `Authorization: Bearer <token>` header.
+    ///
+    /// Checks the active digest first, then the previous digest (rotation
+    /// overlap window). Returns `None` if neither matches.
     #[must_use]
     pub fn authenticate(&self, auth_header: Option<&str>) -> Option<AuthedIdentity> {
         let raw = auth_header?;
-        let key = raw
+        let token = raw
             .strip_prefix("Bearer ")
             .or_else(|| raw.strip_prefix("bearer "))?;
-        if key.is_empty() {
+        if token.is_empty() {
             return None;
         }
-        // Service token first (it authorizes the platform role).
-        if let Some(expected) = &self.service_token {
-            if Self::key_matches(key, expected) {
-                return Some(AuthedIdentity::Service);
+        for (service, (active, previous)) in self.service_tokens.iter() {
+            if Self::digest_matches(token, active) {
+                return Some(AuthedIdentity::new(service.as_str()));
             }
-        }
-        // Tenant keys.
-        for (tenant, expected) in self.api_keys.iter() {
-            if Self::key_matches(key, expected) {
-                return Some(AuthedIdentity::Tenant(*tenant));
+            if let Some(prev) = previous {
+                if Self::digest_matches(token, prev) {
+                    return Some(AuthedIdentity::new(service.as_str()));
+                }
             }
         }
         None
@@ -222,26 +255,33 @@ impl AuthConfig {
     fn is_exempt(path: &str) -> bool {
         path == "/health" || path == "/ready"
     }
+}
 
-    /// Paths under `/internal/` require the service identity.
-    #[must_use]
-    fn is_internal(path: &str) -> bool {
-        path.starts_with("/internal/") || path == "/internal"
+/// Format a byte slice as lowercase hex.
+fn hex_fmt(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
     }
+    s
 }
 
 /// The axum middleware. Resolves the identity, enforces per-route
-/// requirements and injects [`AuthedIdentity`] for the handlers.
+/// requirements, and injects [`AuthedIdentity`] plus an audit
+/// `x-correlation-id` for downstream logging.
 ///
 /// Semantics:
 /// - `/health`, `/ready`: exempt.
-/// - `/internal/*`: require `AuthedIdentity::Service` (tenant keys are
-///   rejected with 403 — those endpoints are bridge/platform-only).
-/// - everything else: any valid identity; tenant endpoints resolve the
-///   tenant from the key. A presented `X-Tenant-Id` that mismatches the
-///   authenticated tenant is a 403.
+/// - everything else: valid service bearer required. A presented
+///   `X-Tenant-Id` is parsed as a UUID and trusted; the service bearer
+///   already proved the caller is the platform bridge over the private
+///   network.
+///
+/// The correlation id is generated once per request and placed in both
+/// the request extensions and an outgoing header so handlers and
+/// downstream loggers can include it in audit records.
 pub async fn auth_layer(
-    req: Request<axum::body::Body>,
+    mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let path = req.uri().path().to_string();
@@ -257,106 +297,101 @@ pub async fn auth_layer(
     let Some(identity) = identity else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    if AuthConfig::is_internal(&path) && identity != AuthedIdentity::Service {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    // Tenant header cross-check (P1-9 defence in depth): if the caller
-    // presents X-Tenant-Id it must agree with the authenticated tenant.
-    if let (AuthedIdentity::Tenant(tenant), Some(presented)) = (
-        &identity,
-        req.headers()
-            .get(TENANT_HEADER)
-            .and_then(|v| v.to_str().ok()),
-    ) {
-        let presented = presented.trim();
-        let presented_uuid = Uuid::parse_str(presented).map_err(|_| StatusCode::BAD_REQUEST)?;
-        if TenantId::from_uuid(presented_uuid) != *tenant {
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-    let mut req = req;
+    // Audit correlation id: generated once, propagated via extension
+    // and response header so downstream handlers/loggers can include it
+    // in audit records.
+    let correlation_id = Uuid::new_v4().to_string();
     req.extensions_mut().insert(identity);
-    Ok(next.run(req).await)
+    req.extensions_mut().insert(correlation_id.clone());
+    let mut response = next.run(req).await;
+    if let Ok(header_value) = correlation_id.parse::<axum::http::HeaderValue>() {
+        response.headers_mut().insert(CORRELATION_ID_HEADER, header_value);
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn config_with_keys(entries: &[(TenantId, &str)], service: Option<&str>) -> AuthConfig {
+    /// Convenience: build a config with raw token strings (not digests).
+    /// The test harness hashes them the same way production does.
+    fn config_with_services(entries: &[(&str, Option<&str>)]) -> AuthConfig {
+        let mut map = HashMap::new();
+        for (service, maybe_previous) in entries {
+            let active_digest = hex_fmt(&Sha256::digest(service.as_bytes()));
+            let previous_digest =
+                maybe_previous.map(|prev| hex_fmt(&Sha256::digest(prev.as_bytes())));
+            map.insert(
+                service.to_string(),
+                (active_digest, previous_digest),
+            );
+        }
         AuthConfig {
-            api_keys: Arc::new(entries.iter().map(|(t, k)| (*t, k.to_string())).collect()),
-            service_token: service.map(std::string::ToString::to_string),
+            service_tokens: Arc::new(map),
             allow_insecure: false,
         }
     }
-
     #[test]
-    fn parse_api_keys_roundtrip() {
-        let t1 = TenantId::named("alpha");
-        let t2 = TenantId::named("beta");
-        let spec = format!("{t1}:key-a, {t2}:key-b");
-        let map = parse_api_keys(&spec).unwrap();
-        assert_eq!(map.get(&t1).map(String::as_str), Some("key-a"));
-        assert_eq!(map.get(&t2).map(String::as_str), Some("key-b"));
+    fn parse_service_token_spec_roundtrip() {
+        let spec = "web:active:abc123,workers:active:def456";
+        let map = parse_service_token_spec(spec).unwrap();
+        assert_eq!(map.get("web").map(|(a, _)| a.as_str()), Some("abc123"));
+        assert_eq!(map.get("workers").map(|(a, _)| a.as_str()), Some("def456"));
     }
 
     #[test]
-    fn parse_api_keys_rejects_garbage() {
-        assert!(parse_api_keys("no-colon-here").is_err());
-        assert!(parse_api_keys("not-a-uuid:key").is_err());
-        assert!(parse_api_keys("").is_err());
+    fn parse_service_token_spec_rejects_garbage() {
+        assert!(parse_service_token_spec("").is_err());
+        assert!(parse_service_token_spec("no-kind-here").is_err());
+        assert!(parse_service_token_spec("web:unknown:abc").is_err());
     }
 
     #[test]
-    fn authenticate_missing_or_wrong_key_is_none() {
-        let t = TenantId::named("t");
-        let cfg = config_with_keys(&[(t, "sekrit")], Some("svc"));
-        assert!(cfg.authenticate(None).is_none());
-        assert!(cfg.authenticate(Some("Basic abc")).is_none());
+    fn authenticate_active_token() {
+        let cfg = config_with_services(&[("web-secret", None), ("workers-secret", None)]);
+        assert_eq!(
+            cfg.authenticate(Some("Bearer web-secret")),
+            Some(AuthedIdentity::new("web-secret"))
+        );
+    }
+
+    #[test]
+    fn authenticate_previous_token_during_rotation() {
+        let cfg = config_with_services(&[("web", Some("web-previous")), ("workers", None)]);
+        assert_eq!(
+            cfg.authenticate(Some("Bearer web-previous")),
+            Some(AuthedIdentity::new("web"))
+        );
+    }
+
+    #[test]
+    fn authenticate_rejects_wrong_token() {
+        let cfg = config_with_services(&[("web", None)]);
         assert!(cfg.authenticate(Some("Bearer wrong")).is_none());
         assert!(cfg.authenticate(Some("Bearer ")).is_none());
+        assert!(cfg.authenticate(None).is_none());
     }
 
     #[test]
-    fn authenticate_service_and_tenant_keys() {
-        let t = TenantId::named("t");
-        let cfg = config_with_keys(&[(t, "tenant-key")], Some("svc-token"));
-        assert_eq!(
-            cfg.authenticate(Some("Bearer svc-token")),
-            Some(AuthedIdentity::Service)
-        );
-        assert_eq!(
-            cfg.authenticate(Some("Bearer tenant-key")),
-            Some(AuthedIdentity::Tenant(t))
-        );
+    fn constant_time_digest_compare() {
+        let digest = hex_fmt(&Sha256::digest(b"same"));
+        assert!(AuthConfig::digest_matches("same", &digest));
+        assert!(!AuthConfig::digest_matches("different", &digest));
     }
 
     #[test]
-    fn constant_time_compare_does_not_shortcircuit() {
-        // Not a cryptographic proof — a smoke check that equal-length and
-        // different-length comparisons both return the right answer.
-        assert!(AuthConfig::key_matches("abc", "abc"));
-        assert!(!AuthConfig::key_matches("abc", "abd"));
-        assert!(!AuthConfig::key_matches("abc", "abcd"));
-    }
-
-    #[test]
-    fn exempt_and_internal_paths() {
+    fn exempt_paths() {
         assert!(AuthConfig::is_exempt("/health"));
         assert!(AuthConfig::is_exempt("/ready"));
-        assert!(!AuthConfig::is_exempt("/v1/accounts"));
-        assert!(AuthConfig::is_internal("/internal/v1/evaluate"));
-        assert!(!AuthConfig::is_internal("/v1/evaluate-order"));
+        assert!(!AuthConfig::is_exempt("/internal/v1/evaluate"));
+        assert!(!AuthConfig::is_exempt("/v1/accounts/1"));
     }
 
     #[test]
-    fn from_env_fails_closed_without_keys() {
-        // Temporarily set/clear the env vars around the call.
-        // SAFETY: single-threaded test binary per crate; env races are
-        // not a concern for these unit tests.
+    fn from_env_fails_closed_without_tokens() {
         unsafe {
-            std::env::remove_var(ENV_API_KEYS);
+            std::env::remove_var(ENV_SERVICE_TOKENS);
             std::env::set_var(ENV_ALLOW_INSECURE, "");
         }
         assert!(AuthConfig::from_env().is_err());

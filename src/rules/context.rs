@@ -192,11 +192,12 @@ impl RuleContext {
 
     /// Total lots currently open.
     #[must_use]
-    pub fn total_open_lots(&self) -> rust_decimal::Decimal {
+    pub fn total_open_lots(&self) -> crate::core::types::Lots {
+        use crate::core::types::Lots;
         self.open_positions
             .iter()
             .filter(|p| p.is_open())
-            .map(|p| p.open_quantity.0)
+            .map(|p| Lots(p.open_quantity.0))
             .sum()
     }
 
