@@ -12,6 +12,20 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: propfirm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +58,8 @@ jobs:
         run: cargo clippy --all-features --all-targets -- -D warnings
 
       - name: Run tests (all features)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:password@localhost:5432/propfirm_test
         run: cargo test --all-features -- --test-threads=4
 
       - name: Run doc tests
@@ -57,7 +73,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
+          toolchain: nightly
           components: rustfmt
 
       - name: Cache Cargo registry
@@ -94,4 +110,9 @@ jobs:
         run: docker build -t propfirm-server:latest .
 
       - name: Verify binary runs
-        run: docker run --rm propfirm-server:latest propfirm-server --help || true
+        run: |
+          docker run --rm propfirm-server:latest --help
+          docker run --rm -e PROPFIRM_ALLOW_INSECURE=1 -d --name propfirm-smoke -p 8080:8080 propfirm-server:latest
+          sleep 2
+          curl -fsS http://localhost:8080/health
+          docker rm -f propfirm-smoke
