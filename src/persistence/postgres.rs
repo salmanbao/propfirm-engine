@@ -2,6 +2,10 @@
 //!
 //! Provides `AccountStore` and `RulePackStore` backed by Postgres,
 //! including optimistic concurrency control and tenant isolation.
+//!
+//! `PostgresStore::connect()` applies embedded migrations from
+//! `./migrations` automatically, so a freshly connected store is
+//! immediately usable without out-of-band schema setup.
 
 #![cfg(feature = "postgres")]
 
@@ -36,6 +40,10 @@ impl PostgresStore {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(database_url)
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
             .await
             .map_err(|e| Error::Persistence(e.to_string()))?;
         Ok(Self {
