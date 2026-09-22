@@ -1,4 +1,3 @@
 .codegraph
 .omo/
 target/
-fuzz/target/
