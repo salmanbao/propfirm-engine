@@ -1230,11 +1230,11 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
     // (account, pack, tick, server_time) → different input_hash (with
     // overwhelming probability on sha256).
     use propfirm::core::types::ServerTime;
+    use propfirm::pure::EquitySource;
     use propfirm::pure::{compute_input_hash, evaluate};
     use propfirm::rulepack::{PackLifecycle, RuleEntry, RulePack};
     use propfirm::rules::context::RuleContextKind;
     use propfirm::rules::registry::RuleRegistry;
-    use propfirm::pure::EquitySource;
     use std::sync::Arc;
 
     let plan = ftmo_phase1();
