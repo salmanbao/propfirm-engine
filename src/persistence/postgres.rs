@@ -63,7 +63,8 @@ impl AccountStore for PostgresStore {
                        active_trading_days, day_counted_today, today_realized_pnl,
                        total_realized_pnl, total_commissions, total_swaps,
                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                       day_start_equity, target_reached_at, target_reached_on_day,
+                       day_start_equity, current_trading_day_start,
+                       target_reached_at, target_reached_on_day,
                        version, last_tick_ts, last_trade_at, payout_count,
                        balance_at_last_payout, last_payout_at, created_at, updated_at
                   FROM accounts
@@ -90,7 +91,8 @@ impl AccountStore for PostgresStore {
                        active_trading_days, day_counted_today, today_realized_pnl,
                        total_realized_pnl, total_commissions, total_swaps,
                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                       day_start_equity, target_reached_at, target_reached_on_day,
+                       day_start_equity, current_trading_day_start,
+                       target_reached_at, target_reached_on_day,
                        version, last_tick_ts, last_trade_at, payout_count,
                        balance_at_last_payout, last_payout_at, created_at, updated_at
                   FROM accounts
@@ -111,18 +113,19 @@ impl AccountStore for PostgresStore {
         block_on_async(async {
             sqlx::query(
                 r#"
-                INSERT INTO accounts
-                  (id, tenant_id, account_type, status, challenge_id, plan,
-                   initial_balance, balance, equity, peak_equity, peak_balance,
-                   started_at, deadline, day_start_balance, trading_day_index,
-                   active_trading_days, day_counted_today, today_realized_pnl,
-                   total_realized_pnl, total_commissions, total_swaps,
-                   largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                   day_start_equity, target_reached_at, target_reached_on_day,
-                   version, last_tick_ts, last_trade_at, payout_count,
-                   balance_at_last_payout, last_payout_at, created_at, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                        $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+                 INSERT INTO accounts
+                   (id, tenant_id, account_type, status, challenge_id, plan,
+                    initial_balance, balance, equity, peak_equity, peak_balance,
+                    started_at, deadline, day_start_balance, trading_day_index,
+                    active_trading_days, day_counted_today, today_realized_pnl,
+                    total_realized_pnl, total_commissions, total_swaps,
+                    largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                    day_start_equity, current_trading_day_start,
+                    target_reached_at, target_reached_on_day,
+                    version, last_tick_ts, last_trade_at, payout_count,
+                    balance_at_last_payout, last_payout_at, created_at, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                         $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
                 ON CONFLICT (id) DO UPDATE SET
                    tenant_id = EXCLUDED.tenant_id,
                    account_type = EXCLUDED.account_type,
@@ -147,17 +150,18 @@ impl AccountStore for PostgresStore {
                    largest_day_profit = EXCLUDED.largest_day_profit,
                    largest_day_loss = EXCLUDED.largest_day_loss,
                    sum_positive_days_profit = EXCLUDED.sum_positive_days_profit,
-                   day_start_equity = EXCLUDED.day_start_equity,
-                   target_reached_at = EXCLUDED.target_reached_at,
-                   target_reached_on_day = EXCLUDED.target_reached_on_day,
-                   version = accounts.version + 1,
-                   last_tick_ts = EXCLUDED.last_tick_ts,
-                   last_trade_at = EXCLUDED.last_trade_at,
-                   payout_count = EXCLUDED.payout_count,
-                   balance_at_last_payout = EXCLUDED.balance_at_last_payout,
-                   last_payout_at = EXCLUDED.last_payout_at,
-                   updated_at = NOW()
-                "#,
+                    day_start_equity = EXCLUDED.day_start_equity,
+                    current_trading_day_start = EXCLUDED.current_trading_day_start,
+                    target_reached_at = EXCLUDED.target_reached_at,
+                    target_reached_on_day = EXCLUDED.target_reached_on_day,
+                    version = accounts.version + 1,
+                    last_tick_ts = EXCLUDED.last_tick_ts,
+                    last_trade_at = EXCLUDED.last_trade_at,
+                    payout_count = EXCLUDED.payout_count,
+                    balance_at_last_payout = EXCLUDED.balance_at_last_payout,
+                    last_payout_at = EXCLUDED.last_payout_at,
+                    updated_at = NOW()
+                 "#,
             )
             .bind(row.id)
             .bind(row.tenant_id)
@@ -184,6 +188,7 @@ impl AccountStore for PostgresStore {
             .bind(row.largest_day_loss)
             .bind(row.sum_positive_days_profit)
             .bind(row.day_start_equity)
+            .bind(row.current_trading_day_start)
             .bind(row.target_reached_at)
             .bind(row.target_reached_on_day)
             .bind(row.version)
@@ -207,34 +212,35 @@ impl AccountStore for PostgresStore {
         let result = block_on_async(async {
             sqlx::query(
                 r#"
-                UPDATE accounts
-                   SET status = $2,
-                       balance = $3,
-                       equity = $4,
-                       peak_equity = $5,
-                       peak_balance = $6,
-                       day_start_balance = $7,
-                       trading_day_index = $8,
-                       active_trading_days = $9,
-                       day_counted_today = $10,
-                       today_realized_pnl = $11,
-                       total_realized_pnl = $12,
-                       total_commissions = $13,
-                       total_swaps = $14,
-                       largest_day_profit = $15,
-                       largest_day_loss = $16,
-                       sum_positive_days_profit = $17,
-                       day_start_equity = $18,
-                       target_reached_at = $19,
-                       target_reached_on_day = $20,
-                       last_tick_ts = $21,
-                       last_trade_at = $22,
-                       payout_count = $23,
-                       balance_at_last_payout = $24,
-                       last_payout_at = $25,
-                       version = version + 1,
-                       updated_at = NOW()
-                 WHERE id = $1 AND version = $26
+                 UPDATE accounts
+                    SET status = $2,
+                        balance = $3,
+                        equity = $4,
+                        peak_equity = $5,
+                        peak_balance = $6,
+                        day_start_balance = $7,
+                        trading_day_index = $8,
+                        active_trading_days = $9,
+                        day_counted_today = $10,
+                        today_realized_pnl = $11,
+                        total_realized_pnl = $12,
+                        total_commissions = $13,
+                        total_swaps = $14,
+                        largest_day_profit = $15,
+                        largest_day_loss = $16,
+                        sum_positive_days_profit = $17,
+                        day_start_equity = $18,
+                        current_trading_day_start = $19,
+                        target_reached_at = $20,
+                        target_reached_on_day = $21,
+                        last_tick_ts = $22,
+                        last_trade_at = $23,
+                        payout_count = $24,
+                        balance_at_last_payout = $25,
+                        last_payout_at = $26,
+                        version = version + 1,
+                        updated_at = NOW()
+                 WHERE id = $1 AND version = $27
                 "#,
             )
             .bind(row.id)
@@ -255,6 +261,7 @@ impl AccountStore for PostgresStore {
             .bind(row.largest_day_loss)
             .bind(row.sum_positive_days_profit)
             .bind(row.day_start_equity)
+            .bind(row.current_trading_day_start)
             .bind(row.target_reached_at)
             .bind(row.target_reached_on_day)
             .bind(row.last_tick_ts)
@@ -535,6 +542,7 @@ struct AccountRow {
     largest_day_loss: rust_decimal::Decimal,
     sum_positive_days_profit: rust_decimal::Decimal,
     day_start_equity: rust_decimal::Decimal,
+    current_trading_day_start: Option<chrono::DateTime<chrono::Utc>>,
     target_reached_at: Option<chrono::DateTime<chrono::Utc>>,
     target_reached_on_day: Option<i32>,
     version: i64,
@@ -640,6 +648,7 @@ impl AccountRow {
             largest_day_loss: crate::core::types::Money(self.largest_day_loss),
             sum_positive_days_profit: crate::core::types::Money(self.sum_positive_days_profit),
             day_start_equity: crate::core::types::Money(self.day_start_equity),
+            current_trading_day_start: self.current_trading_day_start,
             target_reached_at: self.target_reached_at,
             target_reached_on_day: self.target_reached_on_day.map(|v| v as u32),
             version: self.version as u64,
@@ -696,6 +705,7 @@ impl AccountRow {
             largest_day_loss: account.largest_day_loss.0,
             sum_positive_days_profit: account.sum_positive_days_profit.0,
             day_start_equity: account.day_start_equity.0,
+            current_trading_day_start: account.current_trading_day_start,
             target_reached_at: account.target_reached_at,
             target_reached_on_day: account.target_reached_on_day.map(|v| v as i32),
             version: account.version as i64,

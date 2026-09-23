@@ -257,7 +257,10 @@ where
         if !matches!(ev, PipelineEvent::DayRollover { .. }) {
             let event_ts = ev.event_timestamp();
             let event_day_start = state.account.plan.trading_day_start(event_ts);
-            let current_day_start = state.account.plan.trading_day_start(chrono::Utc::now());
+            let current_day_start = state
+                .account
+                .current_trading_day_start
+                .unwrap_or_else(|| state.account.plan.trading_day_start(event_ts));
             if event_day_start > current_day_start {
                 let had_trades = !state.account.today_realized_pnl.0.is_zero();
                 let rollover_ts = event_ts;

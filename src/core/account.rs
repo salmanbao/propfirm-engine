@@ -160,6 +160,12 @@ pub struct Account {
     /// EOD equity rather than the intraday balance.
     pub day_start_equity: Money,
 
+    /// **Day-rollover fix**: persisted start of the account's current
+    /// trading day. The pipeline uses this for day-boundary comparisons
+    /// instead of `Utc::now()`, so rollover is based on the account's
+    /// recorded day rather than the current wall-clock day.
+    pub current_trading_day_start: Option<Timestamp>,
+
     /// **P0-2 fix**: Timestamp the profit target was first reached, or
     /// `None` if not yet. Once set, *never cleared* — even if equity
     /// subsequently dips below target before `min_trading_days` is met.
@@ -240,6 +246,7 @@ impl Account {
             largest_day_loss: Money::ZERO,
             sum_positive_days_profit: Money::ZERO,
             day_start_equity: initial,
+            current_trading_day_start: None,
             target_reached_at: None,
             target_reached_on_day: None,
             version: 0,
@@ -271,6 +278,7 @@ impl Account {
         }
         self.status = AccountStatus::Active;
         self.started_at = Some(at);
+        self.current_trading_day_start = Some(self.plan.trading_day_start(at));
         if let Some(days) = self.plan.time_limit_days {
             self.deadline = Some(at + chrono::Duration::days(i64::from(days)));
         }
