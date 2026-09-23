@@ -437,15 +437,9 @@ where
         use crate::rules::context::RuleContextKind::{
             OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
         };
-        let open_positions = self
-            .store
-            .open_positions(state.account.id)
-            .unwrap_or_default();
+        let open_positions = self.store.open_positions(state.account.id)?;
         let day_start = state.account.plan.trading_day_start(chrono::Utc::now());
-        let today_trades = self
-            .store
-            .today_trades_since(state.account.id, day_start)
-            .unwrap_or_default();
+        let today_trades = self.store.today_trades_since(state.account.id, day_start)?;
         let recent_events = self.event_store.recent(state.account.id, 50);
         match ev {
             PipelineEvent::AccountStarted { at } => {

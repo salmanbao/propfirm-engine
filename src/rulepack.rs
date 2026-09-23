@@ -322,6 +322,32 @@ impl RulePack {
         RuleId::named(kind)
     }
 
+    /// Creates a synthetic [`RulePack`] from a [`ChallengePlan`] for hashing
+    /// and identification on the plan-driven evaluation path. The synthetic
+    /// pack carries the account's plan parameters so the evaluator can
+    /// return a deterministic `pack_id`/`pack_version` without requiring a
+    /// stored pack binding.
+    #[must_use]
+    pub fn synthetic_from_plan(
+        account_id: crate::core::ids::AccountId,
+        tenant_id: crate::tenant::TenantId,
+        plan: &crate::config::plan::ChallengePlan,
+    ) -> Self {
+        RulePack {
+            id: format!("plan-{}", account_id),
+            version: 1,
+            tenant_id,
+            lifecycle: PackLifecycle::Active,
+            effective_from: chrono::Utc::now(),
+            superseded_by: None,
+            description: "Synthetic pack derived from account plan".to_string(),
+            rules: Vec::new(),
+            initial_balance: plan.initial_balance(),
+            leverage: plan.leverage,
+            profit_target_pct: plan.profit_target_pct,
+        }
+    }
+
     /// Serializes the pack to a pretty-printed JSON string. Requires the
     /// `serialization` feature.
     #[cfg(feature = "serialization")]

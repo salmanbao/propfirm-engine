@@ -287,6 +287,12 @@ pub fn compute_input_hash(
     account.target_reached_at.hash(&mut h);
     account.status.hash(&mut h);
 
+    // Hash the account's bound plan so the input changes when the plan
+    // changes (P1-6 fix: the evaluator's source of truth is the plan,
+    // not an unbound caller-supplied pack).
+    let plan_bytes = serde_json::to_vec(&account.plan).unwrap_or_default();
+    plan_bytes.hash(&mut h);
+
     // Hash the rule pack's content hash (real sha256, computed by the pack).
     pack.content_hash().hash(&mut h);
 

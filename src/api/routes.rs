@@ -15,6 +15,8 @@
 //!   (**service token required**).
 //! - `POST /internal/v1/manual-run` — force re-evaluation of an account
 //!   (**service token required**).
+//! - `POST /internal/v1/emergency-stop` — freeze an account immediately
+//!   (**service token required**).
 //! - `GET /internal/v1/breach-report/:account_id` — the trader-facing
 //!   "why did I fail" view with evidence (TD-25) (**service token
 //!   required**).
@@ -32,9 +34,9 @@
 
 use crate::api::auth::auth_layer;
 use crate::api::handlers::{
-    activate_rule_pack, breach_report, create_rule_pack, evaluate_internal, evaluate_order,
-    get_account, get_rule_pack, health, manual_run, override_breach, ready, supersed_rule_pack,
-    update_rule_pack, SharedState,
+    activate_rule_pack, breach_report, create_rule_pack, emergency_stop, evaluate_internal,
+    evaluate_order, get_account, get_rule_pack, health, manual_run, override_breach, ready,
+    supersed_rule_pack, update_rule_pack, SharedState,
 };
 use axum::{
     routing::{get, patch, post},
@@ -49,6 +51,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/internal/v1/evaluate", post(evaluate_internal))
         .route("/internal/v1/override", post(override_breach))
         .route("/internal/v1/manual-run", post(manual_run))
+        .route("/internal/v1/emergency-stop", post(emergency_stop))
         .route("/internal/v1/breach-report/:account_id", get(breach_report))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/accounts/:id", get(get_account))

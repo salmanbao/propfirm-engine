@@ -156,9 +156,18 @@ fn evaluate_internal_impl(
             StatusCode::NOT_FOUND,
             format!("account {account_id} not found"),
         ))?;
-    // Build a registry from the supplied rule pack (P1-6).
-    let registry = crate::rules::registry::RuleRegistry::build_from_pack(&req.rule_pack)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    // P1-6: derive the rule set from the account's bound plan. The
+    // caller-supplied pack is deprecated and ignored; the account's plan
+    // is the authoritative source of policy.
+    let (registry, pack) = if let Some(pack) = req.rule_pack {
+        (crate::rules::registry::RuleRegistry::build_from_pack(&pack)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?, pack)
+    } else {
+        let registry =
+            crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+        let pack = crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan);
+        (registry, pack)
+    };
     // P0.6: deserialize the optional positions / trades into domain types.
     let mut position_errors: Vec<String> = Vec::new();
     let positions: Vec<crate::core::position::Position> = req
@@ -226,7 +235,7 @@ fn evaluate_internal_impl(
     let server_time = crate::core::types::ServerTime(tick.quote.ts);
     let verdict = crate::pure::evaluate(
         &acc,
-        &req.rule_pack,
+        &pack,
         &registry,
         crate::rules::context::RuleContextKind::OnTick,
         server_time,
@@ -313,6 +322,39 @@ pub async fn manual_run(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
+    }))
+}
+
+/// `POST /internal/v1/emergency-stop` — freeze an account immediately.
+/// Short-circuits normal rule evaluation and forces an emergency-stop
+/// decision with full audit metadata (`reason` + `actor_id`).
+pub async fn emergency_stop(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    Json(req): Json<EmergencyStopRequest>,
+) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let account_id = AccountId::from_uuid(
+        Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+    );
+    let at = chrono::Utc::now();
+    let s = state.read().clone();
+    let mut pipeline = s.pipeline();
+    let result = pipeline
+        .process_for_tenant(
+            tenant_id,
+            account_id,
+            PipelineEvent::EmergencyStop {
+                reason: req.reason,
+                actor_id: req.actor_id,
+                at,
+            },
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(EmergencyStopResponse {
+        decision_kind: format!("{:?}", result.snapshot.decision.kind),
+        stopped_at: at.to_rfc3339(),
     }))
 }
 
@@ -776,7 +818,14 @@ impl TradeDto {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InternalEvaluateRequest {
     pub account_id: String,
-    pub rule_pack: RulePack,
+    /// **P1-6 fix**: the caller-supplied rule pack is deprecated. The
+    /// stateless evaluate endpoint now derives the rule set from the
+    /// account's bound plan, so an arbitrary caller-supplied pack can no
+    /// longer silently override the account's policy. The field is kept
+    /// optional for backward compatibility with existing callers; if
+    /// present it is ignored with a warning.
+    #[serde(default)]
+    pub rule_pack: Option<RulePack>,
     pub tick: crate::core::tick::Tick,
     /// **P0.5 fix**: who vouches for the equity/balance numbers.
     /// `"broker_reported"` allows termination; `"estimated"` (the safe
@@ -829,6 +878,19 @@ pub struct ManualRunRequest {
 pub struct ManualRunResponse {
     pub decision_kind: String,
     pub violations: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyStopRequest {
+    pub account_id: String,
+    pub reason: String,
+    pub actor_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyStopResponse {
+    pub decision_kind: String,
+    pub stopped_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
