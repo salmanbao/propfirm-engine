@@ -624,6 +624,43 @@ where
             // the state and records the override.
             PipelineEvent::OverrideBreach { override_record } => {
                 override_record.validate()?;
+                if override_record.account_id != state.account.id {
+                    return Err(crate::Error::invalid_state(format!(
+                        "override account_id {} does not match evaluated account {}",
+                        override_record.account_id, state.account.id
+                    )));
+                }
+                let mut events = self.event_store.all(state.account.id);
+                let clears_violation = events
+                    .iter()
+                    .find(|e| {
+                        matches!(
+                            e.kind,
+                            crate::core::events::DomainEventKind::RuleViolated { .. }
+                        )
+                    })
+                    .and_then(|e| match &e.kind {
+                        crate::core::events::DomainEventKind::RuleViolated { violation } => {
+                            if violation.id == override_record.clears_violation_id {
+                                Some(violation)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        crate::Error::invalid_state(format!(
+                            "override references violation {} which does not exist for account {}",
+                            override_record.clears_violation_id, state.account.id
+                        ))
+                    })?;
+                if !clears_violation.is_terminating() {
+                    return Err(crate::Error::invalid_state(format!(
+                        "override references violation {} which is not a breach-terminal violation",
+                        override_record.clears_violation_id
+                    )));
+                }
                 let new_state = state.clear_breach(override_record)?;
                 events.push(DomainEvent::new(
                     new_state.account.id,

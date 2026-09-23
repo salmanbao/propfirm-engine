@@ -213,6 +213,13 @@ pub trait Rule: Send + Sync {
     /// Evaluate the rule against the given context.
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict>;
 
+    /// Optional parameters for this rule instance. Used by the registry
+    /// to map rule errors through the rule's configured `failure_policy`.
+    #[must_use]
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        None
+    }
+
     /// Optional human-readable description of the rule.
     fn description(&self) -> &'static str {
         ""

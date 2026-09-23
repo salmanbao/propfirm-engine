@@ -964,7 +964,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
                 }
             }
             Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
-            Err(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
         }
     }
 
@@ -975,9 +975,9 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         key: &str,
         request_body: &str,
         response: &str,
-    ) {
+    ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let _ = block_on_async(async {
+        let result = block_on_async(async {
             sqlx::query(
                 r#"
                 INSERT INTO idempotency_entries
@@ -997,6 +997,11 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .map(|_| ())
             .map_err(|e| Error::Persistence(e.to_string()))
         });
+
+        match result {
+            Ok(()) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
+        }
     }
 }
 

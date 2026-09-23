@@ -125,33 +125,8 @@ fn evaluate_body(account_id: &AccountId, equity_source: Option<&str>) -> String 
             "ts": chrono::Utc::now().to_rfc3339()
         }
     });
-    let rule_pack_json = serde_json::json!({
-        "id": "test-pack-v1",
-        "version": 1,
-        "tenant_id": "00000000-0000-0000-0000-000000000001",
-        "lifecycle": "active",
-        "effective_from": chrono::Utc::now().to_rfc3339(),
-        "superseded_by": serde_json::Value::Null,
-        "description": "test pack",
-        "rules": [{
-            "id": "max_total_loss",
-            "kind": "max_drawdown",
-            "basis": "static",
-            "unit": "percent",
-            "value": "0.10",
-            "tolerance_cents": 1,
-            "early_warning_pct": "0.80",
-            "priority": 1000,
-            "enabled": true,
-            "params_json": "{}"
-        }],
-        "initial_balance": "10000",
-        "leverage": 100,
-        "profit_target_pct": "0.10"
-    });
     let mut body = serde_json::json!({
         "account_id": account_id.to_string(),
-        "rule_pack": rule_pack_json,
         "tick": tick_json
     });
     if let Some(src) = equity_source {
@@ -241,24 +216,8 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
         "symbol": "EURUSD",
         "quote": { "bid": "1.0800", "ask": "1.0802", "ts": saturday.to_rfc3339() }
     });
-    let rule_pack_json = serde_json::json!({
-        "id": "test-pack-v1", "version": 1,
-        "tenant_id": "00000000-0000-0000-0000-000000000001",
-        "lifecycle": "active",
-        "effective_from": chrono::Utc::now().to_rfc3339(),
-        "superseded_by": serde_json::Value::Null,
-        "description": "test pack",
-        "rules": [{
-            "id": "weekend", "kind": "weekend_holding",
-            "basis": "static", "unit": "percent", "value": "0",
-            "tolerance_cents": 1, "early_warning_pct": "0.80",
-            "priority": 900, "enabled": true, "params_json": "{}"
-        }],
-        "initial_balance": "10000", "leverage": 100, "profit_target_pct": "0.10"
-    });
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
-        "rule_pack": rule_pack_json,
         "tick": tick_json,
         "equity_source": "broker_reported",
         "open_positions": [{

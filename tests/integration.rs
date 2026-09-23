@@ -1234,6 +1234,7 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
     use propfirm::rulepack::{PackLifecycle, RuleEntry, RulePack};
     use propfirm::rules::context::RuleContextKind;
     use propfirm::rules::registry::RuleRegistry;
+    use propfirm::pure::EquitySource;
     use std::sync::Arc;
 
     let plan = ftmo_phase1();
@@ -1271,6 +1272,8 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
         None,
         None,
         None,
+        &[],
+        EquitySource::Estimated,
     );
     let h2 = compute_input_hash(
         &account1,
@@ -1282,6 +1285,8 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
         None,
         None,
         None,
+        &[],
+        EquitySource::Estimated,
     );
     let h3 = compute_input_hash(
         &account2,
@@ -1293,6 +1298,8 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
         None,
         None,
         None,
+        &[],
+        EquitySource::Estimated,
     );
     assert_eq!(
         h1, h2,

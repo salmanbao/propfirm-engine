@@ -110,6 +110,8 @@ pub fn evaluate(
         inputs.pending_order,
         inputs.latest_trade,
         inputs.latest_tick,
+        &inputs.cross_reference_trades,
+        inputs.equity_source,
     );
 
     // 3. Run the registry's rule evaluation.
@@ -154,7 +156,7 @@ impl PureVerdict {
 /// **P0.5 fix**: who vouches for the equity/balance numbers on the
 /// account state. Mirrors [`EquityInput`] at the API boundary so a
 /// caller must *state* provenance instead of the engine assuming it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum EquitySource {
     /// Equity came from the broker bridge. Breach-capable rules may
     /// terminate on it (P1-5). Only pass this from trusted paths.
@@ -271,6 +273,8 @@ pub fn compute_input_hash(
     pending_order: Option<&Order>,
     latest_trade: Option<&Trade>,
     latest_tick: Option<&Tick>,
+    cross_reference_trades: &[Trade],
+    equity_source: EquitySource,
 ) -> String {
     use std::hash::Hash;
     let mut h = Sha256Hasher::new();
@@ -279,6 +283,8 @@ pub fn compute_input_hash(
     account.id.hash(&mut h);
     account.balance.0.hash(&mut h);
     account.equity.0.hash(&mut h);
+    account.estimated_equity.0.hash(&mut h);
+    account.estimated_balance.0.hash(&mut h);
     account.peak_balance.0.hash(&mut h);
     account.peak_equity.0.hash(&mut h);
     account.day_start_balance.0.hash(&mut h);
@@ -322,6 +328,16 @@ pub fn compute_input_hash(
         t.quantity.0.hash(&mut h);
         t.executed_at.hash(&mut h);
     }
+
+    for t in cross_reference_trades {
+        t.id.hash(&mut h);
+        t.account_id.hash(&mut h);
+        t.symbol.hash(&mut h);
+        t.price.0.hash(&mut h);
+        t.quantity.0.hash(&mut h);
+    }
+
+    equity_source.hash(&mut h);
 
     // Hash pending order, latest trade, latest tick if present.
     if let Some(o) = pending_order {

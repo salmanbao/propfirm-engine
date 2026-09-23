@@ -908,3 +908,37 @@ fn spec_gap_flagged_decision_surfaces_gap_flag() {
     assert_eq!(decision.all_violations.len(), 1);
     assert_eq!(decision.all_violations[0].message, "gap-flagged regression");
 }
+
+#[test]
+fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
+    use propfirm::config::plan::LossReference;
+    use propfirm::config::presets::ftmo_phase1;
+    use propfirm::core::account::Account;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::Money;
+    use propfirm::engine::state::AccountState;
+
+    let plan = ftmo_phase1().with_loss_reference(LossReference::Static);
+    let mut account = Account::new(AccountId::new(), plan.clone());
+    account.balance = Money(dec!(100_000));
+    account.equity = Money(dec!(100_000));
+    account.day_start_balance = Money(dec!(100_000));
+    account.day_start_equity = Money(dec!(100_000));
+    let seed_boundary = chrono::Utc::now() - chrono::Duration::days(2);
+    account.current_trading_day_start = Some(seed_boundary);
+
+    let mut state = AccountState::new(account.clone());
+    let pre = state.account.current_trading_day_start;
+    state = state.rollover_day(true);
+    let post = state.account.current_trading_day_start;
+
+    assert!(
+        post.is_some(),
+        "rollover must persist a new trading day boundary"
+    );
+    assert_eq!(
+        post.unwrap(),
+        pre.unwrap() + chrono::Duration::days(1),
+        "rollover must advance the persisted boundary by exactly one plan day"
+    );
+}

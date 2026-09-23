@@ -28,7 +28,6 @@ use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
-use propfirm::core::types::dec;
 use propfirm::persistence::traits::AccountStore;
 use propfirm::tenant::TenantId;
 use std::sync::Arc;
@@ -282,33 +281,8 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
             "ts": chrono::Utc::now().to_rfc3339()
         }
     });
-    let rule_pack_json = serde_json::json!({
-        "id": "test-pack-v1",
-        "version": 1,
-        "tenant_id": "00000000-0000-0000-0000-000000000001",
-        "lifecycle": "active",
-        "effective_from": chrono::Utc::now().to_rfc3339(),
-        "superseded_by": serde_json::Value::Null,
-        "description": "test pack",
-        "rules": [{
-            "id": "max_total_loss",
-            "kind": "max_drawdown",
-            "basis": "static",
-            "unit": "percent",
-            "value": "0.10",
-            "tolerance_cents": 1,
-            "early_warning_pct": "0.80",
-            "priority": 1000,
-            "enabled": true,
-            "params_json": "{}"
-        }],
-        "initial_balance": dec!(10_000),
-        "leverage": 100,
-        "profit_target_pct": "0.10"
-    });
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
-        "rule_pack": rule_pack_json,
         "tick": tick_json
     })
     .to_string();

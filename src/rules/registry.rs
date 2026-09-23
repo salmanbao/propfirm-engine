@@ -8,7 +8,7 @@ use crate::core::ids::RuleId;
 use crate::core::violation::{Violation, ViolationSeverity};
 use crate::core::Error;
 use crate::rules::context::{EvaluationScope, RuleContext, RuleContextKind};
-use crate::rules::traits::{Rule, RuleReport, RuleVerdict};
+use crate::rules::traits::{Rule, RuleReport};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -419,7 +419,7 @@ impl RuleRegistry {
             let verdict = match verdict_result {
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => {
-                    let v = Violation::new(
+                    let base = Violation::new(
                         ctx.account.id,
                         rule.id(),
                         rule.name(),
@@ -429,7 +429,7 @@ impl RuleRegistry {
                         ctx.server_time.ts(),
                     )
                     .with_tenant(ctx.account.tenant_id);
-                    RuleVerdict::Warn(v)
+                    Self::failure_verdict(rule, base)
                 }
                 Err(panic_payload) => {
                     let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
@@ -439,7 +439,7 @@ impl RuleRegistry {
                     } else {
                         "unknown panic payload".to_string()
                     };
-                    let v = Violation::new(
+                    let base = Violation::new(
                         ctx.account.id,
                         rule.id(),
                         rule.name(),
@@ -451,7 +451,7 @@ impl RuleRegistry {
                         ctx.server_time.ts(),
                     )
                     .with_tenant(ctx.account.tenant_id);
-                    RuleVerdict::Warn(v)
+                    Self::failure_verdict(rule, base)
                 }
             };
             let mut report = RuleReport::new(rule.id(), rule.name(), verdict, scope);
@@ -463,6 +463,20 @@ impl RuleRegistry {
             reports.push(report);
         }
         Ok(reports)
+    }
+
+    fn failure_verdict(rule: &Arc<dyn Rule>, base: Violation) -> crate::rules::traits::RuleVerdict {
+        use crate::rules::traits::RuleVerdict;
+        let policy = rule
+            .params()
+            .and_then(|p| p.failure_policy.as_deref())
+            .unwrap_or("warn");
+        match policy {
+            "soft_fail" => RuleVerdict::SoftFail(base),
+            "fail" => RuleVerdict::Fail(base),
+            "gap_flagged" => RuleVerdict::GapFlagged(base),
+            _ => RuleVerdict::Warn(base),
+        }
     }
 }
 

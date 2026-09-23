@@ -115,12 +115,18 @@ pub async fn evaluate_internal(
                 ));
             }
             crate::api::idempotency::IdempotencyOutcome::Fresh => {}
+            crate::api::idempotency::IdempotencyOutcome::Error => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "idempotency lookup failed".into(),
+                ));
+            }
         }
     }
     let response = evaluate_internal_impl(&state, tenant_id, req)?;
     if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
-        s.idempotency.remember(
+        let outcome = s.idempotency.remember(
             tenant_id,
             "POST /internal/v1/evaluate",
             key,
@@ -128,6 +134,12 @@ pub async fn evaluate_internal(
             &serde_json::to_string(&response)
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
         );
+        if matches!(outcome, crate::api::idempotency::IdempotencyOutcome::Error) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "idempotency store failed".into(),
+            ));
+        }
     }
     Ok(Json(response))
 }
@@ -157,20 +169,15 @@ fn evaluate_internal_impl(
             StatusCode::NOT_FOUND,
             format!("account {account_id} not found"),
         ))?;
-    // P1-6: derive the rule set from the account's bound plan. The
-    // caller-supplied pack is deprecated and ignored; the account's plan
-    // is the authoritative source of policy.
-    let (registry, pack) = if let Some(pack) = req.rule_pack {
-        (
-            crate::rules::registry::RuleRegistry::build_from_pack(&pack)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
-            pack,
-        )
+    let pack = if req.rule_pack.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "rule_pack is no longer accepted; evaluation uses the account's bound plan".into(),
+        ));
     } else {
-        let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
-        let pack = crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan);
-        (registry, pack)
+        crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan)
     };
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     // P0.6: deserialize the optional positions / trades into domain types.
     let mut position_errors: Vec<String> = Vec::new();
     let positions: Vec<crate::core::position::Position> = req

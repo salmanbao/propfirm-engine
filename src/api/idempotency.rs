@@ -32,6 +32,8 @@ pub enum IdempotencyOutcome {
     /// The same key was used with a *different* body — a conflicting
     /// retry. Reject (HTTP 409), never double-apply.
     Conflict,
+    /// The backend could not safely determine the outcome.
+    Error,
 }
 
 /// Backend contract for idempotency storage.
@@ -57,7 +59,7 @@ pub trait IdempotencyBackend: Send + Sync {
         key: &str,
         request_body: &str,
         response: &str,
-    );
+    ) -> IdempotencyOutcome;
 }
 
 /// The cached record: request-body hash + serialized first response +
@@ -211,7 +213,7 @@ impl IdempotencyBackend for IdempotencyStore {
         key: &str,
         request_body: &str,
         response: &str,
-    ) {
+    ) -> IdempotencyOutcome {
         let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
@@ -229,6 +231,7 @@ impl IdempotencyBackend for IdempotencyStore {
             let evicted = inner.order.remove(0);
             inner.entries.remove(&evicted);
         }
+        IdempotencyOutcome::Fresh
     }
 }
 
