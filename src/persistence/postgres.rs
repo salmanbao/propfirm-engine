@@ -9,6 +9,7 @@
 
 #![cfg(feature = "postgres")]
 
+use crate::api::idempotency::IdempotencyOutcome;
 use crate::core::account::Account;
 use crate::core::ids::{AccountId, PositionId};
 use crate::core::position::Position;
@@ -22,18 +23,34 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-fn block_on_async<F, T>(future: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    tokio::runtime::Runtime::new()
-        .expect("create tokio runtime for postgres store")
-        .block_on(future)
+#[derive(Clone)]
+struct PostgresRuntimes(Arc<tokio::runtime::Runtime>);
+
+impl PostgresRuntimes {
+    fn new() -> Self {
+        Self(Arc::new(
+            tokio::runtime::Runtime::new().expect("create tokio runtime for postgres store"),
+        ))
+    }
+
+    fn block_on<F, T>(&self, future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        self.0.block_on(future)
+    }
+}
+
+impl Default for PostgresRuntimes {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone)]
 pub struct PostgresStore {
     pool: Arc<PgPool>,
+    runtimes: PostgresRuntimes,
 }
 
 impl PostgresStore {
@@ -49,6 +66,7 @@ impl PostgresStore {
             .map_err(|e| Error::Persistence(e.to_string()))?;
         Ok(Self {
             pool: Arc::new(pool),
+            runtimes: PostgresRuntimes::default(),
         })
     }
 
@@ -60,22 +78,23 @@ impl PostgresStore {
 
 impl AccountStore for PostgresStore {
     fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
-        let row = block_on_async(async {
+        let row = self.runtimes.block_on(async {
             sqlx::query_as::<_, AccountRow>(
                 r#"
-                SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                       initial_balance, balance, equity, estimated_equity, estimated_balance,
-                       peak_equity, peak_balance,
-                       started_at, deadline, day_start_balance, trading_day_index,
-                       active_trading_days, day_counted_today, today_realized_pnl,
-                       total_realized_pnl, total_commissions, total_swaps,
-                       largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                       day_start_equity, current_trading_day_start,
-                       target_reached_at, target_reached_on_day,
-                       version, last_tick_ts, last_trade_at, payout_count,
-                       balance_at_last_payout, last_payout_at, created_at, updated_at
-                  FROM accounts
-                 WHERE id = $1 AND tenant_id = $2
+                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
+                        initial_balance, balance, equity, estimated_equity, estimated_balance,
+                        peak_equity, peak_balance,
+                        started_at, deadline, day_start_balance, trading_day_index,
+                        active_trading_days, day_counted_today, today_realized_pnl,
+                        total_realized_pnl, total_commissions, total_swaps,
+                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                        day_start_equity, current_trading_day_start,
+                        target_reached_at, target_reached_on_day,
+                        version, last_tick_ts, last_trade_at, payout_count,
+                        balance_at_last_payout, last_payout_at, refund_used,
+                        created_at, updated_at
+                   FROM accounts
+                  WHERE id = $1 AND tenant_id = $2
                 "#,
             )
             .bind(id.0)
@@ -89,22 +108,23 @@ impl AccountStore for PostgresStore {
     }
 
     fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
-        let row = block_on_async(async {
+        let row = self.runtimes.block_on(async {
             sqlx::query_as::<_, AccountRow>(
                 r#"
-                SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                       initial_balance, balance, equity, estimated_equity, estimated_balance,
-                       peak_equity, peak_balance,
-                       started_at, deadline, day_start_balance, trading_day_index,
-                       active_trading_days, day_counted_today, today_realized_pnl,
-                       total_realized_pnl, total_commissions, total_swaps,
-                       largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                       day_start_equity, current_trading_day_start,
-                       target_reached_at, target_reached_on_day,
-                       version, last_tick_ts, last_trade_at, payout_count,
-                       balance_at_last_payout, last_payout_at, created_at, updated_at
-                  FROM accounts
-                 WHERE id = $1
+                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
+                        initial_balance, balance, equity, estimated_equity, estimated_balance,
+                        peak_equity, peak_balance,
+                        started_at, deadline, day_start_balance, trading_day_index,
+                        active_trading_days, day_counted_today, today_realized_pnl,
+                        total_realized_pnl, total_commissions, total_swaps,
+                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                        day_start_equity, current_trading_day_start,
+                        target_reached_at, target_reached_on_day,
+                        version, last_tick_ts, last_trade_at, payout_count,
+                        balance_at_last_payout, last_payout_at, refund_used,
+                        created_at, updated_at
+                   FROM accounts
+                  WHERE id = $1
                 "#,
             )
             .bind(id.0)
@@ -118,23 +138,24 @@ impl AccountStore for PostgresStore {
 
     fn put(&self, account: Account) -> Result<(), Error> {
         let row = AccountRow::from_account(&account);
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
-                 INSERT INTO accounts
-                    (id, tenant_id, account_type, status, challenge_id, plan,
-                     initial_balance, balance, equity, estimated_equity, estimated_balance,
-                     peak_equity, peak_balance,
-                     started_at, deadline, day_start_balance, trading_day_index,
-                     active_trading_days, day_counted_today, today_realized_pnl,
-                     total_realized_pnl, total_commissions, total_swaps,
-                     largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                     day_start_equity, current_trading_day_start,
-                     target_reached_at, target_reached_on_day,
-                     version, last_tick_ts, last_trade_at, payout_count,
-                     balance_at_last_payout, last_payout_at, created_at, updated_at)
+                  INSERT INTO accounts
+                     (id, tenant_id, account_type, status, challenge_id, plan,
+                      initial_balance, balance, equity, estimated_equity, estimated_balance,
+                      peak_equity, peak_balance,
+                      started_at, deadline, day_start_balance, trading_day_index,
+                      active_trading_days, day_counted_today, today_realized_pnl,
+                      total_realized_pnl, total_commissions, total_swaps,
+                      largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                      day_start_equity, current_trading_day_start,
+                      target_reached_at, target_reached_on_day,
+                      version, last_tick_ts, last_trade_at, payout_count,
+                      balance_at_last_payout, last_payout_at, refund_used,
+                      created_at, updated_at)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-                         $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
+                         $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
                 ON CONFLICT (id) DO UPDATE SET
                    tenant_id = EXCLUDED.tenant_id,
                    account_type = EXCLUDED.account_type,
@@ -167,9 +188,10 @@ impl AccountStore for PostgresStore {
                     last_tick_ts = EXCLUDED.last_tick_ts,
                     last_trade_at = EXCLUDED.last_trade_at,
                     payout_count = EXCLUDED.payout_count,
-                    balance_at_last_payout = EXCLUDED.balance_at_last_payout,
-                    last_payout_at = EXCLUDED.last_payout_at,
-                    updated_at = NOW()
+                     balance_at_last_payout = EXCLUDED.balance_at_last_payout,
+                     last_payout_at = EXCLUDED.last_payout_at,
+                     refund_used = EXCLUDED.refund_used,
+                     updated_at = NOW()
                  "#,
             )
              .bind(row.id)
@@ -208,6 +230,7 @@ impl AccountStore for PostgresStore {
              .bind(row.payout_count)
              .bind(row.balance_at_last_payout)
              .bind(row.last_payout_at)
+             .bind(row.refund_used)
              .bind(row.created_at)
              .bind(row.updated_at)
             .execute(self.pool.as_ref())
@@ -220,7 +243,7 @@ impl AccountStore for PostgresStore {
 
     fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
         let row = AccountRow::from_account(&account);
-        let result = block_on_async(async {
+        let result = self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                  UPDATE accounts
@@ -251,9 +274,10 @@ impl AccountStore for PostgresStore {
                         payout_count = $26,
                         balance_at_last_payout = $27,
                         last_payout_at = $28,
+                        refund_used = $29,
                         version = version + 1,
                         updated_at = NOW()
-                 WHERE id = $1 AND version = $29
+                 WHERE id = $1 AND version = $30
                 "#,
             )
             .bind(row.id)
@@ -284,6 +308,7 @@ impl AccountStore for PostgresStore {
             .bind(row.payout_count)
             .bind(row.balance_at_last_payout)
             .bind(row.last_payout_at)
+            .bind(row.refund_used)
             .bind(expected_version as i64)
             .execute(self.pool.as_ref())
             .await
@@ -302,7 +327,7 @@ impl AccountStore for PostgresStore {
     }
 
     fn delete(&self, id: AccountId) -> Result<(), Error> {
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query("DELETE FROM accounts WHERE id = $1")
                 .bind(id.0)
                 .execute(self.pool.as_ref())
@@ -313,7 +338,7 @@ impl AccountStore for PostgresStore {
     }
 
     fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
-        let rows = block_on_async(async {
+        let rows = self.runtimes.block_on(async {
             sqlx::query_as::<_, PositionRow>(
                 r#"
                 SELECT id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
@@ -334,7 +359,7 @@ impl AccountStore for PostgresStore {
 
     fn add_position(&self, position: Position) -> Result<(), Error> {
         let row = PositionRow::from(position);
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 INSERT INTO positions
@@ -374,7 +399,7 @@ impl AccountStore for PostgresStore {
 
     fn update_position(&self, position: Position) -> Result<(), Error> {
         let row = PositionRow::from(position);
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 UPDATE positions
@@ -425,7 +450,7 @@ impl AccountStore for PostgresStore {
 
     fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
         let now = chrono::Utc::now();
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 UPDATE positions
@@ -450,7 +475,7 @@ impl AccountStore for PostgresStore {
         id: AccountId,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<Trade>, Error> {
-        let rows = block_on_async(async {
+        let rows = self.runtimes.block_on(async {
             sqlx::query_as::<_, TradeRow>(
                 r#"
                 SELECT id, account_id, symbol, side, trade_side, price, quantity,
@@ -472,7 +497,7 @@ impl AccountStore for PostgresStore {
     }
 
     fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
-        let rows = block_on_async(async {
+        let rows = self.runtimes.block_on(async {
             sqlx::query_as::<_, TradeRow>(
                 r#"
                 SELECT id, account_id, symbol, side, trade_side, price, quantity,
@@ -494,7 +519,7 @@ impl AccountStore for PostgresStore {
 
     fn add_trade(&self, trade: Trade) -> Result<(), Error> {
         let row = TradeRow::from(trade);
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 INSERT INTO trades
@@ -568,6 +593,7 @@ struct AccountRow {
     payout_count: i32,
     balance_at_last_payout: rust_decimal::Decimal,
     last_payout_at: Option<chrono::DateTime<chrono::Utc>>,
+    refund_used: bool,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -676,7 +702,7 @@ impl AccountRow {
             payout_count: self.payout_count as u32,
             balance_at_last_payout: crate::core::types::Money(self.balance_at_last_payout),
             last_payout_at: self.last_payout_at,
-            refund_used: false,
+            refund_used: self.refund_used,
         }
     }
 
@@ -735,6 +761,7 @@ impl AccountRow {
             payout_count: account.payout_count as i32,
             balance_at_last_payout: account.balance_at_last_payout.0,
             last_payout_at: account.last_payout_at,
+            refund_used: account.refund_used,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }
@@ -907,14 +934,6 @@ impl From<Trade> for TradeRow {
     }
 }
 
-/// Outcome of an idempotency lookup.
-#[derive(Clone)]
-pub enum IdempotencyOutcome {
-    Fresh,
-    Replay(String),
-    Conflict,
-}
-
 /// Durable, tenant-scoped idempotency store backed by Postgres.
 ///
 /// The composite key is `(tenant_id, endpoint, idempotency_key)`.
@@ -924,12 +943,16 @@ pub enum IdempotencyOutcome {
 #[derive(Clone)]
 pub struct PostgresIdempotencyStore {
     pool: Arc<PgPool>,
+    runtimes: PostgresRuntimes,
 }
 
 impl PostgresIdempotencyStore {
     #[must_use]
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            runtimes: PostgresRuntimes::default(),
+        }
     }
 }
 
@@ -942,7 +965,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         request_body: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let outcome = block_on_async(async {
+        let outcome = self.runtimes.block_on(async {
             sqlx::query_as::<_, IdempotencyEntryRow>(
                 r#"
                 SELECT response, body_hash
@@ -963,13 +986,13 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         match outcome {
             Ok(Some(row)) => {
                 if row.body_hash == body_hash {
-                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
+                    IdempotencyOutcome::Replay(row.response)
                 } else {
-                    crate::api::idempotency::IdempotencyOutcome::Conflict
+                    IdempotencyOutcome::Conflict
                 }
             }
-            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
-            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
+            Ok(None) => IdempotencyOutcome::Fresh,
+            Err(_) => IdempotencyOutcome::Error,
         }
     }
 
@@ -982,18 +1005,38 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         response: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let outcome = block_on_async(async {
-            sqlx::query_as::<_, IdempotencyEntryRow>(
+        let outcome: Result<IdempotencyOutcome, Error> = self.runtimes.block_on(async {
+            let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
+                r#"
+                SELECT response, body_hash
+                  FROM idempotency_entries
+                 WHERE tenant_id = $1
+                   AND endpoint = $2
+                   AND idempotency_key = $3
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(endpoint)
+            .bind(key)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+            match existing {
+                Some(row) if row.body_hash != body_hash => {
+                    return Ok(IdempotencyOutcome::Conflict);
+                }
+                Some(row) => {
+                    return Ok(IdempotencyOutcome::Replay(row.response));
+                }
+                None => {}
+            }
+
+            sqlx::query(
                 r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
                 VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (tenant_id, endpoint, idempotency_key)
-                DO UPDATE SET
-                    response = EXCLUDED.response,
-                    created_at = now()
-                WHERE idempotency_entries.body_hash = EXCLUDED.body_hash
-                RETURNING response, body_hash
                 "#,
             )
             .bind(tenant_id.0)
@@ -1001,22 +1044,15 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .bind(key)
             .bind(&body_hash)
             .bind(response)
-            .fetch_optional(self.pool.as_ref())
+            .execute(self.pool.as_ref())
             .await
-            .map_err(|e| Error::Persistence(e.to_string()))
+            .map(|_| ())
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+            Ok(IdempotencyOutcome::Fresh)
         });
 
-        match outcome {
-            Ok(Some(row)) => {
-                if row.body_hash == body_hash {
-                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
-                } else {
-                    crate::api::idempotency::IdempotencyOutcome::Conflict
-                }
-            }
-            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
-            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
-        }
+        outcome.unwrap_or_else(|_| IdempotencyOutcome::Error)
     }
 
     fn remember(
@@ -1028,31 +1064,51 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         response: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let result = block_on_async(async {
-            sqlx::query(
+        let result: Result<IdempotencyOutcome, Error> = self.runtimes.block_on(async {
+            let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
                 r#"
-                INSERT INTO idempotency_entries
-                    (tenant_id, endpoint, idempotency_key, body_hash, response)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (tenant_id, endpoint, idempotency_key)
-                DO UPDATE SET response = EXCLUDED.response, created_at = now()
+                SELECT response, body_hash
+                  FROM idempotency_entries
+                 WHERE tenant_id = $1
+                   AND endpoint = $2
+                   AND idempotency_key = $3
                 "#,
             )
             .bind(tenant_id.0)
             .bind(endpoint)
             .bind(key)
-            .bind(body_hash)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+            if let Some(row) = existing {
+                if row.body_hash != body_hash {
+                    return Ok(IdempotencyOutcome::Conflict);
+                }
+                return Ok(IdempotencyOutcome::Replay(row.response));
+            }
+
+            sqlx::query(
+                r#"
+                INSERT INTO idempotency_entries
+                    (tenant_id, endpoint, idempotency_key, body_hash, response)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(endpoint)
+            .bind(key)
+            .bind(&body_hash)
             .bind(response)
             .execute(self.pool.as_ref())
             .await
             .map(|_| ())
-            .map_err(|e| Error::Persistence(e.to_string()))
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+            Ok(IdempotencyOutcome::Fresh)
         });
 
-        match result {
-            Ok(()) => crate::api::idempotency::IdempotencyOutcome::Fresh,
-            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
-        }
+        result.unwrap_or_else(|_| IdempotencyOutcome::Error)
     }
 }
 
@@ -1073,12 +1129,16 @@ fn hash_body(body: &str) -> String {
 #[derive(Clone)]
 pub struct PostgresRulePackStore {
     pool: Arc<PgPool>,
+    runtimes: PostgresRuntimes,
 }
 
 impl PostgresRulePackStore {
     #[must_use]
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            runtimes: PostgresRuntimes::default(),
+        }
     }
 }
 
@@ -1088,7 +1148,7 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         tenant_id: crate::tenant::TenantId,
         id: &str,
     ) -> Result<Option<crate::rulepack::RulePack>, crate::core::Error> {
-        let row = block_on_async(async {
+        let row = self.runtimes.block_on(async {
             sqlx::query_as::<_, RulePackRow>(
                 r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
@@ -1109,7 +1169,7 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
     }
 
     fn insert_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 INSERT INTO rule_packs
@@ -1133,7 +1193,7 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
     }
 
     fn put_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
-        block_on_async(async {
+        self.runtimes.block_on(async {
             sqlx::query(
                 r#"
                 UPDATE rule_packs
@@ -1163,7 +1223,7 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         &self,
         tenant_id: crate::tenant::TenantId,
     ) -> Result<Vec<crate::rulepack::RulePack>, crate::core::Error> {
-        let rows = block_on_async(async {
+        let rows = self.runtimes.block_on(async {
             sqlx::query_as::<_, RulePackRow>(
                 r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
