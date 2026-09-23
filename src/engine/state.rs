@@ -124,9 +124,11 @@ impl AccountState {
         self.account.day_counted_today = false;
         // Day-rollover fix: advance the persisted trading day boundary.
         self.account.current_trading_day_start = Some(
-            self.account
-                .plan
-                .trading_day_start(self.account.current_trading_day_start.unwrap_or(chrono::Utc::now())),
+            self.account.plan.trading_day_start(
+                self.account
+                    .current_trading_day_start
+                    .unwrap_or(chrono::Utc::now()),
+            ),
         );
         self
     }

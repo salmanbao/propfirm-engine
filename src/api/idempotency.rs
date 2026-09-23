@@ -41,11 +41,23 @@ pub enum IdempotencyOutcome {
 /// request.
 pub trait IdempotencyBackend: Send + Sync {
     /// Look up a prior request. Returns [`IdempotencyOutcome`].
-    fn check(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str)
-        -> IdempotencyOutcome;
+    fn check(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+    ) -> IdempotencyOutcome;
 
     /// Record a successful response for later replay.
-    fn remember(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str, response: &str);
+    fn remember(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    );
 }
 
 /// The cached record: request-body hash + serialized first response +
@@ -169,7 +181,13 @@ impl IdempotencyStore {
 }
 
 impl IdempotencyBackend for IdempotencyStore {
-    fn check(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str) -> IdempotencyOutcome {
+    fn check(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+    ) -> IdempotencyOutcome {
         let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
@@ -186,7 +204,14 @@ impl IdempotencyBackend for IdempotencyStore {
         }
     }
 
-    fn remember(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str, response: &str) {
+    fn remember(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    ) {
         let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();

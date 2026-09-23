@@ -161,11 +161,13 @@ fn evaluate_internal_impl(
     // caller-supplied pack is deprecated and ignored; the account's plan
     // is the authoritative source of policy.
     let (registry, pack) = if let Some(pack) = req.rule_pack {
-        (crate::rules::registry::RuleRegistry::build_from_pack(&pack)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?, pack)
+        (
+            crate::rules::registry::RuleRegistry::build_from_pack(&pack)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+            pack,
+        )
     } else {
-        let registry =
-            crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+        let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
         let pack = crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan);
         (registry, pack)
     };
