@@ -97,12 +97,18 @@ pub async fn evaluate_internal(
     // P0.8: idempotency — key → first response, conflicting bodies 409.
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
+    let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
-        match s
-            .idempotency
-            .check(tenant_id, "POST /internal/v1/evaluate", key, &body)
-        {
+        let response = evaluate_internal_impl(&state, tenant_id, req)?;
+        let response_str = serde_json::to_string(&response)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        match s.idempotency.check_and_remember(
+            tenant_id,
+            "POST /internal/v1/evaluate",
+            key,
+            &body,
+            &response_str,
+        ) {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
                 let cached = serde_json::from_str(&cached)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -114,33 +120,17 @@ pub async fn evaluate_internal(
                     "Idempotency-Key was already used with a different request body".into(),
                 ));
             }
-            crate::api::idempotency::IdempotencyOutcome::Fresh => {}
             crate::api::idempotency::IdempotencyOutcome::Error => {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "idempotency lookup failed".into(),
                 ));
             }
+            crate::api::idempotency::IdempotencyOutcome::Fresh => response,
         }
-    }
-    let response = evaluate_internal_impl(&state, tenant_id, req)?;
-    if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        let s = state.read();
-        let outcome = s.idempotency.remember(
-            tenant_id,
-            "POST /internal/v1/evaluate",
-            key,
-            &body,
-            &serde_json::to_string(&response)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-        );
-        if matches!(outcome, crate::api::idempotency::IdempotencyOutcome::Error) {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "idempotency store failed".into(),
-            ));
-        }
-    }
+    } else {
+        evaluate_internal_impl(&state, tenant_id, req)?
+    };
     Ok(Json(response))
 }
 

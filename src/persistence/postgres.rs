@@ -968,6 +968,52 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         }
     }
 
+    fn check_and_remember(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    ) -> crate::api::idempotency::IdempotencyOutcome {
+        let body_hash = hash_body(request_body);
+        let outcome = block_on_async(async {
+            sqlx::query_as::<_, IdempotencyEntryRow>(
+                r#"
+                INSERT INTO idempotency_entries
+                    (tenant_id, endpoint, idempotency_key, body_hash, response)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (tenant_id, endpoint, idempotency_key)
+                DO UPDATE SET
+                    response = EXCLUDED.response,
+                    created_at = now()
+                WHERE idempotency_entries.body_hash = EXCLUDED.body_hash
+                RETURNING response, body_hash
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(endpoint)
+            .bind(key)
+            .bind(&body_hash)
+            .bind(response)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))
+        });
+
+        match outcome {
+            Ok(Some(row)) => {
+                if row.body_hash == body_hash {
+                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
+                } else {
+                    crate::api::idempotency::IdempotencyOutcome::Conflict
+                }
+            }
+            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
+        }
+    }
+
     fn remember(
         &self,
         tenant_id: crate::tenant::TenantId,

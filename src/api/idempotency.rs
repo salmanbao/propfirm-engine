@@ -60,6 +60,27 @@ pub trait IdempotencyBackend: Send + Sync {
         request_body: &str,
         response: &str,
     ) -> IdempotencyOutcome;
+
+    /// Atomically check for an existing entry and, if absent, remember
+    /// the response. Default implementation delegates to [`check`] +
+    /// [`remember`]; Postgres overrides this with a single upsert
+    /// statement to prevent concurrent double-execution.
+    fn check_and_remember(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    ) -> IdempotencyOutcome {
+        match self.check(tenant_id, endpoint, key, request_body) {
+            IdempotencyOutcome::Fresh => {
+                self.remember(tenant_id, endpoint, key, request_body, response);
+                IdempotencyOutcome::Fresh
+            }
+            other => other,
+        }
+    }
 }
 
 /// The cached record: request-body hash + serialized first response +
