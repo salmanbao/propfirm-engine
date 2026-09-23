@@ -77,6 +77,11 @@ impl Rule for HftScalpingRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Warning
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
+
     fn priority(&self) -> u32 {
         self.params
             .as_ref()

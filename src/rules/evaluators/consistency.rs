@@ -77,6 +77,10 @@ impl Rule for ConsistencyRule {
     fn severity(&self) -> ViolationSeverity {
         self.effective_severity()
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Largest single-day profit must not exceed X% of the sum of all positive days' profits."

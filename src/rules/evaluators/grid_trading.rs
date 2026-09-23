@@ -264,6 +264,10 @@ impl Rule for GridTradingRule {
     fn severity(&self) -> ViolationSeverity {
         self.effective_severity()
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Detects grid patterns (uniform entry spacing) and martingale lot escalation after consecutive losses."

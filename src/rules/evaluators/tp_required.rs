@@ -33,6 +33,10 @@ impl Rule for TakeProfitRequiredRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Warning
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Requires every new position to have a take-profit set at submission."

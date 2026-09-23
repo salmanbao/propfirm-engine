@@ -56,6 +56,10 @@ impl Rule for CooldownRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Warning
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Enforces a minimum interval between consecutive trades."

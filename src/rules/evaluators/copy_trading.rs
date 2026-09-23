@@ -86,6 +86,10 @@ impl Rule for CopyTradingRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Hard
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Detects cross-account copy-trading: same symbol/side/size as other accounts within a tight time window."

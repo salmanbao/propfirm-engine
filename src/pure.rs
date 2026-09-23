@@ -281,6 +281,8 @@ pub fn compute_input_hash(
 
     // Hash account state — the bits that affect rule evaluation.
     account.id.hash(&mut h);
+    account.tenant_id.hash(&mut h);
+    account.account_type.hash(&mut h);
     account.balance.0.hash(&mut h);
     account.equity.0.hash(&mut h);
     account.estimated_equity.0.hash(&mut h);
@@ -288,10 +290,23 @@ pub fn compute_input_hash(
     account.peak_balance.0.hash(&mut h);
     account.peak_equity.0.hash(&mut h);
     account.day_start_balance.0.hash(&mut h);
+    account.day_start_equity.0.hash(&mut h);
     account.total_realized_pnl.0.hash(&mut h);
+    account.today_realized_pnl.0.hash(&mut h);
+    account.total_commissions.0.hash(&mut h);
+    account.total_swaps.0.hash(&mut h);
+    account.largest_day_profit.0.hash(&mut h);
+    account.largest_day_loss.0.hash(&mut h);
+    account.sum_positive_days_profit.0.hash(&mut h);
     account.active_trading_days.hash(&mut h);
+    account.trading_day_index.hash(&mut h);
+    account.day_counted_today.hash(&mut h);
     account.target_reached_at.hash(&mut h);
+    account.target_reached_on_day.hash(&mut h);
     account.status.hash(&mut h);
+    account.version.hash(&mut h);
+    account.last_tick_ts.hash(&mut h);
+    account.last_trade_at.hash(&mut h);
 
     // Hash the account's bound plan so the input changes when the plan
     // changes (P1-6 fix: the evaluator's source of truth is the plan,

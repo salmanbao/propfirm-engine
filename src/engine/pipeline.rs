@@ -633,13 +633,7 @@ where
                 let mut events = self.event_store.all(state.account.id);
                 let clears_violation = events
                     .iter()
-                    .find(|e| {
-                        matches!(
-                            e.kind,
-                            crate::core::events::DomainEventKind::RuleViolated { .. }
-                        )
-                    })
-                    .and_then(|e| match &e.kind {
+                    .find_map(|e| match &e.kind {
                         crate::core::events::DomainEventKind::RuleViolated { violation } => {
                             if violation.id == override_record.clears_violation_id {
                                 Some(violation)

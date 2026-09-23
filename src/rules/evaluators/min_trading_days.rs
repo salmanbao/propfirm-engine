@@ -59,6 +59,10 @@ impl Rule for MinTradingDaysRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Warning
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Requires a minimum number of distinct active trading days before a phase can be passed."

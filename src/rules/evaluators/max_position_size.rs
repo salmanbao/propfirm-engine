@@ -57,6 +57,10 @@ impl Rule for MaxPositionSizeRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Hard
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
 
     fn description(&self) -> &'static str {
         "Forbids orders exceeding the maximum lot size per order (order units are converted to lots via the instrument spec)."

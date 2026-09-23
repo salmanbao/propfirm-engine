@@ -46,6 +46,11 @@ impl Rule for ProfitTargetRule {
     fn severity(&self) -> ViolationSeverity {
         ViolationSeverity::Info
     }
+    // P-failure-policy: expose pack-derived params for registry error mapping.
+    fn params(&self) -> Option<&crate::rules::params::RuleParams> {
+        self.params.as_ref()
+    }
+
     /// Positive outcomes (`TargetHit`) shouldn't drown out breach verdicts
     /// in the priority ordering — they get the default 100. If a breach
     /// fires on the same tick, the breach wins regardless.
