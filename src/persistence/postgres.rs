@@ -51,6 +51,11 @@ impl PostgresStore {
             pool: Arc::new(pool),
         })
     }
+
+    #[must_use]
+    pub fn pool(&self) -> Arc<PgPool> {
+        self.pool.clone()
+    }
 }
 
 impl AccountStore for PostgresStore {
@@ -1062,4 +1067,158 @@ fn hash_body(body: &str) -> String {
     let mut h = Sha256Hasher::new();
     body.hash(&mut h);
     h.finalize_hex()
+}
+
+/// Postgres-backed [`RulePackStore`](crate::persistence::rulepack_store::RulePackStore).
+#[derive(Clone)]
+pub struct PostgresRulePackStore {
+    pool: Arc<PgPool>,
+}
+
+impl PostgresRulePackStore {
+    #[must_use]
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore {
+    fn get_pack(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+        id: &str,
+    ) -> Result<Option<crate::rulepack::RulePack>, crate::core::Error> {
+        let row = block_on_async(async {
+            sqlx::query_as::<_, RulePackRow>(
+                r#"
+                SELECT id, tenant_id, version, lifecycle, effective_from,
+                       rules, content_hash, created_at, updated_at
+                  FROM rule_packs
+                 WHERE tenant_id = $1
+                   AND id = $2
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(id)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        });
+
+        row.map(|r| r.map(Into::into))
+    }
+
+    fn insert_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
+        block_on_async(async {
+            sqlx::query(
+                r#"
+                INSERT INTO rule_packs
+                    (id, tenant_id, version, lifecycle, effective_from,
+                     rules, content_hash, created_at, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
+                "#,
+            )
+            .bind(&pack.id)
+            .bind(pack.tenant_id.0)
+            .bind(pack.version as i32)
+            .bind(pack.lifecycle.to_string())
+            .bind(pack.effective_from)
+            .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
+            .bind(pack.content_hash())
+            .execute(self.pool.as_ref())
+            .await
+            .map(|_| ())
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        })
+    }
+
+    fn put_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
+        block_on_async(async {
+            sqlx::query(
+                r#"
+                UPDATE rule_packs
+                   SET lifecycle = $3,
+                       effective_from = $4,
+                       rules = $5,
+                       content_hash = $6,
+                       updated_at = now()
+                 WHERE tenant_id = $1
+                   AND id = $2
+                "#,
+            )
+            .bind(pack.tenant_id.0)
+            .bind(&pack.id)
+            .bind(pack.lifecycle.to_string())
+            .bind(pack.effective_from)
+            .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
+            .bind(pack.content_hash())
+            .execute(self.pool.as_ref())
+            .await
+            .map(|_| ())
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        })
+    }
+
+    fn list_packs(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+    ) -> Result<Vec<crate::rulepack::RulePack>, crate::core::Error> {
+        let rows = block_on_async(async {
+            sqlx::query_as::<_, RulePackRow>(
+                r#"
+                SELECT id, tenant_id, version, lifecycle, effective_from,
+                       rules, content_hash, created_at, updated_at
+                  FROM rule_packs
+                 WHERE tenant_id = $1
+                 ORDER BY version DESC, id ASC
+                "#,
+            )
+            .bind(tenant_id.0)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        });
+
+        rows.map(|r| r.into_iter().map(Into::into).collect())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RulePackRow {
+    id: String,
+    tenant_id: uuid::Uuid,
+    version: i32,
+    lifecycle: String,
+    effective_from: chrono::DateTime<chrono::Utc>,
+    rules: serde_json::Value,
+    content_hash: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<RulePackRow> for crate::rulepack::RulePack {
+    fn from(row: RulePackRow) -> Self {
+        let lifecycle = match row.lifecycle.to_ascii_lowercase().as_str() {
+            "draft" => crate::rulepack::PackLifecycle::Draft,
+            "superseded" => crate::rulepack::PackLifecycle::Superseded,
+            _ => crate::rulepack::PackLifecycle::Active,
+        };
+
+        let rules: Vec<crate::rulepack::RuleEntry> =
+            serde_json::from_value(row.rules).unwrap_or_default();
+
+        Self {
+            id: row.id,
+            version: row.version as u32,
+            tenant_id: crate::tenant::TenantId(row.tenant_id),
+            lifecycle,
+            effective_from: row.effective_from,
+            superseded_by: None,
+            description: String::new(),
+            rules,
+            initial_balance: crate::core::types::Money::ZERO,
+            leverage: 1,
+            profit_target_pct: crate::core::types::Pct::ZERO,
+        }
+    }
 }

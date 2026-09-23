@@ -16,6 +16,7 @@ use crate::core::position::Position;
 use crate::core::trade::Trade;
 use crate::core::Error;
 use crate::tenant::TenantId;
+use std::sync::Arc;
 
 /// Account + position + trade storage.
 pub trait AccountStore: Send + Sync {
@@ -72,4 +73,58 @@ pub trait AccountStore: Send + Sync {
 
     /// Adds a trade.
     fn add_trade(&self, trade: Trade) -> Result<(), Error>;
+}
+
+impl AccountStore for Arc<dyn AccountStore> {
+    fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+        self.as_ref().get_for_tenant(tenant_id, id)
+    }
+
+    fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
+        self.as_ref().get(id)
+    }
+
+    fn put(&self, account: Account) -> Result<(), Error> {
+        self.as_ref().put(account)
+    }
+
+    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
+        self.as_ref().put_with_version(account, expected_version)
+    }
+
+    fn delete(&self, id: AccountId) -> Result<(), Error> {
+        self.as_ref().delete(id)
+    }
+
+    fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
+        self.as_ref().open_positions(id)
+    }
+
+    fn add_position(&self, position: Position) -> Result<(), Error> {
+        self.as_ref().add_position(position)
+    }
+
+    fn update_position(&self, position: Position) -> Result<(), Error> {
+        self.as_ref().update_position(position)
+    }
+
+    fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
+        self.as_ref().close_position(position_id)
+    }
+
+    fn today_trades_since(
+        &self,
+        id: AccountId,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Trade>, Error> {
+        self.as_ref().today_trades_since(id, since)
+    }
+
+    fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
+        self.as_ref().all_trades(id)
+    }
+
+    fn add_trade(&self, trade: Trade) -> Result<(), Error> {
+        self.as_ref().add_trade(trade)
+    }
 }

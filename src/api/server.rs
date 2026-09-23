@@ -15,19 +15,20 @@ use crate::config::plan::ChallengePlan;
 use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
 use crate::persistence::memory::InMemoryStore;
-use crate::persistence::rulepack_store::InMemoryRulePackStore;
+use crate::persistence::rulepack_store::{InMemoryRulePackStore, RulePackStore};
+use crate::persistence::traits::AccountStore;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub struct ServerState {
     pub evaluator: Evaluator,
-    pub store: InMemoryStore,
+    pub store: Arc<dyn AccountStore>,
     pub notifier: LogNotifier,
     pub event_store: crate::events::store::EventStore,
-    pub rule_pack_store: InMemoryRulePackStore,
+    pub rule_pack_store: Arc<dyn RulePackStore>,
     pub idempotency: Arc<dyn IdempotencyBackend>,
     /// **§A.1 fix**: parsed auth configuration (per-tenant keys + service
-    /// token). Required to build the router; an unauthenticated server
+    /// token. Required to build the router; an unauthenticated server
     /// needs an explicit `PROPFIRM_ALLOW_INSECURE=1` escape hatch.
     pub auth: AuthConfig,
 }
@@ -60,17 +61,46 @@ impl ServerState {
     pub fn new(plan: ChallengePlan, auth: AuthConfig) -> Self {
         ServerState {
             evaluator: Evaluator::new(&plan),
-            store: InMemoryStore::new(),
+            store: Arc::new(InMemoryStore::new()),
             notifier: LogNotifier::new(),
             event_store: crate::events::store::EventStore::in_memory(),
-            rule_pack_store: InMemoryRulePackStore::new(),
+            rule_pack_store: Arc::new(InMemoryRulePackStore::new()),
             idempotency: Arc::new(IdempotencyStore::with_defaults()),
             auth,
         }
     }
 
+    /// Build a `ServerState` backed by Postgres. This is the production
+    /// constructor when the `postgres` feature is enabled.
+    #[cfg(feature = "postgres")]
+    pub async fn with_postgres(
+        plan: ChallengePlan,
+        auth: AuthConfig,
+        database_url: &str,
+    ) -> Result<Self, crate::core::Error> {
+        use crate::persistence::postgres::{PostgresIdempotencyStore, PostgresRulePackStore};
+        let postgres = crate::persistence::postgres::PostgresStore::connect(database_url).await?;
+        let store: Arc<dyn AccountStore> = Arc::new(postgres.clone());
+        let rule_pack_store: Arc<dyn RulePackStore> =
+            Arc::new(PostgresRulePackStore::new(postgres.pool()));
+        let idempotency: Arc<dyn IdempotencyBackend> =
+            Arc::new(PostgresIdempotencyStore::new(postgres.pool()));
+
+        Ok(ServerState {
+            evaluator: Evaluator::new(&plan),
+            store,
+            notifier: LogNotifier::new(),
+            event_store: crate::events::store::EventStore::in_memory(),
+            rule_pack_store,
+            idempotency,
+            auth,
+        })
+    }
+
     #[must_use]
-    pub fn pipeline(&self) -> crate::engine::pipeline::Pipeline<InMemoryStore, LogNotifier> {
+    pub fn pipeline(
+        &self,
+    ) -> crate::engine::pipeline::Pipeline<Arc<dyn AccountStore>, LogNotifier> {
         let mut p = crate::engine::pipeline::Pipeline::new(
             self.evaluator.clone(),
             self.store.clone(),
@@ -100,7 +130,24 @@ pub async fn run_server_with_auth(
     plan: ChallengePlan,
     auth: AuthConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state: SharedState = Arc::new(RwLock::new(ServerState::new(plan, auth)));
+    let state = {
+        #[cfg(feature = "postgres")]
+        {
+            match std::env::var("DATABASE_URL") {
+                Ok(url) => ServerState::with_postgres(plan.clone(), auth.clone(), &url).await?,
+                Err(_) => {
+                    eprintln!("WARNING: postgres feature enabled but DATABASE_URL is not set; falling back to in-memory store");
+                    ServerState::new(plan, auth)
+                }
+            }
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            ServerState::new(plan, auth)
+        }
+    };
+
+    let state: SharedState = Arc::new(RwLock::new(state));
     let app = crate::api::routes::router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("propfirm-engine HTTP server listening on {addr}");
