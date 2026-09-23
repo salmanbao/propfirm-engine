@@ -404,6 +404,39 @@ impl ChallengePlan {
         }
     }
 
+    /// Returns the start of the *next* trading day after `current_start`,
+    /// using the plan's timezone and day_reset_time. This is the calendar-
+    /// aware replacement for adding a fixed 24-hour duration, so it stays
+    /// correct across DST transitions.
+    #[must_use]
+    pub fn next_trading_day_start(&self, current_start: Timestamp) -> Timestamp {
+        let reset_hour = self.day_reset_time as u32;
+        match self.timezone {
+            Some(tz) => {
+                let local_current = current_start.with_timezone(&tz);
+                let next_day = local_current
+                    .date_naive()
+                    .succ_opt()
+                    .expect("valid next day")
+                    .and_hms_opt(reset_hour, 0, 0)
+                    .expect("valid hour")
+                    .and_local_timezone(tz)
+                    .unwrap();
+                next_day.with_timezone(&chrono::Utc)
+            }
+            None => {
+                let next_day = current_start
+                    .date_naive()
+                    .succ_opt()
+                    .expect("valid next day")
+                    .and_hms_opt(reset_hour, 0, 0)
+                    .expect("valid hour")
+                    .and_utc();
+                next_day
+            }
+        }
+    }
+
     /// Builder-style setter for the HFT/scalping ban (P0.1).
     #[must_use]
     pub fn with_hft_ban(mut self, min_round_trip_seconds: u64) -> Self {

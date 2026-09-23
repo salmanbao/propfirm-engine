@@ -544,7 +544,7 @@ fn p1_2_eod_trailing_floor_resets_once_per_day() {
         "floor must stay at day-0 value until rollover"
     );
 
-    state = state.rollover_day(true);
+    state = state.rollover_day(true, None);
     let floor_after_rollover = state.account.max_dd_limit_eod_trailing();
     assert!(
         floor_after_rollover.0 > floor_day0.0,
@@ -616,7 +616,7 @@ fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
 
     // Rollover with had_trades_today=true: the flag is already set, so
     // rollover must NOT increment again (no double-count across the two paths).
-    state = state.rollover_day(true);
+    state = state.rollover_day(true, None);
     assert_eq!(
         state.account.active_trading_days, 1,
         "rollover must not double-count a day already marked"
@@ -635,7 +635,7 @@ fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
 
     // Rollover with had_trades_today=false (no trades): flag is false, so
     // rollover must NOT increment (a day with no trades is not a trading day).
-    state = state.rollover_day(false);
+    state = state.rollover_day(false, None);
     assert_eq!(
         state.account.active_trading_days, 2,
         "rollover without trades must not count the day"
@@ -929,7 +929,7 @@ fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
 
     let mut state = AccountState::new(account.clone());
     let pre = state.account.current_trading_day_start;
-    state = state.rollover_day(true);
+    state = state.rollover_day(true, None);
     let post = state.account.current_trading_day_start;
 
     assert!(
@@ -938,7 +938,203 @@ fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
     );
     assert_eq!(
         post.unwrap(),
-        pre.unwrap() + chrono::Duration::days(1),
-        "rollover must advance the persisted boundary by exactly one plan day"
+        plan.next_trading_day_start(pre.unwrap()),
+        "rollover must advance the persisted boundary by exactly one plan trading day"
+    );
+}
+
+#[test]
+fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
+    use propfirm::config::plan::ChallengePlan;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::Money;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::engine::state::AccountState;
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let mut plan = ChallengePlan::default();
+    plan.timezone = Some(chrono_tz::America::New_York);
+    plan.day_reset_time = 0;
+    plan.initial_balance_money = Money(dec!(100_000));
+    let account = Account::new(AccountId::new(), plan.clone())
+        .start(chrono::Utc::now())
+        .unwrap();
+    let mut state = AccountState::new(account.clone());
+    // Seed the boundary as two days ago in local time.
+    let two_days_ago = (chrono::Utc::now() - chrono::Duration::days(2))
+        .with_timezone(&chrono_tz::America::New_York)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono_tz::America::New_York)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    state.account.current_trading_day_start = Some(two_days_ago);
+
+    let store = InMemoryStore::new();
+    store.put(state.account.clone()).unwrap(); // Store the modified account
+    let mut pipeline = Pipeline::new(Evaluator::new(&plan), store, LogNotifier::new());
+
+    // Event arrives two trading days later.
+    let event_ts = chrono::Utc::now();
+    let result = pipeline.process(
+        account.id,
+        PipelineEvent::Tick {
+            tick: Tick::new(
+                Symbol::new("EURUSD"),
+                Quote {
+                    bid: Price(dec!(1.0)),
+                    ask: Price(dec!(1.0)),
+                    ts: event_ts,
+                },
+            ),
+            broker_equity: Money(dec!(100_000)).into(),
+            broker_balance: Money(dec!(100_000)).into(),
+        },
+    );
+    assert!(result.is_ok(), "multi-day gap must not error: {result:?}");
+    let applied = result.unwrap();
+    // Should have advanced by two trading days.
+    assert_eq!(
+        applied.snapshot.account.trading_day_index, 2,
+        "account must be caught up to the current trading day after a multi-day gap"
+    );
+}
+
+#[test]
+fn p1_1_rollover_respects_calendar_day_across_dst() {
+    use chrono::TimeZone;
+    use propfirm::config::plan::ChallengePlan;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::Money;
+    use propfirm::engine::state::AccountState;
+
+    // America/New_York spring-forward: 2026-03-08 00:00 EST -> 03:00 EDT.
+    // A fixed 24-hour add would land at 2026-03-09 01:00 EDT, which is
+    // wrong; calendar-day advancement should land at midnight.
+    let tz = chrono_tz::America::New_York;
+    let mut plan = ChallengePlan::default();
+    plan.timezone = Some(tz);
+    plan.day_reset_time = 0;
+    plan.initial_balance_money = Money(dec!(100_000));
+    let account = Account::new(AccountId::new(), plan.clone())
+        .start(chrono::Utc::now())
+        .unwrap();
+    // Seed boundary at the spring-forward midnight.
+    let seed = tz
+        .with_ymd_and_hms(2026, 3, 8, 0, 0, 0)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let mut state = AccountState::new(account);
+    state.account.current_trading_day_start = Some(seed);
+
+    state = state.rollover_day(true, None);
+    let expected = tz
+        .with_ymd_and_hms(2026, 3, 9, 0, 0, 0)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(
+        state.account.current_trading_day_start.unwrap(),
+        expected,
+        "rollover must advance by calendar day, not fixed 24 hours, across DST"
+    );
+}
+
+#[test]
+fn debug_multi_day_rollover() {
+    use chrono::TimeZone;
+    use propfirm::config::plan::ChallengePlan;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::Money;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::engine::state::AccountState;
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::persistence::memory::InMemoryStore;
+    use propfirm::persistence::traits::AccountStore;
+
+    let mut plan = ChallengePlan::default();
+    plan.timezone = Some(chrono_tz::America::New_York);
+    plan.day_reset_time = 0;
+    plan.initial_balance_money = Money(dec!(100_000));
+    let account = Account::new(AccountId::new(), plan.clone())
+        .start(chrono::Utc::now())
+        .unwrap();
+    let mut state = AccountState::new(account.clone());
+
+    // Seed the boundary as two days ago in local time.
+    let two_days_ago = (chrono::Utc::now() - chrono::Duration::days(2))
+        .with_timezone(&chrono_tz::America::New_York)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono_tz::America::New_York)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    println!("two_days_ago (UTC): {}", two_days_ago);
+    state.account.current_trading_day_start = Some(two_days_ago);
+    println!(
+        "Initial trading_day_index: {}",
+        state.account.trading_day_index
+    );
+    println!(
+        "Initial current_trading_day_start: {:?}",
+        state.account.current_trading_day_start
+    );
+
+    let event_ts = chrono::Utc::now();
+    let event_day_start = state.account.plan.trading_day_start(event_ts);
+    let current_day_start = state
+        .account
+        .current_trading_day_start
+        .unwrap_or_else(|| state.account.plan.trading_day_start(event_ts));
+
+    println!("event_ts: {}", event_ts);
+    println!("event_day_start: {}", event_day_start);
+    println!("current_day_start: {}", current_day_start);
+    println!(
+        "event_day_start > current_day_start: {}",
+        event_day_start > current_day_start
+    );
+
+    // Simulate the loop
+    let mut sim_state = state.clone();
+    let mut iterations = 0;
+    while sim_state
+        .account
+        .current_trading_day_start
+        .map(|start| start < event_day_start)
+        .unwrap_or(true)
+    {
+        iterations += 1;
+        let had_trades = !sim_state.account.today_realized_pnl.0.is_zero();
+        let next_start = sim_state
+            .account
+            .plan
+            .next_trading_day_start(sim_state.account.current_trading_day_start.unwrap());
+        println!(
+            "Iteration {}: current={:?}, next_start={}, had_trades={}",
+            iterations, sim_state.account.current_trading_day_start, next_start, had_trades
+        );
+        println!(
+            "  next_start >= event_day_start: {}",
+            next_start >= event_day_start
+        );
+        if next_start >= event_day_start {
+            sim_state = sim_state.rollover_day(had_trades, Some(event_ts));
+        } else {
+            sim_state = sim_state.rollover_day(false, Some(next_start));
+        }
+        println!(
+            "  After rollover: trading_day_index={}, current={:?}",
+            sim_state.account.trading_day_index, sim_state.account.current_trading_day_start
+        );
+    }
+    println!("Total iterations: {}", iterations);
+    println!(
+        "Final trading_day_index: {}",
+        sim_state.account.trading_day_index
     );
 }

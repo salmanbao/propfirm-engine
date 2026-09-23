@@ -427,7 +427,7 @@ fn test_account_state_apply_pnl() {
         state.account.largest_day_profit.0
     );
     // Now roll over the day — largest_day_profit should be stamped.
-    let state = state.rollover_day(true);
+    let state = state.rollover_day(true, None);
     assert_eq!(state.account.largest_day_profit.0, dec!(490),
         "P1.7: after rollover, largest_day_profit should be stamped from today_realized_pnl; got {}",
         state.account.largest_day_profit.0);
@@ -447,7 +447,7 @@ fn test_account_state_rollover() {
         chrono::Utc::now(),
     );
     assert_eq!(state.account.today_realized_pnl.0, dec!(100));
-    state = state.rollover_day(true);
+    state = state.rollover_day(true, None);
     assert_eq!(state.account.active_trading_days, 1);
     assert_eq!(state.account.today_realized_pnl.0, dec!(0));
     assert_eq!(state.account.day_start_balance.0, dec!(10_100));

@@ -94,8 +94,14 @@ impl AccountState {
     /// from the frozen `today_realized_pnl` (per-DAY tracking, not
     /// per-trade). This is the value the consistency rule checks
     /// against.
+    ///
+    /// **Rollover fix**: if `target_ts` is provided, the new trading day
+    /// start is derived from that timestamp via the plan's timezone-aware
+    /// `trading_day_start()` so the boundary advances correctly across
+    /// DST transitions and multi-day gaps. If `None`, the method advances
+    /// the persisted boundary by one calendar day in the plan's timezone.
     #[must_use]
-    pub fn rollover_day(mut self, had_trades_today: bool) -> Self {
+    pub fn rollover_day(mut self, had_trades_today: bool, target_ts: Option<Timestamp>) -> Self {
         // P1.7: before resetting today_realized_pnl, freeze it into
         // largest_day_profit / largest_day_loss (per-day, not per-trade).
         if had_trades_today {
@@ -122,13 +128,24 @@ impl AccountState {
         self.account.today_realized_pnl = Money::ZERO;
         // A.6 fix: reset the idempotency flag for the new day.
         self.account.day_counted_today = false;
-        self.account.current_trading_day_start = Some(
-            self.account
-                .current_trading_day_start
-                .unwrap_or_else(|| self.account.plan.trading_day_start(chrono::Utc::now()))
-                + chrono::Duration::days(1),
-        );
+        self.account.current_trading_day_start = Some(match target_ts {
+            Some(ts) => self.account.plan.trading_day_start(ts),
+            None => {
+                let current = self
+                    .account
+                    .current_trading_day_start
+                    .unwrap_or_else(|| self.account.plan.trading_day_start(chrono::Utc::now()));
+                self.account.plan.next_trading_day_start(current)
+            }
+        });
         self
+    }
+
+    /// Convenience wrapper that advances exactly one calendar day using
+    /// the plan's timezone, without needing an event timestamp.
+    #[must_use]
+    pub fn rollover_day_single(self, had_trades_today: bool) -> Self {
+        self.rollover_day(had_trades_today, None)
     }
 
     /// Marks an active trading day (called on the first trade of a day).

@@ -262,9 +262,26 @@ where
                 .current_trading_day_start
                 .unwrap_or_else(|| state.account.plan.trading_day_start(event_ts));
             if event_day_start > current_day_start {
-                let had_trades = !state.account.today_realized_pnl.0.is_zero();
                 let rollover_ts = event_ts;
-                state = state.rollover_day(had_trades);
+                // Advance through every missed trading day so the account
+                // cannot lag behind when events arrive several days late.
+                while state
+                    .account
+                    .current_trading_day_start
+                    .map(|start| start < event_day_start)
+                    .unwrap_or(true)
+                {
+                    let had_trades = !state.account.today_realized_pnl.0.is_zero();
+                    let next_start = state
+                        .account
+                        .plan
+                        .next_trading_day_start(state.account.current_trading_day_start.unwrap());
+                    if next_start >= event_day_start {
+                        state = state.rollover_day(had_trades, Some(event_ts));
+                    } else {
+                        state = state.rollover_day(false, Some(next_start));
+                    }
+                }
                 events.push(DomainEvent::new(
                     account_id,
                     DomainEventKind::DayRollover {
@@ -561,7 +578,7 @@ where
                 })
             }
             PipelineEvent::DayRollover { had_trades_today } => {
-                let new_state = state.rollover_day(*had_trades_today);
+                let new_state = state.rollover_day(*had_trades_today, None);
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::DayRollover {
