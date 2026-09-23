@@ -201,6 +201,7 @@ fn c2_max_total_lots_pack_override_changes_verdict() {
         enabled: true,
         params_json: "{}".into(),
         severity: None,
+        failure_policy: None,
     };
     let rule = MaxTotalLotsRule::from_entry(&entry);
     let mut ctx = RuleContext::new(acc);

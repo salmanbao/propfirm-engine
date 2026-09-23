@@ -17,6 +17,10 @@ pub enum RuleVerdict {
     Warn(Violation),
     /// Rule produced a hard violation; the account should be terminated.
     Fail(Violation),
+    /// Rule produced a soft-failure: distinct from `Warn` and `Fail`.
+    /// Lets a rule express "this breach matters, but not as hard failure"
+    /// without conflating it with a trader-facing warning.
+    SoftFail(Violation),
     /// Rule produced a liquidation request; all open positions should be
     /// force-closed.
     Liquidate(Violation),
@@ -79,6 +83,11 @@ impl RuleVerdict {
         matches!(self, RuleVerdict::GapFlagged(_))
     }
 
+    #[must_use]
+    pub fn is_soft_fail(&self) -> bool {
+        matches!(self, RuleVerdict::SoftFail(_))
+    }
+
     /// Returns true if this verdict represents a *terminating* outcome —
     /// i.e. one that should mark the account as failed.
     #[must_use]
@@ -94,6 +103,7 @@ impl RuleVerdict {
         match self {
             RuleVerdict::Warn(v)
             | RuleVerdict::Fail(v)
+            | RuleVerdict::SoftFail(v)
             | RuleVerdict::Liquidate(v)
             | RuleVerdict::TargetHit(v)
             | RuleVerdict::Emergency(v)

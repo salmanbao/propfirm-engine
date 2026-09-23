@@ -69,6 +69,16 @@ impl AccountState {
         self
     }
 
+    /// **Estimated-equity separation**: records the engine-derived estimate
+    /// on the separate estimated track only. Authoritative `equity`/`balance`
+    /// and `peak_equity`/`peak_balance` are left untouched.
+    #[must_use]
+    pub fn set_estimated_equity(mut self, equity: Money, balance: Money) -> Self {
+        self.account.estimated_equity = equity;
+        self.account.estimated_balance = balance;
+        self
+    }
+
     /// **P1-5 fix**: updates the broker-reported balance. Only called
     /// from the broker-is-truth tick path; never derived by the engine.
     #[must_use]

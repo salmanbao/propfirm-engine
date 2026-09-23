@@ -66,6 +66,7 @@ fn main() -> anyhow::Result<()> {
                 propfirm::rules::traits::RuleVerdict::Emergency(_) => "emergency",
                 propfirm::rules::traits::RuleVerdict::EarlyWarning(_) => "early_warning",
                 propfirm::rules::traits::RuleVerdict::GapFlagged(_) => "gap_flagged",
+                propfirm::rules::traits::RuleVerdict::SoftFail(_) => "soft_fail",
                 propfirm::rules::traits::RuleVerdict::Skip => "skip",
             }
         );

@@ -193,6 +193,11 @@ pub struct RuleEntry {
     pub enabled: bool,
     pub params_json: String,
     pub severity: Option<String>,
+    /// Per-rule failure policy for this entry. When `Some("soft_fail")`,
+    /// the rule may emit a `SoftFail` verdict instead of `Fail` when the
+    /// configured policy distinguishes a soft failure from a hard failure.
+    #[cfg_attr(feature = "serialization", serde(default))]
+    pub failure_policy: Option<String>,
 }
 
 impl RuleEntry {
@@ -214,6 +219,7 @@ impl RuleEntry {
             enabled: true,
             params_json: "{}".into(),
             severity: None,
+            failure_policy: None,
         }
     }
 }

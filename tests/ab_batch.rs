@@ -88,6 +88,7 @@ fn time_limit_entry(value: Decimal, enabled: bool) -> RuleEntry {
         enabled,
         params_json: "{}".into(),
         severity: None,
+        failure_policy: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn grid_rule(value: Decimal, cv: Option<f64>) -> GridTradingRule {
         enabled: true,
         params_json,
         severity: None,
+        failure_policy: None,
     })
 }
 
@@ -363,6 +365,7 @@ fn b_copy_pack_value_changes_threshold() {
         enabled: true,
         params_json: "{\"window_seconds\": 10}".into(),
         severity: None,
+        failure_policy: None,
     };
     let rule = CopyTradingRule::from_entry(&entry);
     let ctx = copy_ctx(&acc, &trade, &[reference]);
@@ -427,11 +430,18 @@ fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
         .process_for_tenant(acc.tenant_id, acc.id, PipelineEvent::TickEstimated { tick })
         .unwrap();
     // With contract_size 1 and the EURUSD quote applied to a GBPUSD
-    // position: equity = balance + (1.08 - 1.26) × 100_000 = 82_000.
-    // This pins the single-quote semantics (documented limitation).
+    // position: estimated equity = balance + (1.08 - 1.26) × 100_000 = 82_000.
+    // Authoritative equity must remain unchanged at 100_000 because
+    // TickEstimated is display/backtest-only and must not mutate balance,
+    // peak equity, or breach-capable state.
     assert_eq!(
-        result.snapshot.account.equity.0,
+        result.snapshot.account.estimated_equity.0,
         dec!(82_000),
         "TickEstimated must value the whole book with the ticked symbol's quote (documented limitation)"
+    );
+    assert_eq!(
+        result.snapshot.account.equity.0,
+        dec!(100_000),
+        "TickEstimated must not mutate authoritative equity"
     );
 }

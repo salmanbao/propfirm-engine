@@ -539,12 +539,14 @@ where
                 })
             }
             PipelineEvent::TickEstimated { tick } => {
-                // P1-5: estimate-only path. The engine computes equity
-                // from positions + quote for display purposes only; breach
-                // rules will see `EquityInput::Estimated` on the context
-                // and refuse to terminate.
+                // P1-5 / estimated-equity separation: compute equity from
+                // positions + quote, but write it ONLY to the estimated
+                // track. Authoritative `equity`/`balance` and peak tracking
+                // must remain unchanged so an estimate can never drive a
+                // breach verdict or distort drawdown baselines.
                 let equity = equity_after_tick(state.account.balance, &open_positions, &tick.quote);
-                let new_state = state.update_equity(equity);
+                let balance = state.account.balance;
+                let new_state = state.set_estimated_equity(equity, balance);
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::TickEvaluated { equity },
@@ -628,6 +630,16 @@ where
                     DomainEventKind::AccountStatusChanged {
                         from: crate::core::account::AccountStatus::Failed,
                         to: crate::core::account::AccountStatus::Active,
+                    },
+                    override_record.at,
+                ));
+                events.push(DomainEvent::new(
+                    new_state.account.id,
+                    DomainEventKind::OverrideCleared {
+                        clears_violation_id: override_record.clears_violation_id,
+                        reason: override_record.reason.clone(),
+                        actor_id: override_record.actor_id.clone(),
+                        at: override_record.at,
                     },
                     override_record.at,
                 ));
@@ -768,13 +780,15 @@ where
                     balance: *broker_balance,
                 };
             }
-            // P1-5: estimate-only path — breach-capable rules will refuse
-            // to terminate on this context.
+            // P1-5 / estimated-equity separation: expose the engine-derived
+            // estimate on the dedicated estimated track so display/backtest
+            // consumers can use it while authoritative equity/balance stay
+            // untouched for breach-capable rules.
             PipelineEvent::TickEstimated { tick } => {
                 ctx.latest_tick = Some(tick.clone());
                 ctx.equity_input = EquityInput::Estimated {
-                    equity: ctx.account.equity,
-                    balance: ctx.account.balance,
+                    equity: ctx.account.estimated_equity,
+                    balance: ctx.account.estimated_balance,
                 };
             }
             _ => {}

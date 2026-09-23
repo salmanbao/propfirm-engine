@@ -82,6 +82,14 @@ pub enum DomainEventKind {
     LiquidationRequested {
         instruction: crate::liquidation::LiquidationInstruction,
     },
+    /// Override accepted and the account was returned to `Active`.
+    /// Preserves the cleared violation linkage and audit metadata.
+    OverrideCleared {
+        clears_violation_id: crate::core::ids::ViolationId,
+        reason: String,
+        actor_id: String,
+        at: Timestamp,
+    },
 }
 
 /// A fully-timestamped domain event.

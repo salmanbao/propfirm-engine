@@ -32,6 +32,10 @@ pub enum DecisionKind {
     /// One or more rules produced a hard violation; the account
     /// terminates.
     Fail,
+    /// One or more rules produced a soft-failure — distinct from `Warn`
+    /// and `Fail`. Lets downstream consumers treat the breach seriously
+    /// without terminating the account.
+    SoftFail,
     /// One or more rules flagged a missing/incomplete required input
     /// rather than silently evaluating against a default.
     GapFlagged,
@@ -76,6 +80,11 @@ impl DecisionKind {
         matches!(self, DecisionKind::Emergency)
     }
 
+    #[must_use]
+    pub fn is_soft_fail(self) -> bool {
+        matches!(self, DecisionKind::SoftFail)
+    }
+
     /// Returns true for any verdict that should terminate the account.
     #[must_use]
     pub fn is_terminating(self) -> bool {
@@ -102,6 +111,7 @@ impl DecisionKind {
             DecisionKind::Emergency => 10_000,
             DecisionKind::Liquidate => 1_000,
             DecisionKind::Fail => 900,
+            DecisionKind::SoftFail => 850,
             DecisionKind::GapFlagged => 800,
             DecisionKind::TargetHit => 100,
             DecisionKind::EarlyWarning => 50,
@@ -122,6 +132,7 @@ pub enum DecisionReason {
     /// target amount as breach value.
     TargetHitReached(Violation),
     HardViolation(Violation),
+    SoftFailReached(Violation),
     LiquidationRequested(Violation),
     EmergencyStop(Violation),
     /// Evaluation was skipped because required input data was missing
@@ -163,6 +174,7 @@ impl Decision {
         let mut emergencies: Vec<(u32, Violation)> = Vec::new();
         let mut liquidates: Vec<(u32, Violation)> = Vec::new();
         let mut fails: Vec<(u32, Violation)> = Vec::new();
+        let mut soft_fails: Vec<(u32, Violation)> = Vec::new();
         let mut target_hits: Vec<(u32, Violation)> = Vec::new();
         let mut early_warnings: Vec<(u32, Violation)> = Vec::new();
         let mut gap_flagged: Vec<(u32, Violation)> = Vec::new();
@@ -182,6 +194,10 @@ impl Decision {
                 RuleVerdict::Fail(v) => {
                     all_violations.push(v.clone());
                     fails.push((prio, v.clone()));
+                }
+                RuleVerdict::SoftFail(v) => {
+                    all_violations.push(v.clone());
+                    soft_fails.push((prio, v.clone()));
                 }
                 RuleVerdict::TargetHit(v) => {
                     all_violations.push(v.clone());
@@ -231,6 +247,14 @@ impl Decision {
             return Decision {
                 kind: DecisionKind::Fail,
                 reason: DecisionReason::HardViolation(v.clone()),
+                winning_priority: p,
+                all_violations,
+            };
+        }
+        if let Some((p, v)) = pick_winner(&soft_fails) {
+            return Decision {
+                kind: DecisionKind::SoftFail,
+                reason: DecisionReason::SoftFailReached(v.clone()),
                 winning_priority: p,
                 all_violations,
             };

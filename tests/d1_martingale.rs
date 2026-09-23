@@ -104,6 +104,7 @@ fn rule_with(value: Decimal, params_json: &str) -> GridTradingRule {
         enabled: true,
         params_json: params_json.to_string(),
         severity: None,
+        failure_policy: None,
     })
 }
 

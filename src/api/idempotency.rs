@@ -15,6 +15,7 @@
 //!   alongside the response so conflicting replays are detectable.
 
 use crate::sha256_helper::Sha256Hasher;
+use crate::tenant::TenantId;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,6 +32,20 @@ pub enum IdempotencyOutcome {
     /// The same key was used with a *different* body — a conflicting
     /// retry. Reject (HTTP 409), never double-apply.
     Conflict,
+}
+
+/// Backend contract for idempotency storage.
+///
+/// Implementations must scope results by `tenant_id` so that a retry
+/// key from one tenant can never replay or conflict with another tenant's
+/// request.
+pub trait IdempotencyBackend: Send + Sync {
+    /// Look up a prior request. Returns [`IdempotencyOutcome`].
+    fn check(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str)
+        -> IdempotencyOutcome;
+
+    /// Record a successful response for later replay.
+    fn remember(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str, response: &str);
 }
 
 /// The cached record: request-body hash + serialized first response +
@@ -150,6 +165,45 @@ impl IdempotencyStore {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl IdempotencyBackend for IdempotencyStore {
+    fn check(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str) -> IdempotencyOutcome {
+        let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
+        let body_hash = hash_body(request_body);
+        let mut inner = self.inner.lock();
+        Self::prune(&mut inner, self.ttl);
+        match inner.entries.get(&ckey) {
+            Some(entry) => {
+                if entry.body_hash == body_hash {
+                    IdempotencyOutcome::Replay(entry.response.clone())
+                } else {
+                    IdempotencyOutcome::Conflict
+                }
+            }
+            None => IdempotencyOutcome::Fresh,
+        }
+    }
+
+    fn remember(&self, tenant_id: TenantId, endpoint: &str, key: &str, request_body: &str, response: &str) {
+        let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
+        let body_hash = hash_body(request_body);
+        let mut inner = self.inner.lock();
+        inner.order.retain(|k| k != &ckey);
+        inner.order.push(ckey.clone());
+        inner.entries.insert(
+            ckey,
+            Entry {
+                body_hash,
+                response: response.to_string(),
+                inserted_at: Instant::now(),
+            },
+        );
+        while inner.order.len() > self.capacity {
+            let evicted = inner.order.remove(0);
+            inner.entries.remove(&evicted);
+        }
     }
 }
 

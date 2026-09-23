@@ -10,7 +10,7 @@
 
 use crate::api::auth::AuthConfig;
 use crate::api::handlers::SharedState;
-use crate::api::idempotency::IdempotencyStore;
+use crate::api::idempotency::{IdempotencyBackend, IdempotencyStore};
 use crate::config::plan::ChallengePlan;
 use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
@@ -25,7 +25,7 @@ pub struct ServerState {
     pub notifier: LogNotifier,
     pub event_store: crate::events::store::EventStore,
     pub rule_pack_store: InMemoryRulePackStore,
-    pub idempotency: IdempotencyStore,
+    pub idempotency: Arc<dyn IdempotencyBackend>,
     /// **§A.1 fix**: parsed auth configuration (per-tenant keys + service
     /// token). Required to build the router; an unauthenticated server
     /// needs an explicit `PROPFIRM_ALLOW_INSECURE=1` escape hatch.
@@ -64,7 +64,7 @@ impl ServerState {
             notifier: LogNotifier::new(),
             event_store: crate::events::store::EventStore::in_memory(),
             rule_pack_store: InMemoryRulePackStore::new(),
-            idempotency: IdempotencyStore::with_defaults(),
+            idempotency: Arc::new(IdempotencyStore::with_defaults()),
             auth,
         }
     }

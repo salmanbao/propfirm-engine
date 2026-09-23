@@ -95,12 +95,13 @@ pub async fn evaluate_internal(
     Json(req): Json<InternalEvaluateRequest>,
 ) -> Result<Json<InternalEvaluateResponse>, (StatusCode, String)> {
     // P0.8: idempotency — key → first response, conflicting bodies 409.
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
         match s
             .idempotency
-            .check("POST /internal/v1/evaluate", key, &body)
+            .check(tenant_id, "POST /internal/v1/evaluate", key, &body)
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
                 let cached = serde_json::from_str(&cached)
@@ -116,11 +117,11 @@ pub async fn evaluate_internal(
             crate::api::idempotency::IdempotencyOutcome::Fresh => {}
         }
     }
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let response = evaluate_internal_impl(&state, tenant_id, req)?;
     if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
         let s = state.read();
         s.idempotency.remember(
+            tenant_id,
             "POST /internal/v1/evaluate",
             key,
             &body,
@@ -511,6 +512,7 @@ pub async fn create_rule_pack(
                     enabled: r.enabled,
                     params_json: r.params_json.unwrap_or_else(|| "{}".into()),
                     severity: r.severity.clone(),
+                    failure_policy: r.failure_policy.clone(),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -615,6 +617,7 @@ pub async fn update_rule_pack(
                     enabled: r.enabled,
                     params_json: r.params_json.unwrap_or_else(|| "{}".into()),
                     severity: r.severity.clone(),
+                    failure_policy: r.failure_policy.clone(),
                 })
             },
         )
@@ -935,6 +938,8 @@ pub struct RuleEntryDto {
     pub params_json: Option<String>,
     #[serde(default)]
     pub severity: Option<String>,
+    #[serde(default)]
+    pub failure_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -114,6 +114,8 @@ pub struct Account {
     pub balance: Money,
     /// Floating equity = balance + unrealized P&L.
     pub equity: Money,
+    pub estimated_equity: Money,
+    pub estimated_balance: Money,
     /// Highest peak of equity seen so far (for trailing drawdown).
     pub peak_equity: Money,
     /// Highest peak of balance seen so far (for max drawdown).
@@ -230,6 +232,8 @@ impl Account {
             initial_balance: initial,
             balance: initial,
             equity: initial,
+            estimated_equity: initial,
+            estimated_balance: initial,
             peak_equity: initial,
             peak_balance: initial,
             started_at: None,
@@ -483,6 +487,8 @@ pub struct AccountSnapshot {
     pub initial_balance: Money,
     pub balance: Money,
     pub equity: Money,
+    pub estimated_equity: Money,
+    pub estimated_balance: Money,
     pub peak_equity: Money,
     pub peak_balance: Money,
     pub day_start_balance: Money,
@@ -518,6 +524,8 @@ impl From<&Account> for AccountSnapshot {
             initial_balance: a.initial_balance,
             balance: a.balance,
             equity: a.equity,
+            estimated_equity: a.estimated_equity,
+            estimated_balance: a.estimated_balance,
             peak_equity: a.peak_equity,
             peak_balance: a.peak_balance,
             day_start_balance: a.day_start_balance,

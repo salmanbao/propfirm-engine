@@ -71,6 +71,8 @@ pub struct RuleParams {
     pub enabled: bool,
     pub params_json: String,
     pub severity: Option<String>,
+    /// Optional per-rule failure policy from the pack entry.
+    pub failure_policy: Option<String>,
 }
 
 impl RuleParams {
@@ -98,6 +100,7 @@ impl RuleParams {
             enabled: e.enabled,
             params_json: e.params_json.clone(),
             severity: e.severity.clone(),
+            failure_policy: e.failure_policy.clone(),
         }
     }
 

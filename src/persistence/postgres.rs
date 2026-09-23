@@ -15,6 +15,7 @@ use crate::core::position::Position;
 use crate::core::trade::Trade;
 use crate::core::Error;
 use crate::persistence::traits::AccountStore;
+use crate::sha256_helper::Sha256Hasher;
 use crate::tenant::TenantId;
 
 use sqlx::postgres::PgPoolOptions;
@@ -58,7 +59,8 @@ impl AccountStore for PostgresStore {
             sqlx::query_as::<_, AccountRow>(
                 r#"
                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                       initial_balance, balance, equity, peak_equity, peak_balance,
+                       initial_balance, balance, equity, estimated_equity, estimated_balance,
+                       peak_equity, peak_balance,
                        started_at, deadline, day_start_balance, trading_day_index,
                        active_trading_days, day_counted_today, today_realized_pnl,
                        total_realized_pnl, total_commissions, total_swaps,
@@ -86,7 +88,8 @@ impl AccountStore for PostgresStore {
             sqlx::query_as::<_, AccountRow>(
                 r#"
                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                       initial_balance, balance, equity, peak_equity, peak_balance,
+                       initial_balance, balance, equity, estimated_equity, estimated_balance,
+                       peak_equity, peak_balance,
                        started_at, deadline, day_start_balance, trading_day_index,
                        active_trading_days, day_counted_today, today_realized_pnl,
                        total_realized_pnl, total_commissions, total_swaps,
@@ -114,18 +117,19 @@ impl AccountStore for PostgresStore {
             sqlx::query(
                 r#"
                  INSERT INTO accounts
-                   (id, tenant_id, account_type, status, challenge_id, plan,
-                    initial_balance, balance, equity, peak_equity, peak_balance,
-                    started_at, deadline, day_start_balance, trading_day_index,
-                    active_trading_days, day_counted_today, today_realized_pnl,
-                    total_realized_pnl, total_commissions, total_swaps,
-                    largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                    day_start_equity, current_trading_day_start,
-                    target_reached_at, target_reached_on_day,
-                    version, last_tick_ts, last_trade_at, payout_count,
-                    balance_at_last_payout, last_payout_at, created_at, updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                         $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
+                    (id, tenant_id, account_type, status, challenge_id, plan,
+                     initial_balance, balance, equity, estimated_equity, estimated_balance,
+                     peak_equity, peak_balance,
+                     started_at, deadline, day_start_balance, trading_day_index,
+                     active_trading_days, day_counted_today, today_realized_pnl,
+                     total_realized_pnl, total_commissions, total_swaps,
+                     largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                     day_start_equity, current_trading_day_start,
+                     target_reached_at, target_reached_on_day,
+                     version, last_tick_ts, last_trade_at, payout_count,
+                     balance_at_last_payout, last_payout_at, created_at, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                         $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
                 ON CONFLICT (id) DO UPDATE SET
                    tenant_id = EXCLUDED.tenant_id,
                    account_type = EXCLUDED.account_type,
@@ -163,42 +167,44 @@ impl AccountStore for PostgresStore {
                     updated_at = NOW()
                  "#,
             )
-            .bind(row.id)
-            .bind(row.tenant_id)
-            .bind(row.account_type)
-            .bind(row.status)
-            .bind(row.challenge_id)
-            .bind(row.plan)
-            .bind(row.initial_balance)
-            .bind(row.balance)
-            .bind(row.equity)
-            .bind(row.peak_equity)
-            .bind(row.peak_balance)
-            .bind(row.started_at)
-            .bind(row.deadline)
-            .bind(row.day_start_balance)
-            .bind(row.trading_day_index)
-            .bind(row.active_trading_days)
-            .bind(row.day_counted_today)
-            .bind(row.today_realized_pnl)
-            .bind(row.total_realized_pnl)
-            .bind(row.total_commissions)
-            .bind(row.total_swaps)
-            .bind(row.largest_day_profit)
-            .bind(row.largest_day_loss)
-            .bind(row.sum_positive_days_profit)
-            .bind(row.day_start_equity)
-            .bind(row.current_trading_day_start)
-            .bind(row.target_reached_at)
-            .bind(row.target_reached_on_day)
-            .bind(row.version)
-            .bind(row.last_tick_ts)
-            .bind(row.last_trade_at)
-            .bind(row.payout_count)
-            .bind(row.balance_at_last_payout)
-            .bind(row.last_payout_at)
-            .bind(row.created_at)
-            .bind(row.updated_at)
+             .bind(row.id)
+             .bind(row.tenant_id)
+             .bind(row.account_type)
+             .bind(row.status)
+             .bind(row.challenge_id)
+             .bind(row.plan)
+             .bind(row.initial_balance)
+             .bind(row.balance)
+             .bind(row.equity)
+             .bind(row.estimated_equity)
+             .bind(row.estimated_balance)
+             .bind(row.peak_equity)
+             .bind(row.peak_balance)
+             .bind(row.started_at)
+             .bind(row.deadline)
+             .bind(row.day_start_balance)
+             .bind(row.trading_day_index)
+             .bind(row.active_trading_days)
+             .bind(row.day_counted_today)
+             .bind(row.today_realized_pnl)
+             .bind(row.total_realized_pnl)
+             .bind(row.total_commissions)
+             .bind(row.total_swaps)
+             .bind(row.largest_day_profit)
+             .bind(row.largest_day_loss)
+             .bind(row.sum_positive_days_profit)
+             .bind(row.day_start_equity)
+             .bind(row.current_trading_day_start)
+             .bind(row.target_reached_at)
+             .bind(row.target_reached_on_day)
+             .bind(row.version)
+             .bind(row.last_tick_ts)
+             .bind(row.last_trade_at)
+             .bind(row.payout_count)
+             .bind(row.balance_at_last_payout)
+             .bind(row.last_payout_at)
+             .bind(row.created_at)
+             .bind(row.updated_at)
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| Error::Persistence(e.to_string()))
@@ -216,60 +222,64 @@ impl AccountStore for PostgresStore {
                     SET status = $2,
                         balance = $3,
                         equity = $4,
-                        peak_equity = $5,
-                        peak_balance = $6,
-                        day_start_balance = $7,
-                        trading_day_index = $8,
-                        active_trading_days = $9,
-                        day_counted_today = $10,
-                        today_realized_pnl = $11,
-                        total_realized_pnl = $12,
-                        total_commissions = $13,
-                        total_swaps = $14,
-                        largest_day_profit = $15,
-                        largest_day_loss = $16,
-                        sum_positive_days_profit = $17,
-                        day_start_equity = $18,
-                        current_trading_day_start = $19,
-                        target_reached_at = $20,
-                        target_reached_on_day = $21,
-                        last_tick_ts = $22,
-                        last_trade_at = $23,
-                        payout_count = $24,
-                        balance_at_last_payout = $25,
-                        last_payout_at = $26,
+                        estimated_equity = $5,
+                        estimated_balance = $6,
+                        peak_equity = $7,
+                        peak_balance = $8,
+                        day_start_balance = $9,
+                        trading_day_index = $10,
+                        active_trading_days = $11,
+                        day_counted_today = $12,
+                        today_realized_pnl = $13,
+                        total_realized_pnl = $14,
+                        total_commissions = $15,
+                        total_swaps = $16,
+                        largest_day_profit = $17,
+                        largest_day_loss = $18,
+                        sum_positive_days_profit = $19,
+                        day_start_equity = $20,
+                        current_trading_day_start = $21,
+                        target_reached_at = $22,
+                        target_reached_on_day = $23,
+                        last_tick_ts = $24,
+                        last_trade_at = $25,
+                        payout_count = $26,
+                        balance_at_last_payout = $27,
+                        last_payout_at = $28,
                         version = version + 1,
                         updated_at = NOW()
-                 WHERE id = $1 AND version = $27
+                 WHERE id = $1 AND version = $29
                 "#,
             )
-            .bind(row.id)
-            .bind(row.status)
-            .bind(row.balance)
-            .bind(row.equity)
-            .bind(row.peak_equity)
-            .bind(row.peak_balance)
-            .bind(row.day_start_balance)
-            .bind(row.trading_day_index)
-            .bind(row.active_trading_days)
-            .bind(row.day_counted_today)
-            .bind(row.today_realized_pnl)
-            .bind(row.total_realized_pnl)
-            .bind(row.total_commissions)
-            .bind(row.total_swaps)
-            .bind(row.largest_day_profit)
-            .bind(row.largest_day_loss)
-            .bind(row.sum_positive_days_profit)
-            .bind(row.day_start_equity)
-            .bind(row.current_trading_day_start)
-            .bind(row.target_reached_at)
-            .bind(row.target_reached_on_day)
-            .bind(row.last_tick_ts)
-            .bind(row.last_trade_at)
-            .bind(row.payout_count)
-            .bind(row.balance_at_last_payout)
-            .bind(row.last_payout_at)
-            .bind(expected_version as i64)
+             .bind(row.id)
+             .bind(row.status)
+             .bind(row.balance)
+             .bind(row.equity)
+             .bind(row.estimated_equity)
+             .bind(row.estimated_balance)
+             .bind(row.peak_equity)
+             .bind(row.peak_balance)
+             .bind(row.day_start_balance)
+             .bind(row.trading_day_index)
+             .bind(row.active_trading_days)
+             .bind(row.day_counted_today)
+             .bind(row.today_realized_pnl)
+             .bind(row.total_realized_pnl)
+             .bind(row.total_commissions)
+             .bind(row.total_swaps)
+             .bind(row.largest_day_profit)
+             .bind(row.largest_day_loss)
+             .bind(row.sum_positive_days_profit)
+             .bind(row.day_start_equity)
+             .bind(row.current_trading_day_start)
+             .bind(row.target_reached_at)
+             .bind(row.target_reached_on_day)
+             .bind(row.last_tick_ts)
+             .bind(row.last_trade_at)
+             .bind(row.payout_count)
+             .bind(row.balance_at_last_payout)
+             .bind(row.last_payout_at)
+             .bind(expected_version as i64)
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| Error::Persistence(e.to_string()))
@@ -526,6 +536,8 @@ struct AccountRow {
     initial_balance: rust_decimal::Decimal,
     balance: rust_decimal::Decimal,
     equity: rust_decimal::Decimal,
+    estimated_equity: rust_decimal::Decimal,
+    estimated_balance: rust_decimal::Decimal,
     peak_equity: rust_decimal::Decimal,
     peak_balance: rust_decimal::Decimal,
     started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -632,6 +644,8 @@ impl AccountRow {
             initial_balance: crate::core::types::Money(self.initial_balance),
             balance: crate::core::types::Money(self.balance),
             equity: crate::core::types::Money(self.equity),
+            estimated_equity: crate::core::types::Money(self.estimated_equity),
+            estimated_balance: crate::core::types::Money(self.estimated_balance),
             peak_equity: crate::core::types::Money(self.peak_equity),
             peak_balance: crate::core::types::Money(self.peak_balance),
             started_at: self.started_at,
@@ -689,6 +703,8 @@ impl AccountRow {
             initial_balance: account.initial_balance.0,
             balance: account.balance.0,
             equity: account.equity.0,
+            estimated_equity: account.estimated_equity.0,
+            estimated_balance: account.estimated_balance.0,
             peak_equity: account.peak_equity.0,
             peak_balance: account.peak_balance.0,
             started_at: account.started_at,
@@ -884,4 +900,115 @@ impl From<Trade> for TradeRow {
             created_at: chrono::Utc::now(),
         }
     }
+}
+
+/// Outcome of an idempotency lookup.
+#[derive(Clone)]
+pub enum IdempotencyOutcome {
+    Fresh,
+    Replay(String),
+    Conflict,
+}
+
+/// Durable, tenant-scoped idempotency store backed by Postgres.
+///
+/// The composite key is `(tenant_id, endpoint, idempotency_key)`.
+/// A matching row with the same body hash replays the cached response;
+/// a matching key with a different body hash is a conflict and must be
+/// rejected to avoid double-applying a different mutation.
+#[derive(Clone)]
+pub struct PostgresIdempotencyStore {
+    pool: Arc<PgPool>,
+}
+
+impl PostgresIdempotencyStore {
+    #[must_use]
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+}
+
+impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
+    fn check(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+    ) -> crate::api::idempotency::IdempotencyOutcome {
+        let body_hash = hash_body(request_body);
+        let outcome = block_on_async(async {
+            sqlx::query_as::<_, IdempotencyEntryRow>(
+                r#"
+                SELECT response, body_hash
+                  FROM idempotency_entries
+                 WHERE tenant_id = $1
+                   AND endpoint = $2
+                   AND idempotency_key = $3
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(endpoint)
+            .bind(key)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))
+        });
+
+        match outcome {
+            Ok(Some(row)) => {
+                if row.body_hash == body_hash {
+                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
+                } else {
+                    crate::api::idempotency::IdempotencyOutcome::Conflict
+                }
+            }
+            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+        }
+    }
+
+    fn remember(
+        &self,
+        tenant_id: crate::tenant::TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    ) {
+        let body_hash = hash_body(request_body);
+        let _ = block_on_async(async {
+            sqlx::query(
+                r#"
+                INSERT INTO idempotency_entries
+                    (tenant_id, endpoint, idempotency_key, body_hash, response)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (tenant_id, endpoint, idempotency_key)
+                DO UPDATE SET response = EXCLUDED.response, created_at = now()
+                "#,
+            )
+            .bind(tenant_id.0)
+            .bind(endpoint)
+            .bind(key)
+            .bind(body_hash)
+            .bind(response)
+            .execute(self.pool.as_ref())
+            .await
+            .map(|_| ())
+            .map_err(|e| Error::Persistence(e.to_string()))
+        });
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct IdempotencyEntryRow {
+    response: String,
+    body_hash: String,
+}
+
+fn hash_body(body: &str) -> String {
+    use std::hash::Hash;
+    let mut h = Sha256Hasher::new();
+    body.hash(&mut h);
+    h.finalize_hex()
 }
