@@ -60,7 +60,7 @@ fn test_auth_config() -> AuthConfig {
 }
 
 /// Builds a `ServerState` with one seeded account at the given equity.
-async fn make_state_at(equity: i64) -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
+async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1(); // 10k static max loss: breach below 9k equity
     let mut account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("test-tenant"))
@@ -68,11 +68,11 @@ async fn make_state_at(equity: i64) -> (Arc<parking_lot::RwLock<ServerState>>, A
         .unwrap();
     account.equity = Money::new(rust_decimal::Decimal::new(equity, 0));
     account.balance = account.equity;
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
         plan,
         test_auth_config(),
     )));
-    state.read().store.put(account.clone()).unwrap();
+    state.read().await.store.put(account.clone()).await.unwrap();
     (state, account)
 }
 
@@ -145,7 +145,7 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
     // pack — a breach IF the equity is trusted. With `estimated`
     // provenance the breach-capable rule downgrades to Warn.
     let (state, account) = make_state_at(8000).await;
-    let app = router(state);
+    let app = router(state).await;
     let (status, body) = send(
         app,
         Method::POST,
@@ -158,12 +158,12 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
         !body.contains("\"Liquidate\"") && !body.contains("\"Fail\""),
         "estimated equity must NOT terminate via the endpoint; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_5_missing_equity_source_defaults_to_estimated() {
     let (state, account) = make_state_at(8000).await;
-    let app = router(state);
+    let app = router(state).await;
     // No equity_source field at all — must default to the safe option.
     let (status, body) = send(
         app,
@@ -177,12 +177,12 @@ async fn p0_5_missing_equity_source_defaults_to_estimated() {
         !body.contains("\"Liquidate\"") && !body.contains("\"Fail\""),
         "absent equity_source must default to estimated (never terminate); got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
     let (state, account) = make_state_at(8000).await;
-    let app = router(state);
+    let app = router(state).await;
     let (status, body) = send(
         app,
         Method::POST,
@@ -195,7 +195,7 @@ async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
         body.contains("\"Liquidate\""),
         "broker-reported equity below the static floor must Liquidate; got: {body}"
     );
-}
+    }
 
 // ---------------------------------------------------------------------------
 // P0.6 — positions and trades on the stateless path
@@ -207,7 +207,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
     // entry on a plan that forbids it. Simpler: use the plan's own
     // weekend_holding_allowed = false and submit an order on Saturday.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state);
+    let app = router(state).await;
     // Saturday timestamp.
     let sat = chrono::Utc::now();
     let days_to_sat = (5 + 7 - sat.weekday().num_days_from_monday()) % 7;
@@ -236,7 +236,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
         resp.contains("weekend") || resp.contains("Weekend"),
         "an open position over the weekend must produce a weekend violation via the endpoint; got: {resp}"
     );
-}
+    }
 
 // ---------------------------------------------------------------------------
 // P0.7 — rule-pack lifecycle endpoints
@@ -264,7 +264,7 @@ fn create_pack_body(id: &str) -> String {
 #[tokio::test]
 async fn p0_7_rule_pack_full_lifecycle_works() {
     let (state, _) = make_state_at(10000).await;
-    let app = router(state);
+    let app = router(state).await;
     let id = "lp-pack-v1";
 
     // Create (draft).
@@ -370,12 +370,12 @@ async fn p0_7_rule_pack_full_lifecycle_works() {
         body.contains("\"superseded\""),
         "final read must show superseded; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_7_illegal_transition_draft_to_superseded_is_409() {
     let (state, _) = make_state_at(10000).await;
-    let app = router(state);
+    let app = router(state).await;
     let id = "lp-pack-illegal";
     let (status, _) = send(
         app.clone(),
@@ -403,7 +403,7 @@ async fn p0_7_illegal_transition_draft_to_superseded_is_409() {
 #[tokio::test]
 async fn p0_7_get_unknown_pack_is_404() {
     let (state, _) = make_state_at(10000).await;
-    let app = router(state);
+    let app = router(state).await;
     let (status, _) = send(app, Method::GET, "/v1/rule-packs/no-such-pack", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -415,7 +415,7 @@ async fn p0_7_get_unknown_pack_is_404() {
 #[tokio::test]
 async fn p0_8_same_key_same_body_replays_first_response() {
     let (state, account) = make_state_at(9500).await;
-    let app = router(state);
+    let app = router(state).await;
     let body = evaluate_body(&account.id, Some("broker_reported"));
     let headers = [("Idempotency-Key", "eval-key-1")];
     let (s1, b1) = send_with_headers(
@@ -445,7 +445,7 @@ async fn p0_8_same_key_same_body_replays_first_response() {
 #[tokio::test]
 async fn p0_8_same_key_conflicting_body_returns_409() {
     let (state, account) = make_state_at(9500).await;
-    let app = router(state);
+    let app = router(state).await;
     let headers = [("Idempotency-Key", "eval-key-2")];
     let body_a = evaluate_body(&account.id, Some("broker_reported"));
     let body_b = evaluate_body(&account.id, Some("estimated")); // conflicting
@@ -480,7 +480,7 @@ async fn p0_8_mutation_is_not_double_applied() {
     // second identical request must return the identical (replayed)
     // response, proving no double-apply path ran.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state);
+    let app = router(state).await;
     let order_body = serde_json::json!({
         "account_id": account.id.to_string(),
         "symbol": "EURUSD",

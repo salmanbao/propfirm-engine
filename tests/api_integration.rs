@@ -69,17 +69,17 @@ fn test_auth_config() -> AuthConfig {
 const SERVICE_KEY: &str = "service-secret";
 
 /// Builds a `ServerState` with one seeded account.
-async fn make_state_with_account() -> (Arc<parking_lot::RwLock<ServerState>>, Account) {
+async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(test_tenant_id())
         .start(chrono::Utc::now())
         .unwrap();
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
         plan,
         test_auth_config(),
     )));
-    state.read().store.put(account.clone()).unwrap();
+    state.read().await.store.put(account.clone()).await.unwrap();
     (state, account)
 }
 
@@ -113,7 +113,7 @@ async fn send(
 #[tokio::test]
 async fn p0_a_health_works() {
     let (state, _) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let tid = test_tenant_id_str();
     let (status, body) = send(app, Method::GET, "/health", None, &tid).await;
     assert_eq!(status, StatusCode::OK);
@@ -125,7 +125,7 @@ async fn p0_a_get_account_returns_seeded_account_not_404() {
     // Before P0-A: this returned 404 because state.read().clone()
     // created a brand-new empty InMemoryStore.
     let (state, account) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let uri = format!("/v1/accounts/{}", account.id);
     let tid = test_tenant_id_str();
     let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
@@ -139,12 +139,12 @@ async fn p0_a_get_account_returns_seeded_account_not_404() {
         body.contains("10000"),
         "body should contain account balance; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_a_get_account_for_unknown_id_returns_404() {
     let (state, _) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let random_id = AccountId::new();
     let uri = format!("/v1/accounts/{random_id}");
     let tid = test_tenant_id_str();
@@ -157,7 +157,7 @@ async fn p0_a_evaluate_order_returns_verdict() {
     // Before P0-A: this returned 500 "account not found" because
     // state.read().clone() discarded the seeded account.
     let (state, account) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
         "symbol": "EURUSD",
@@ -187,12 +187,12 @@ async fn p0_a_evaluate_order_returns_verdict() {
         !body.to_lowercase().contains("not found"),
         "body should not be a 404 error; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_a_manual_run_returns_decision() {
     let (state, account) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let req_body = serde_json::json!({
         "account_id": account.id.to_string()
     })
@@ -215,14 +215,14 @@ async fn p0_a_manual_run_returns_decision() {
         body.contains("decision_kind"),
         "body should contain decision_kind; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_a_breach_report_returns_violations_array() {
     // Even with no breaches, the endpoint should return 200 + empty
     // violations array — NOT 404.
     let (state, account) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let uri = format!("/internal/v1/breach-report/{}", account.id);
     let tid = test_tenant_id_str();
     let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
@@ -235,12 +235,12 @@ async fn p0_a_breach_report_returns_violations_array() {
         body.contains("violations"),
         "body should contain violations array; got: {body}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_a_override_for_unknown_account_returns_404() {
     let (state, _) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let random_account = AccountId::new();
     let random_violation = propfirm::core::ids::ViolationId::new();
     let req_body = serde_json::json!({
@@ -265,14 +265,14 @@ async fn p0_a_override_for_unknown_account_returns_404() {
         status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
         "override for unknown account should fail; got {status}"
     );
-}
+    }
 
 #[tokio::test]
 async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
     // P0-B verification: the input_hash in the response must be a real
     // 64-char sha256 digest, not a 16-char SipHash.
     let (state, account) = make_state_with_account().await;
-    let app = router(state);
+    let app = router(state).await;
     let tick_json = serde_json::json!({
         "symbol": "EURUSD",
         "quote": {
@@ -324,11 +324,11 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
         .start(chrono::Utc::now())
         .unwrap();
     let state = ServerState::new(plan, test_auth_config());
-    state.store.put(account.clone()).unwrap();
+    state.store.put(account.clone()).await.unwrap();
     // Clone the state — this used to discard the seeded account.
     let cloned = state.clone();
     // The cloned state should still see the account.
-    let retrieved = cloned.store.get(account.id).unwrap();
+    let retrieved = cloned.store.get(account.id).await.unwrap();
     assert!(
         retrieved.is_some(),
         "P0-A: ServerState::clone must share the underlying store; got None"

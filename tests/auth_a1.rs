@@ -56,14 +56,15 @@ fn auth_config_with_services(entries: &[(&str, Option<&str>)]) -> AuthConfig {
 }
 
 fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
-    let mut s = String::with_capacity(bytes.as_ref().len() * 2);
-    for b in bytes.as_ref() {
+    let bytes = bytes.as_ref();
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
         s.push_str(&format!("{b:02x}"));
     }
     s
 }
 
-fn make_state() -> Arc<parking_lot::RwLock<ServerState>> {
+async fn make_state() -> Arc<tokio::sync::RwLock<ServerState>> {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(tenant())
@@ -75,10 +76,10 @@ fn make_state() -> Arc<parking_lot::RwLock<ServerState>> {
         (service_web(), Some("web-previous")),
         (service_relay(), None),
     ]);
-    let state = Arc::new(parking_lot::RwLock::new(ServerState::new(plan, auth)));
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(plan, auth)));
     {
-        let s = state.read();
-        propfirm::persistence::traits::AccountStore::put(&s.store, account.clone()).unwrap();
+        let s = state.read().await;
+        propfirm::persistence::traits::AccountStore::put(&s.store, account.clone()).await.unwrap();
     }
     state
 }
@@ -123,7 +124,7 @@ async fn send_raw(
 
 #[tokio::test]
 async fn a1_missing_credentials_rejected_401() {
-    let app = router(make_state());
+    let app = router(make_state().await).await;
     let (status, _, _) = send_raw(
         app,
         Method::GET,
@@ -134,11 +135,11 @@ async fn a1_missing_credentials_rejected_401() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
+    }
 
 #[tokio::test]
 async fn a1_wrong_token_rejected_401() {
-    let app = router(make_state());
+    let app = router(make_state().await).await;
     let (status, _, _) = send_raw(
         app,
         Method::GET,
@@ -149,12 +150,12 @@ async fn a1_wrong_token_rejected_401() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
+    }
 
 #[tokio::test]
 async fn a1_valid_service_bearer_accepted() {
-    let state = make_state();
-    let app = router(state.clone());
+    let state = make_state().await;
+    let app = router(state.clone()).await;
     let account_id;
     {
         let acc = Account::new(AccountId::new(), ftmo_phase1())
@@ -162,7 +163,7 @@ async fn a1_valid_service_bearer_accepted() {
             .start(chrono::Utc::now())
             .unwrap();
         account_id = acc.id;
-        state.read().store.put(acc).unwrap();
+        state.read().await.store.put(acc).await.unwrap();
     }
     let (status, body, correlation_id) = send_raw(
         app,
@@ -183,12 +184,12 @@ async fn a1_valid_service_bearer_accepted() {
         "correlation_id must be present for audit"
     );
     assert!(!correlation_id.unwrap().is_empty());
-}
+    }
 
 #[tokio::test]
 async fn a1_tenant_header_trusted_after_service_auth() {
-    let state = make_state();
-    let app = router(state.clone());
+    let state = make_state().await;
+    let app = router(state.clone()).await;
     let account_id;
     {
         let acc = Account::new(AccountId::new(), ftmo_phase1())
@@ -196,7 +197,7 @@ async fn a1_tenant_header_trusted_after_service_auth() {
             .start(chrono::Utc::now())
             .unwrap();
         account_id = acc.id;
-        state.read().store.put(acc).unwrap();
+        state.read().await.store.put(acc).await.unwrap();
     }
     let (status, _, _) = send_raw(
         app,
@@ -208,28 +209,28 @@ async fn a1_tenant_header_trusted_after_service_auth() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-}
+    }
 
 #[tokio::test]
 async fn a1_health_reachable_without_credentials() {
-    let app = router(make_state());
+    let app = router(make_state().await).await;
     let (status, body, _) = send_raw(app, Method::GET, "/health", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "health must be exempt from auth");
     assert_eq!(body, "ok");
-}
+    }
 
 #[tokio::test]
 async fn a1_ready_reachable_without_credentials() {
-    let app = router(make_state());
+    let app = router(make_state().await).await;
     let (status, body, _) = send_raw(app, Method::GET, "/ready", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "ready must be exempt from auth");
     assert_eq!(body, "ready");
-}
+    }
 
 #[tokio::test]
 async fn a1_internal_accepts_active_service_token() {
-    let state = make_state();
-    let app = router(state.clone());
+    let state = make_state().await;
+    let app = router(state.clone()).await;
     let account_id;
     {
         let acc = Account::new(AccountId::new(), ftmo_phase1())
@@ -237,7 +238,7 @@ async fn a1_internal_accepts_active_service_token() {
             .start(chrono::Utc::now())
             .unwrap();
         account_id = acc.id;
-        state.read().store.put(acc).unwrap();
+        state.read().await.store.put(acc).await.unwrap();
     }
     let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
     let (status, _, _) = send_raw(
@@ -254,12 +255,12 @@ async fn a1_internal_accepts_active_service_token() {
         StatusCode::OK,
         "active service token must open /internal/*"
     );
-}
+    }
 
 #[tokio::test]
 async fn a1_internal_accepts_previous_token_during_rotation() {
-    let state = make_state();
-    let app = router(state.clone());
+    let state = make_state().await;
+    let app = router(state.clone()).await;
     let account_id;
     {
         let acc = Account::new(AccountId::new(), ftmo_phase1())
@@ -267,7 +268,7 @@ async fn a1_internal_accepts_previous_token_during_rotation() {
             .start(chrono::Utc::now())
             .unwrap();
         account_id = acc.id;
-        state.read().store.put(acc).unwrap();
+        state.read().await.store.put(acc).await.unwrap();
     }
     let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
     let (status, _, _) = send_raw(
@@ -284,11 +285,11 @@ async fn a1_internal_accepts_previous_token_during_rotation() {
         StatusCode::OK,
         "previous rotation token must still be accepted during overlap"
     );
-}
+    }
 
 #[tokio::test]
 async fn a1_internal_rejects_unknown_bearer() {
-    let app = router(make_state());
+    let app = router(make_state().await).await;
     let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
@@ -300,7 +301,7 @@ async fn a1_internal_rejects_unknown_bearer() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
+    }
 
 #[test]
 fn a1_from_env_fails_closed() {
