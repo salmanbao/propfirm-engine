@@ -17,7 +17,7 @@ use crate::notifications::log::LogNotifier;
 use crate::persistence::memory::InMemoryStore;
 use crate::persistence::rulepack_store::{InMemoryRulePackStore, RulePackStore};
 use crate::persistence::traits::AccountStore;
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 use std::sync::Arc;
 
 pub struct ServerState {
@@ -148,7 +148,7 @@ pub async fn run_server_with_auth(
     };
 
     let state: SharedState = Arc::new(RwLock::new(state));
-    let app = crate::api::routes::router(state);
+    let app = crate::api::routes::router(state).await;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("propfirm-engine HTTP server listening on {addr}");
     axum::serve(listener, app).await?;

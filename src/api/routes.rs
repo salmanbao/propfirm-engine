@@ -43,8 +43,8 @@ use axum::{
     Router,
 };
 
-pub fn router(state: SharedState) -> Router {
-    let auth = state.read().auth.clone();
+pub async fn router(state: SharedState) -> Router {
+    let auth = state.read().await.auth.clone();
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -67,6 +67,6 @@ pub fn router(state: SharedState) -> Router {
         // AFTER `from_fn` — the request passes Extension (config inserted)
         // before reaching auth_layer.
         .layer(axum::middleware::from_fn(auth_layer))
-        .layer(axum::Extension(auth))
+        .layer(axum::extract::Extension(auth))
         .with_state(state)
 }

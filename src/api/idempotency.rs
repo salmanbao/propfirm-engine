@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+
 /// Outcome of an idempotency lookup.
 pub enum IdempotencyOutcome {
     /// No prior request with this key — caller should execute and then
@@ -41,9 +43,10 @@ pub enum IdempotencyOutcome {
 /// Implementations must scope results by `tenant_id` so that a retry
 /// key from one tenant can never replay or conflict with another tenant's
 /// request.
+#[async_trait]
 pub trait IdempotencyBackend: Send + Sync {
     /// Look up a prior request. Returns [`IdempotencyOutcome`].
-    fn check(
+    async fn check(
         &self,
         tenant_id: TenantId,
         endpoint: &str,
@@ -52,7 +55,7 @@ pub trait IdempotencyBackend: Send + Sync {
     ) -> IdempotencyOutcome;
 
     /// Record a successful response for later replay.
-    fn remember(
+    async fn remember(
         &self,
         tenant_id: TenantId,
         endpoint: &str,
@@ -65,7 +68,7 @@ pub trait IdempotencyBackend: Send + Sync {
     /// the response. Default implementation delegates to [`check`] +
     /// [`remember`]; Postgres overrides this with a single upsert
     /// statement to prevent concurrent double-execution.
-    fn check_and_remember(
+    async fn check_and_remember(
         &self,
         tenant_id: TenantId,
         endpoint: &str,
@@ -73,9 +76,10 @@ pub trait IdempotencyBackend: Send + Sync {
         request_body: &str,
         response: &str,
     ) -> IdempotencyOutcome {
-        match self.check(tenant_id, endpoint, key, request_body) {
+        match self.check(tenant_id, endpoint, key, request_body).await {
             IdempotencyOutcome::Fresh => {
-                self.remember(tenant_id, endpoint, key, request_body, response);
+                self.remember(tenant_id, endpoint, key, request_body, response)
+                    .await;
                 IdempotencyOutcome::Fresh
             }
             other => other,
@@ -203,8 +207,9 @@ impl IdempotencyStore {
     }
 }
 
+#[async_trait]
 impl IdempotencyBackend for IdempotencyStore {
-    fn check(
+    async fn check(
         &self,
         tenant_id: TenantId,
         endpoint: &str,
@@ -227,7 +232,7 @@ impl IdempotencyBackend for IdempotencyStore {
         }
     }
 
-    fn remember(
+    async fn remember(
         &self,
         tenant_id: TenantId,
         endpoint: &str,

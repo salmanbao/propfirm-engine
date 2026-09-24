@@ -12,10 +12,10 @@ use crate::core::types::{Price, Quantity, Symbol};
 use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
 use crate::rulepack::RulePack;
-use axum::extract::{Path, State};
+use axum::extract::{Path, State, Extension};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -86,18 +86,20 @@ pub async fn ready() -> &'static str {
 /// **P0.8 fix**: the `Idempotency-Key` header is honoured: the first
 /// response for a key is cached and replayed; a replay with a
 /// conflicting body is rejected with 409.
+
+#[axum::debug_handler]
 pub async fn evaluate_internal(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<InternalEvaluateRequest>,
 ) -> Result<Json<InternalEvaluateResponse>, (StatusCode, String)> {
     // P0.8: idempotency — key → first response, conflicting bodies 409.
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        let s = state.read();
-        let response = evaluate_internal_impl(&state, tenant_id, req)?;
+        let s = state.read().await;
+        let response = evaluate_internal_impl(&state, tenant_id, req).await?;
         let response_str = serde_json::to_string(&response)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         match s.idempotency.check_and_remember(
@@ -106,7 +108,9 @@ pub async fn evaluate_internal(
             key,
             &body,
             &response_str,
-        ) {
+        )
+        .await
+        {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
                 let cached = serde_json::from_str(&cached)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -127,14 +131,14 @@ pub async fn evaluate_internal(
             crate::api::idempotency::IdempotencyOutcome::Fresh => response,
         }
     } else {
-        evaluate_internal_impl(&state, tenant_id, req)?
+        evaluate_internal_impl(&state, tenant_id, req).await?
     };
     Ok(Json(response))
 }
 
 /// The actual evaluation logic, split out so idempotency wrapping stays
 /// readable.
-fn evaluate_internal_impl(
+async fn evaluate_internal_impl(
     state: &SharedState,
     tenant_id: crate::tenant::TenantId,
     req: InternalEvaluateRequest,
@@ -148,10 +152,11 @@ fn evaluate_internal_impl(
         Some(other) => crate::pure::EquitySource::parse(other)
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     };
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let acc = s
         .store
         .get_for_tenant(tenant_id, account_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -261,7 +266,7 @@ fn evaluate_internal_impl(
 pub async fn override_breach(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
@@ -272,7 +277,7 @@ pub async fn override_breach(
         Uuid::from_str(&req.clears_violation_id)
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let override_record = Override::new(
         account_id,
@@ -289,6 +294,7 @@ pub async fn override_breach(
                 override_record: override_record.clone(),
             },
         )
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(OverrideResponse {
         override_id: override_record.id.to_string(),
@@ -300,17 +306,18 @@ pub async fn override_breach(
 pub async fn manual_run(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
         .process_for_tenant(tenant_id, account_id, PipelineEvent::OnDemand)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ManualRunResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
@@ -329,7 +336,7 @@ pub async fn manual_run(
 pub async fn emergency_stop(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
@@ -337,7 +344,7 @@ pub async fn emergency_stop(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
     let at = chrono::Utc::now();
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
         .process_for_tenant(
@@ -349,6 +356,7 @@ pub async fn emergency_stop(
                 at,
             },
         )
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(EmergencyStopResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
@@ -362,17 +370,18 @@ pub async fn emergency_stop(
 pub async fn breach_report(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(account_id_str): Path<String>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&account_id_str).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let acc = s
         .store
         .get_for_tenant(tenant_id, account_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     // Pull all violations from the event log for this account.
@@ -399,10 +408,11 @@ pub async fn breach_report(
     }))
 }
 
+
 pub async fn evaluate_order(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
@@ -438,7 +448,7 @@ pub async fn evaluate_order(
         avg_fill_price: None,
     };
 
-    let s = state.read().clone();
+    let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
         .process_for_tenant(
@@ -448,6 +458,7 @@ pub async fn evaluate_order(
                 order: order.clone(),
             },
         )
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let violations: Vec<String> = result
         .result
@@ -462,19 +473,21 @@ pub async fn evaluate_order(
     }))
 }
 
+
 pub async fn get_account(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<AccountSnapshotDto>, (StatusCode, String)> {
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let uuid = Uuid::from_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let account_id = AccountId::from_uuid(uuid);
-    let s = state.read();
+    let s = state.read().await;
     let acc = s
         .store
         .get_for_tenant(tenant_id, account_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     let snap: crate::core::account::AccountSnapshot = (&acc).into();
@@ -483,10 +496,11 @@ pub async fn get_account(
 
 // Rule-pack CRUD endpoints (P2-API).
 
+
 pub async fn create_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let rules: Vec<crate::rulepack::RuleEntry> =
@@ -535,9 +549,10 @@ pub async fn create_rule_pack(
         lifecycle: format!("{}", pack.lifecycle),
         content_hash: pack.content_hash(),
     };
-    let s = state.read();
+    let s = state.read().await;
     s.rule_pack_store
         .insert_pack(pack)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(response))
 }
@@ -548,14 +563,15 @@ pub async fn create_rule_pack(
 pub async fn get_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<GetRulePackResponse>, (StatusCode, String)> {
     let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read();
+    let s = state.read().await;
     let pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
     let json = pack
@@ -577,15 +593,16 @@ pub async fn get_rule_pack(
 pub async fn update_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read();
+    let s = state.read().await;
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
     crate::persistence::rulepack_store::ensure_draft(pack.lifecycle)
@@ -625,6 +642,7 @@ pub async fn update_rule_pack(
     let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
     s.rule_pack_store
         .put_pack(pack)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(RulePackResponse {
         id,
@@ -641,14 +659,15 @@ pub async fn update_rule_pack(
 pub async fn activate_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read();
+    let s = state.read().await;
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
     crate::persistence::rulepack_store::check_transition(
@@ -661,6 +680,7 @@ pub async fn activate_rule_pack(
     let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
     s.rule_pack_store
         .put_pack(pack)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(RulePackResponse {
         id,
@@ -678,15 +698,16 @@ pub async fn activate_rule_pack(
 pub async fn supersed_rule_pack(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: axum::Extension<crate::api::auth::AuthedIdentity>,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(id): Path<String>,
     body: Option<Json<SupersedeRequest>>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read();
+    let s = state.read().await;
     let mut pack = s
         .rule_pack_store
         .get_pack(tenant, &id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
     crate::persistence::rulepack_store::check_transition(
@@ -702,6 +723,7 @@ pub async fn supersed_rule_pack(
     let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
     s.rule_pack_store
         .put_pack(pack)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(RulePackResponse {
         id,
