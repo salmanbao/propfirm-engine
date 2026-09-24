@@ -424,15 +424,13 @@ impl ChallengePlan {
                     .unwrap();
                 next_day.with_timezone(&chrono::Utc)
             }
-            None => {
-                current_start
-                    .date_naive()
-                    .succ_opt()
-                    .expect("valid next day")
-                    .and_hms_opt(reset_hour, 0, 0)
-                    .expect("valid hour")
-                    .and_utc()
-            }
+            None => current_start
+                .date_naive()
+                .succ_opt()
+                .expect("valid next day")
+                .and_hms_opt(reset_hour, 0, 0)
+                .expect("valid hour")
+                .and_utc(),
         }
     }
 
