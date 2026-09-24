@@ -1053,7 +1053,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             Ok(IdempotencyOutcome::Fresh)
         });
 
-        outcome.unwrap_or_else(|_| IdempotencyOutcome::Error)
+        outcome.unwrap_or(IdempotencyOutcome::Error)
     }
 
     fn remember(

@@ -954,10 +954,12 @@ fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
     use propfirm::persistence::memory::InMemoryStore;
     use propfirm::persistence::traits::AccountStore;
 
-    let mut plan = ChallengePlan::default();
-    plan.timezone = Some(chrono_tz::America::New_York);
-    plan.day_reset_time = 0;
-    plan.initial_balance_money = Money(dec!(100_000));
+    let plan = ChallengePlan {
+        timezone: Some(chrono_tz::America::New_York),
+        day_reset_time: 0,
+        initial_balance_money: Money(dec!(100_000)),
+        ..ChallengePlan::default()
+    };
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
@@ -990,8 +992,8 @@ fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
                     ts: event_ts,
                 },
             ),
-            broker_equity: Money(dec!(100_000)).into(),
-            broker_balance: Money(dec!(100_000)).into(),
+            broker_equity: Money(dec!(100_000)),
+            broker_balance: Money(dec!(100_000)),
         },
     );
     assert!(result.is_ok(), "multi-day gap must not error: {result:?}");
@@ -1015,10 +1017,12 @@ fn p1_1_rollover_respects_calendar_day_across_dst() {
     // A fixed 24-hour add would land at 2026-03-09 01:00 EDT, which is
     // wrong; calendar-day advancement should land at midnight.
     let tz = chrono_tz::America::New_York;
-    let mut plan = ChallengePlan::default();
-    plan.timezone = Some(tz);
-    plan.day_reset_time = 0;
-    plan.initial_balance_money = Money(dec!(100_000));
+    let plan = ChallengePlan {
+        timezone: Some(tz),
+        day_reset_time: 0,
+        initial_balance_money: Money(dec!(100_000)),
+        ..ChallengePlan::default()
+    };
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
@@ -1044,20 +1048,17 @@ fn p1_1_rollover_respects_calendar_day_across_dst() {
 
 #[test]
 fn debug_multi_day_rollover() {
-    use chrono::TimeZone;
     use propfirm::config::plan::ChallengePlan;
     use propfirm::core::ids::AccountId;
     use propfirm::core::types::Money;
-    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::engine::state::AccountState;
-    use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
-    let mut plan = ChallengePlan::default();
-    plan.timezone = Some(chrono_tz::America::New_York);
-    plan.day_reset_time = 0;
-    plan.initial_balance_money = Money(dec!(100_000));
+    let plan = ChallengePlan {
+        timezone: Some(chrono_tz::America::New_York),
+        day_reset_time: 0,
+        initial_balance_money: Money(dec!(100_000)),
+        ..ChallengePlan::default()
+    };
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
