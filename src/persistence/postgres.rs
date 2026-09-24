@@ -1109,7 +1109,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             Ok(IdempotencyOutcome::Fresh)
         });
 
-        result.unwrap_or_else(|_| IdempotencyOutcome::Error)
+        result.unwrap_or(IdempotencyOutcome::Error)
     }
 }
 
