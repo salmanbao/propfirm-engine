@@ -9,7 +9,6 @@
 
 #![cfg(feature = "postgres")]
 
-use crate::api::idempotency::IdempotencyOutcome;
 use crate::core::account::Account;
 use crate::core::ids::{AccountId, PositionId};
 use crate::core::position::Position;
@@ -18,39 +17,14 @@ use crate::core::Error;
 use crate::persistence::traits::AccountStore;
 use crate::sha256_helper::Sha256Hasher;
 use crate::tenant::TenantId;
-
+use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::sync::Arc;
 
 #[derive(Clone)]
-struct PostgresRuntimes(Arc<tokio::runtime::Runtime>);
-
-impl PostgresRuntimes {
-    fn new() -> Self {
-        Self(Arc::new(
-            tokio::runtime::Runtime::new().expect("create tokio runtime for postgres store"),
-        ))
-    }
-
-    fn block_on<F, T>(&self, future: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        self.0.block_on(future)
-    }
-}
-
-impl Default for PostgresRuntimes {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone)]
 pub struct PostgresStore {
     pool: Arc<PgPool>,
-    runtimes: PostgresRuntimes,
 }
 
 impl PostgresStore {
@@ -66,7 +40,6 @@ impl PostgresStore {
             .map_err(|e| Error::Persistence(e.to_string()))?;
         Ok(Self {
             pool: Arc::new(pool),
-            runtimes: PostgresRuntimes::default(),
         })
     }
 
@@ -76,244 +49,237 @@ impl PostgresStore {
     }
 }
 
+#[async_trait]
 impl AccountStore for PostgresStore {
-    fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
-        let row = self.runtimes.block_on(async {
-            sqlx::query_as::<_, AccountRow>(
-                r#"
-                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                        initial_balance, balance, equity, estimated_equity, estimated_balance,
-                        peak_equity, peak_balance,
-                        started_at, deadline, day_start_balance, trading_day_index,
-                        active_trading_days, day_counted_today, today_realized_pnl,
-                        total_realized_pnl, total_commissions, total_swaps,
-                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                        day_start_equity, current_trading_day_start,
-                        target_reached_at, target_reached_on_day,
-                        version, last_tick_ts, last_trade_at, payout_count,
-                        balance_at_last_payout, last_payout_at, refund_used,
-                        created_at, updated_at
-                   FROM accounts
-                  WHERE id = $1 AND tenant_id = $2
-                "#,
-            )
-            .bind(id.0)
-            .bind(tenant_id.0)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+    async fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+        let row = sqlx::query_as::<_, AccountRow>(
+            r#"
+             SELECT id, tenant_id, account_type, status, challenge_id, plan,
+                    initial_balance, balance, equity, estimated_equity, estimated_balance,
+                    peak_equity, peak_balance,
+                    started_at, deadline, day_start_balance, trading_day_index,
+                    active_trading_days, day_counted_today, today_realized_pnl,
+                    total_realized_pnl, total_commissions, total_swaps,
+                    largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                    day_start_equity, current_trading_day_start,
+                    target_reached_at, target_reached_on_day,
+                    version, last_tick_ts, last_trade_at, payout_count,
+                    balance_at_last_payout, last_payout_at, refund_used,
+                    created_at, updated_at
+               FROM accounts
+              WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(id.0)
+        .bind(tenant_id.0)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(row.map(|r| r.into_account()))
     }
 
-    fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
-        let row = self.runtimes.block_on(async {
-            sqlx::query_as::<_, AccountRow>(
-                r#"
-                 SELECT id, tenant_id, account_type, status, challenge_id, plan,
-                        initial_balance, balance, equity, estimated_equity, estimated_balance,
-                        peak_equity, peak_balance,
-                        started_at, deadline, day_start_balance, trading_day_index,
-                        active_trading_days, day_counted_today, today_realized_pnl,
-                        total_realized_pnl, total_commissions, total_swaps,
-                        largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                        day_start_equity, current_trading_day_start,
-                        target_reached_at, target_reached_on_day,
-                        version, last_tick_ts, last_trade_at, payout_count,
-                        balance_at_last_payout, last_payout_at, refund_used,
-                        created_at, updated_at
-                   FROM accounts
-                  WHERE id = $1
-                "#,
-            )
-            .bind(id.0)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+    async fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
+        let row = sqlx::query_as::<_, AccountRow>(
+            r#"
+             SELECT id, tenant_id, account_type, status, challenge_id, plan,
+                    initial_balance, balance, equity, estimated_equity, estimated_balance,
+                    peak_equity, peak_balance,
+                    started_at, deadline, day_start_balance, trading_day_index,
+                    active_trading_days, day_counted_today, today_realized_pnl,
+                    total_realized_pnl, total_commissions, total_swaps,
+                    largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                    day_start_equity, current_trading_day_start,
+                    target_reached_at, target_reached_on_day,
+                    version, last_tick_ts, last_trade_at, payout_count,
+                    balance_at_last_payout, last_payout_at, refund_used,
+                    created_at, updated_at
+               FROM accounts
+              WHERE id = $1
+            "#,
+        )
+        .bind(id.0)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(row.map(|r| r.into_account()))
     }
 
-    fn put(&self, account: Account) -> Result<(), Error> {
+    async fn put(&self, account: Account) -> Result<(), Error> {
         let row = AccountRow::from_account(&account);
-        self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                  INSERT INTO accounts
-                     (id, tenant_id, account_type, status, challenge_id, plan,
-                      initial_balance, balance, equity, estimated_equity, estimated_balance,
-                      peak_equity, peak_balance,
-                      started_at, deadline, day_start_balance, trading_day_index,
-                      active_trading_days, day_counted_today, today_realized_pnl,
-                      total_realized_pnl, total_commissions, total_swaps,
-                      largest_day_profit, largest_day_loss, sum_positive_days_profit,
-                      day_start_equity, current_trading_day_start,
-                      target_reached_at, target_reached_on_day,
-                      version, last_tick_ts, last_trade_at, payout_count,
-                      balance_at_last_payout, last_payout_at, refund_used,
-                      created_at, updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-                         $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
-                ON CONFLICT (id) DO UPDATE SET
-                   tenant_id = EXCLUDED.tenant_id,
-                   account_type = EXCLUDED.account_type,
-                   status = EXCLUDED.status,
-                   challenge_id = EXCLUDED.challenge_id,
-                   plan = EXCLUDED.plan,
-                   initial_balance = EXCLUDED.initial_balance,
-                   balance = EXCLUDED.balance,
-                   equity = EXCLUDED.equity,
-                   peak_equity = EXCLUDED.peak_equity,
-                   peak_balance = EXCLUDED.peak_balance,
-                   started_at = EXCLUDED.started_at,
-                   deadline = EXCLUDED.deadline,
-                   day_start_balance = EXCLUDED.day_start_balance,
-                   trading_day_index = EXCLUDED.trading_day_index,
-                   active_trading_days = EXCLUDED.active_trading_days,
-                   day_counted_today = EXCLUDED.day_counted_today,
-                   today_realized_pnl = EXCLUDED.today_realized_pnl,
-                   total_realized_pnl = EXCLUDED.total_realized_pnl,
-                   total_commissions = EXCLUDED.total_commissions,
-                   total_swaps = EXCLUDED.total_swaps,
-                   largest_day_profit = EXCLUDED.largest_day_profit,
-                   largest_day_loss = EXCLUDED.largest_day_loss,
-                   sum_positive_days_profit = EXCLUDED.sum_positive_days_profit,
-                    day_start_equity = EXCLUDED.day_start_equity,
-                    current_trading_day_start = EXCLUDED.current_trading_day_start,
-                    target_reached_at = EXCLUDED.target_reached_at,
-                    target_reached_on_day = EXCLUDED.target_reached_on_day,
-                    version = accounts.version + 1,
-                    last_tick_ts = EXCLUDED.last_tick_ts,
-                    last_trade_at = EXCLUDED.last_trade_at,
-                    payout_count = EXCLUDED.payout_count,
-                     balance_at_last_payout = EXCLUDED.balance_at_last_payout,
-                     last_payout_at = EXCLUDED.last_payout_at,
-                     refund_used = EXCLUDED.refund_used,
-                     updated_at = NOW()
-                 "#,
-            )
-             .bind(row.id)
-             .bind(row.tenant_id)
-             .bind(row.account_type)
-             .bind(row.status)
-             .bind(row.challenge_id)
-             .bind(row.plan)
-             .bind(row.initial_balance)
-             .bind(row.balance)
-             .bind(row.equity)
-             .bind(row.estimated_equity)
-             .bind(row.estimated_balance)
-             .bind(row.peak_equity)
-             .bind(row.peak_balance)
-             .bind(row.started_at)
-             .bind(row.deadline)
-             .bind(row.day_start_balance)
-             .bind(row.trading_day_index)
-             .bind(row.active_trading_days)
-             .bind(row.day_counted_today)
-             .bind(row.today_realized_pnl)
-             .bind(row.total_realized_pnl)
-             .bind(row.total_commissions)
-             .bind(row.total_swaps)
-             .bind(row.largest_day_profit)
-             .bind(row.largest_day_loss)
-             .bind(row.sum_positive_days_profit)
-             .bind(row.day_start_equity)
-             .bind(row.current_trading_day_start)
-             .bind(row.target_reached_at)
-             .bind(row.target_reached_on_day)
-             .bind(row.version)
-             .bind(row.last_tick_ts)
-             .bind(row.last_trade_at)
-             .bind(row.payout_count)
-             .bind(row.balance_at_last_payout)
-             .bind(row.last_payout_at)
-             .bind(row.refund_used)
-             .bind(row.created_at)
-             .bind(row.updated_at)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+        sqlx::query(
+            r#"
+              INSERT INTO accounts
+                 (id, tenant_id, account_type, status, challenge_id, plan,
+                  initial_balance, balance, equity, estimated_equity, estimated_balance,
+                  peak_equity, peak_balance,
+                  started_at, deadline, day_start_balance, trading_day_index,
+                  active_trading_days, day_counted_today, today_realized_pnl,
+                  total_realized_pnl, total_commissions, total_swaps,
+                  largest_day_profit, largest_day_loss, sum_positive_days_profit,
+                  day_start_equity, current_trading_day_start,
+                  target_reached_at, target_reached_on_day,
+                  version, last_tick_ts, last_trade_at, payout_count,
+                  balance_at_last_payout, last_payout_at, refund_used,
+                  created_at, updated_at)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                      $20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
+             ON CONFLICT (id) DO UPDATE SET
+                tenant_id = EXCLUDED.tenant_id,
+                account_type = EXCLUDED.account_type,
+                status = EXCLUDED.status,
+                challenge_id = EXCLUDED.challenge_id,
+                plan = EXCLUDED.plan,
+                initial_balance = EXCLUDED.initial_balance,
+                balance = EXCLUDED.balance,
+                equity = EXCLUDED.equity,
+                peak_equity = EXCLUDED.peak_equity,
+                peak_balance = EXCLUDED.peak_balance,
+                started_at = EXCLUDED.started_at,
+                deadline = EXCLUDED.deadline,
+                day_start_balance = EXCLUDED.day_start_balance,
+                trading_day_index = EXCLUDED.trading_day_index,
+                active_trading_days = EXCLUDED.active_trading_days,
+                day_counted_today = EXCLUDED.day_counted_today,
+                today_realized_pnl = EXCLUDED.today_realized_pnl,
+                total_realized_pnl = EXCLUDED.total_realized_pnl,
+                total_commissions = EXCLUDED.total_commissions,
+                total_swaps = EXCLUDED.total_swaps,
+                largest_day_profit = EXCLUDED.largest_day_profit,
+                largest_day_loss = EXCLUDED.largest_day_loss,
+                sum_positive_days_profit = EXCLUDED.sum_positive_days_profit,
+                day_start_equity = EXCLUDED.day_start_equity,
+                current_trading_day_start = EXCLUDED.current_trading_day_start,
+                target_reached_at = EXCLUDED.target_reached_at,
+                target_reached_on_day = EXCLUDED.target_reached_on_day,
+                version = accounts.version + 1,
+                last_tick_ts = EXCLUDED.last_tick_ts,
+                last_trade_at = EXCLUDED.last_trade_at,
+                payout_count = EXCLUDED.payout_count,
+                balance_at_last_payout = EXCLUDED.balance_at_last_payout,
+                last_payout_at = EXCLUDED.last_payout_at,
+                refund_used = EXCLUDED.refund_used,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.tenant_id)
+        .bind(row.account_type)
+        .bind(row.status)
+        .bind(row.challenge_id)
+        .bind(row.plan)
+        .bind(row.initial_balance)
+        .bind(row.balance)
+        .bind(row.equity)
+        .bind(row.estimated_equity)
+        .bind(row.estimated_balance)
+        .bind(row.peak_equity)
+        .bind(row.peak_balance)
+        .bind(row.started_at)
+        .bind(row.deadline)
+        .bind(row.day_start_balance)
+        .bind(row.trading_day_index)
+        .bind(row.active_trading_days)
+        .bind(row.day_counted_today)
+        .bind(row.today_realized_pnl)
+        .bind(row.total_realized_pnl)
+        .bind(row.total_commissions)
+        .bind(row.total_swaps)
+        .bind(row.largest_day_profit)
+        .bind(row.largest_day_loss)
+        .bind(row.sum_positive_days_profit)
+        .bind(row.day_start_equity)
+        .bind(row.current_trading_day_start)
+        .bind(row.target_reached_at)
+        .bind(row.target_reached_on_day)
+        .bind(row.version)
+        .bind(row.last_tick_ts)
+        .bind(row.last_trade_at)
+        .bind(row.payout_count)
+        .bind(row.balance_at_last_payout)
+        .bind(row.last_payout_at)
+        .bind(row.refund_used)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(())
     }
 
-    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
+    async fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
         let row = AccountRow::from_account(&account);
-        let result = self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                 UPDATE accounts
-                    SET status = $2,
-                        balance = $3,
-                        equity = $4,
-                        estimated_equity = $5,
-                        estimated_balance = $6,
-                        peak_equity = $7,
-                        peak_balance = $8,
-                        day_start_balance = $9,
-                        trading_day_index = $10,
-                        active_trading_days = $11,
-                        day_counted_today = $12,
-                        today_realized_pnl = $13,
-                        total_realized_pnl = $14,
-                        total_commissions = $15,
-                        total_swaps = $16,
-                        largest_day_profit = $17,
-                        largest_day_loss = $18,
-                        sum_positive_days_profit = $19,
-                        day_start_equity = $20,
-                        current_trading_day_start = $21,
-                        target_reached_at = $22,
-                        target_reached_on_day = $23,
-                        last_tick_ts = $24,
-                        last_trade_at = $25,
-                        payout_count = $26,
-                        balance_at_last_payout = $27,
-                        last_payout_at = $28,
-                        refund_used = $29,
-                        version = version + 1,
-                        updated_at = NOW()
-                 WHERE id = $1 AND version = $30
-                "#,
-            )
-            .bind(row.id)
-            .bind(row.status)
-            .bind(row.balance)
-            .bind(row.equity)
-            .bind(row.estimated_equity)
-            .bind(row.estimated_balance)
-            .bind(row.peak_equity)
-            .bind(row.peak_balance)
-            .bind(row.day_start_balance)
-            .bind(row.trading_day_index)
-            .bind(row.active_trading_days)
-            .bind(row.day_counted_today)
-            .bind(row.today_realized_pnl)
-            .bind(row.total_realized_pnl)
-            .bind(row.total_commissions)
-            .bind(row.total_swaps)
-            .bind(row.largest_day_profit)
-            .bind(row.largest_day_loss)
-            .bind(row.sum_positive_days_profit)
-            .bind(row.day_start_equity)
-            .bind(row.current_trading_day_start)
-            .bind(row.target_reached_at)
-            .bind(row.target_reached_on_day)
-            .bind(row.last_tick_ts)
-            .bind(row.last_trade_at)
-            .bind(row.payout_count)
-            .bind(row.balance_at_last_payout)
-            .bind(row.last_payout_at)
-            .bind(row.refund_used)
-            .bind(expected_version as i64)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+        let result = sqlx::query(
+            r#"
+             UPDATE accounts
+                SET status = $2,
+                    balance = $3,
+                    equity = $4,
+                    estimated_equity = $5,
+                    estimated_balance = $6,
+                    peak_equity = $7,
+                    peak_balance = $8,
+                    day_start_balance = $9,
+                    trading_day_index = $10,
+                    active_trading_days = $11,
+                    day_counted_today = $12,
+                    today_realized_pnl = $13,
+                    total_realized_pnl = $14,
+                    total_commissions = $15,
+                    total_swaps = $16,
+                    largest_day_profit = $17,
+                    largest_day_loss = $18,
+                    sum_positive_days_profit = $19,
+                    day_start_equity = $20,
+                    current_trading_day_start = $21,
+                    target_reached_at = $22,
+                    target_reached_on_day = $23,
+                    last_tick_ts = $24,
+                    last_trade_at = $25,
+                    payout_count = $26,
+                    balance_at_last_payout = $27,
+                    last_payout_at = $28,
+                    refund_used = $29,
+                    version = version + 1,
+                    updated_at = NOW()
+             WHERE id = $1 AND version = $30
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.status)
+        .bind(row.balance)
+        .bind(row.equity)
+        .bind(row.estimated_equity)
+        .bind(row.estimated_balance)
+        .bind(row.peak_equity)
+        .bind(row.peak_balance)
+        .bind(row.day_start_balance)
+        .bind(row.trading_day_index)
+        .bind(row.active_trading_days)
+        .bind(row.day_counted_today)
+        .bind(row.today_realized_pnl)
+        .bind(row.total_realized_pnl)
+        .bind(row.total_commissions)
+        .bind(row.total_swaps)
+        .bind(row.largest_day_profit)
+        .bind(row.largest_day_loss)
+        .bind(row.sum_positive_days_profit)
+        .bind(row.day_start_equity)
+        .bind(row.current_trading_day_start)
+        .bind(row.target_reached_at)
+        .bind(row.target_reached_on_day)
+        .bind(row.last_tick_ts)
+        .bind(row.last_trade_at)
+        .bind(row.payout_count)
+        .bind(row.balance_at_last_payout)
+        .bind(row.last_payout_at)
+        .bind(row.refund_used)
+        .bind(expected_version as i64)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         if result.rows_affected() == 1 {
             Ok(())
@@ -326,231 +292,213 @@ impl AccountStore for PostgresStore {
         }
     }
 
-    fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
-        self.runtimes.block_on(async {
-            sqlx::query("DELETE FROM accounts WHERE id = $1 AND tenant_id = $2")
-                .bind(id.0)
-                .bind(tenant_id.0)
-                .execute(self.pool.as_ref())
-                .await
-                .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+    async fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
+        sqlx::query("DELETE FROM accounts WHERE id = $1 AND tenant_id = $2")
+            .bind(id.0)
+            .bind(tenant_id.0)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
         Ok(())
     }
 
-    fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
-        let rows = self.runtimes.block_on(async {
-            sqlx::query_as::<_, PositionRow>(
-                r#"
-                SELECT id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
-                       status, opened_at, closed_at, closed_price, realized_pnl,
-                       swap, commission, stop_loss, take_profit, magic, comment, metadata, created_at, updated_at
-                  FROM positions
-                 WHERE account_id = $1 AND status = 'Open'
-                "#,
-            )
-            .bind(id.0)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+    async fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
+        let rows = sqlx::query_as::<_, PositionRow>(
+            r#"
+            SELECT id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
+                   status, opened_at, closed_at, closed_price, realized_pnl,
+                   swap, commission, stop_loss, take_profit, magic, comment, metadata, created_at, updated_at
+              FROM positions
+             WHERE account_id = $1 AND status = 'Open'
+            "#,
+        )
+        .bind(id.0)
+    .fetch_all(self.pool.as_ref())
+    .await
+    .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    fn add_position(&self, position: Position) -> Result<(), Error> {
+    async fn add_position(&self, position: Position) -> Result<(), Error> {
         let row = PositionRow::from(position);
-        self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                INSERT INTO positions
-                  (id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
-                   status, opened_at, closed_at, realized_pnl,
-                   swap, commission, stop_loss, take_profit, magic, comment,
-                   created_at, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-                "#,
-            )
-            .bind(row.id)
-            .bind(row.account_id)
-            .bind(row.symbol)
-            .bind(row.side)
-            .bind(row.opened_quantity)
-            .bind(row.open_quantity)
-            .bind(row.avg_entry_price)
-            .bind(row.status)
-            .bind(row.opened_at)
-            .bind(row.closed_at)
-            .bind(row.realized_pnl)
-            .bind(row.swap)
-            .bind(row.commission)
-            .bind(row.stop_loss)
-            .bind(row.take_profit)
-            .bind(row.magic)
-            .bind(row.comment)
-            .bind(row.created_at)
-            .bind(row.updated_at)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+        sqlx::query(
+            r#"
+            INSERT INTO positions
+              (id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
+               status, opened_at, closed_at, realized_pnl,
+               swap, commission, stop_loss, take_profit, magic, comment,
+               created_at, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.account_id)
+        .bind(row.symbol)
+        .bind(row.side)
+        .bind(row.opened_quantity)
+        .bind(row.open_quantity)
+        .bind(row.avg_entry_price)
+        .bind(row.status)
+        .bind(row.opened_at)
+        .bind(row.closed_at)
+        .bind(row.realized_pnl)
+        .bind(row.swap)
+        .bind(row.commission)
+        .bind(row.stop_loss)
+        .bind(row.take_profit)
+        .bind(row.magic)
+        .bind(row.comment)
+        .bind(row.created_at)
+        .bind(row.updated_at)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(())
     }
 
-    fn update_position(&self, position: Position) -> Result<(), Error> {
+    async fn update_position(&self, position: Position) -> Result<(), Error> {
         let row = PositionRow::from(position);
-        self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                UPDATE positions
-                   SET account_id = $2,
-                       symbol = $3,
-                       side = $4,
-                       opened_quantity = $5,
-                       open_quantity = $6,
-                       avg_entry_price = $7,
-                       status = $8,
-                       opened_at = $9,
-                       closed_at = $10,
-                       realized_pnl = $11,
-                       swap = $12,
-                       commission = $13,
-                       stop_loss = $14,
-                       take_profit = $15,
-                       magic = $16,
-                       comment = $17,
-                       updated_at = NOW()
-                 WHERE id = $1
-                "#,
-            )
-            .bind(row.id)
-            .bind(row.account_id)
-            .bind(row.symbol)
-            .bind(row.side)
-            .bind(row.opened_quantity)
-            .bind(row.open_quantity)
-            .bind(row.avg_entry_price)
-            .bind(row.status)
-            .bind(row.opened_at)
-            .bind(row.closed_at)
-            .bind(row.realized_pnl)
-            .bind(row.swap)
-            .bind(row.commission)
-            .bind(row.stop_loss)
-            .bind(row.take_profit)
-            .bind(row.magic)
-            .bind(row.comment)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+        sqlx::query(
+            r#"
+            UPDATE positions
+               SET account_id = $2,
+                   symbol = $3,
+                   side = $4,
+                   opened_quantity = $5,
+                   open_quantity = $6,
+                   avg_entry_price = $7,
+                   status = $8,
+                   opened_at = $9,
+                   closed_at = $10,
+                   realized_pnl = $11,
+                   swap = $12,
+                   commission = $13,
+                   stop_loss = $14,
+                   take_profit = $15,
+                   magic = $16,
+                   comment = $17,
+                   updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.account_id)
+        .bind(row.symbol)
+        .bind(row.side)
+        .bind(row.opened_quantity)
+        .bind(row.open_quantity)
+        .bind(row.avg_entry_price)
+        .bind(row.status)
+        .bind(row.closed_at)
+        .bind(row.realized_pnl)
+        .bind(row.swap)
+        .bind(row.commission)
+        .bind(row.stop_loss)
+        .bind(row.take_profit)
+        .bind(row.magic)
+        .bind(row.comment)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(())
     }
 
-    fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
+    async fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
         let now = chrono::Utc::now();
-        self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                UPDATE positions
-                   SET status = 'closed',
-                       closed_at = $2,
-                       updated_at = NOW()
-                 WHERE id = $1
-                "#,
-            )
-            .bind(position_id.0)
-            .bind(now)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+        sqlx::query(
+            r#"
+            UPDATE positions
+               SET status = 'closed',
+                   closed_at = $2,
+                   updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(position_id.0)
+        .bind(now)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(())
     }
 
-    fn today_trades_since(
+    async fn today_trades_since(
         &self,
         id: AccountId,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<Trade>, Error> {
-        let rows = self.runtimes.block_on(async {
-            sqlx::query_as::<_, TradeRow>(
-                r#"
-                SELECT id, account_id, symbol, side, trade_side, price, quantity,
-                       commission, swap, executed_at, position_id, realized_pnl,
-                       exit_price, closed_quantity, entry_price, comment, created_at
-                  FROM trades
-                 WHERE account_id = $1 AND executed_at >= $2
-                 ORDER BY executed_at ASC
-                "#,
-            )
-            .bind(id.0)
-            .bind(since)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
-
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
-        let rows = self.runtimes.block_on(async {
-            sqlx::query_as::<_, TradeRow>(
-                r#"
-                SELECT id, account_id, symbol, side, trade_side, price, quantity,
-                       commission, swap, executed_at, position_id, realized_pnl,
-                       exit_price, closed_quantity, entry_price, comment, created_at
-                  FROM trades
-                 WHERE account_id = $1
-                 ORDER BY executed_at ASC
-                "#,
-            )
-            .bind(id.0)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
-
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    fn add_trade(&self, trade: Trade) -> Result<(), Error> {
-        let row = TradeRow::from(trade);
-        self.runtimes.block_on(async {
-            sqlx::query(
-                r#"
-                INSERT INTO trades
-                  (id, account_id, symbol, side, trade_side, price, quantity,
+        let rows = sqlx::query_as::<_, TradeRow>(
+            r#"
+            SELECT id, account_id, symbol, side, trade_side, price, quantity,
                    commission, swap, executed_at, position_id, realized_pnl,
-                   exit_price, closed_quantity, entry_price, comment, created_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-                "#,
-            )
-            .bind(row.id)
-            .bind(row.account_id)
-            .bind(row.symbol)
-            .bind(row.side)
-            .bind(row.trade_side)
-            .bind(row.price)
-            .bind(row.quantity)
-            .bind(row.commission)
-            .bind(row.swap)
-            .bind(row.executed_at)
-            .bind(row.position_id)
-            .bind(row.realized_pnl)
-            .bind(row.exit_price)
-            .bind(row.closed_quantity)
-            .bind(row.entry_price)
-            .bind(row.comment)
-            .bind(row.created_at)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        })?;
+                   exit_price, closed_quantity, entry_price, comment, created_at
+              FROM trades
+             WHERE account_id = $1 AND executed_at >= $2
+             ORDER BY executed_at ASC
+            "#,
+        )
+        .bind(id.0)
+    .bind(since)
+    .fetch_all(self.pool.as_ref())
+    .await
+    .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
+        let rows = sqlx::query_as::<_, TradeRow>(
+            r#"
+            SELECT id, account_id, symbol, side, trade_side, price, quantity,
+                   commission, swap, executed_at, position_id, realized_pnl,
+                   exit_price, closed_quantity, entry_price, comment, created_at
+              FROM trades
+             WHERE account_id = $1
+             ORDER BY executed_at ASC
+            "#,
+        )
+        .bind(id.0)
+    .fetch_all(self.pool.as_ref())
+    .await
+    .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    async fn add_trade(&self, trade: Trade) -> Result<(), Error> {
+        let row = TradeRow::from(trade);
+        sqlx::query(
+            r#"
+            INSERT INTO trades
+              (id, account_id, symbol, side, trade_side, price, quantity,
+               commission, swap, executed_at, position_id, realized_pnl,
+               exit_price, closed_quantity, entry_price, comment, created_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.account_id)
+        .bind(row.symbol)
+        .bind(row.side)
+        .bind(row.trade_side)
+        .bind(row.price)
+        .bind(row.quantity)
+        .bind(row.swap)
+        .bind(row.executed_at)
+        .bind(row.position_id)
+        .bind(row.realized_pnl)
+        .bind(row.exit_price)
+        .bind(row.closed_quantity)
+        .bind(row.entry_price)
+        .bind(row.comment)
+        .bind(row.created_at)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(())
     }
@@ -944,7 +892,6 @@ impl From<Trade> for TradeRow {
 #[derive(Clone)]
 pub struct PostgresIdempotencyStore {
     pool: Arc<PgPool>,
-    runtimes: PostgresRuntimes,
 }
 
 impl PostgresIdempotencyStore {
@@ -952,13 +899,13 @@ impl PostgresIdempotencyStore {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self {
             pool,
-            runtimes: PostgresRuntimes::default(),
         }
     }
 }
 
+#[async_trait]
 impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
-    fn check(
+    async fn check(
         &self,
         tenant_id: crate::tenant::TenantId,
         endpoint: &str,
@@ -966,8 +913,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         request_body: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let outcome = self.runtimes.block_on(async {
-            sqlx::query_as::<_, IdempotencyEntryRow>(
+        let row = sqlx::query_as::<_, IdempotencyEntryRow>(
                 r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
@@ -981,23 +927,22 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .bind(key)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| Error::Persistence(e.to_string()))
-        });
+            .map_err(|e| Error::Persistence(e.to_string()));
 
-        match outcome {
+        match row {
             Ok(Some(row)) => {
                 if row.body_hash == body_hash {
-                    IdempotencyOutcome::Replay(row.response)
+                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
                 } else {
-                    IdempotencyOutcome::Conflict
+                    crate::api::idempotency::IdempotencyOutcome::Conflict
                 }
             }
-            Ok(None) => IdempotencyOutcome::Fresh,
-            Err(_) => IdempotencyOutcome::Error,
+            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
         }
     }
 
-    fn check_and_remember(
+    async fn check_and_remember(
         &self,
         tenant_id: crate::tenant::TenantId,
         endpoint: &str,
@@ -1006,8 +951,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         response: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let outcome: Result<IdempotencyOutcome, Error> = self.runtimes.block_on(async {
-            let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
+        let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
                 r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
@@ -1021,19 +965,19 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .bind(key)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| Error::Persistence(e.to_string()))?;
+            .map_err(|e| Error::Persistence(e.to_string()));
 
-            match existing {
-                Some(row) if row.body_hash != body_hash => {
-                    return Ok(IdempotencyOutcome::Conflict);
-                }
-                Some(row) => {
-                    return Ok(IdempotencyOutcome::Replay(row.response));
-                }
-                None => {}
+        match existing {
+            Ok(Some(row)) if row.body_hash != body_hash => {
+                return crate::api::idempotency::IdempotencyOutcome::Conflict;
             }
+            Ok(Some(row)) => {
+                return crate::api::idempotency::IdempotencyOutcome::Replay(row.response);
+            }
+            _ => {}
+        }
 
-            sqlx::query(
+        let insert = sqlx::query(
                 r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
@@ -1048,15 +992,15 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .execute(self.pool.as_ref())
             .await
             .map(|_| ())
-            .map_err(|e| Error::Persistence(e.to_string()))?;
+            .map_err(|e| Error::Persistence(e.to_string()));
 
-            Ok(IdempotencyOutcome::Fresh)
-        });
-
-        outcome.unwrap_or(IdempotencyOutcome::Error)
+        match insert {
+            Ok(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
+        }
     }
 
-    fn remember(
+    async fn remember(
         &self,
         tenant_id: crate::tenant::TenantId,
         endpoint: &str,
@@ -1065,8 +1009,7 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         response: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let result: Result<IdempotencyOutcome, Error> = self.runtimes.block_on(async {
-            let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
+        let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
                 r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
@@ -1080,16 +1023,16 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .bind(key)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| Error::Persistence(e.to_string()))?;
+            .map_err(|e| Error::Persistence(e.to_string()));
 
-            if let Some(row) = existing {
-                if row.body_hash != body_hash {
-                    return Ok(IdempotencyOutcome::Conflict);
-                }
-                return Ok(IdempotencyOutcome::Replay(row.response));
+        if let Ok(Some(row)) = existing {
+            if row.body_hash != body_hash {
+                return crate::api::idempotency::IdempotencyOutcome::Conflict;
             }
+            return crate::api::idempotency::IdempotencyOutcome::Replay(row.response);
+        }
 
-            sqlx::query(
+        let insert = sqlx::query(
                 r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
@@ -1104,12 +1047,12 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
             .execute(self.pool.as_ref())
             .await
             .map(|_| ())
-            .map_err(|e| Error::Persistence(e.to_string()))?;
+            .map_err(|e| Error::Persistence(e.to_string()));
 
-            Ok(IdempotencyOutcome::Fresh)
-        });
-
-        result.unwrap_or(IdempotencyOutcome::Error)
+        match insert {
+            Ok(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+            Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
+        }
     }
 }
 
@@ -1130,7 +1073,6 @@ fn hash_body(body: &str) -> String {
 #[derive(Clone)]
 pub struct PostgresRulePackStore {
     pool: Arc<PgPool>,
-    runtimes: PostgresRuntimes,
 }
 
 impl PostgresRulePackStore {
@@ -1138,19 +1080,18 @@ impl PostgresRulePackStore {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self {
             pool,
-            runtimes: PostgresRuntimes::default(),
         }
     }
 }
 
+#[async_trait]
 impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore {
-    fn get_pack(
+    async fn get_pack(
         &self,
         tenant_id: crate::tenant::TenantId,
         id: &str,
     ) -> Result<Option<crate::rulepack::RulePack>, crate::core::Error> {
-        let row = self.runtimes.block_on(async {
-            sqlx::query_as::<_, RulePackRow>(
+        let row = sqlx::query_as::<_, RulePackRow>(
                 r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
                        rules, content_hash, created_at, updated_at
@@ -1163,15 +1104,13 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
             .bind(id)
             .fetch_optional(self.pool.as_ref())
             .await
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
-        });
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
 
-        row.map(|r| r.map(Into::into))
+        Ok(row.map(Into::into))
     }
 
-    fn insert_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
-        self.runtimes.block_on(async {
-            sqlx::query(
+    async fn insert_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
+        sqlx::query(
                 r#"
                 INSERT INTO rule_packs
                     (id, tenant_id, version, lifecycle, effective_from,
@@ -1190,12 +1129,10 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
             .await
             .map(|_| ())
             .map_err(|e| crate::core::Error::Persistence(e.to_string()))
-        })
     }
 
-    fn put_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
-        self.runtimes.block_on(async {
-            sqlx::query(
+    async fn put_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
+        sqlx::query(
                 r#"
                 UPDATE rule_packs
                    SET lifecycle = $3,
@@ -1217,15 +1154,13 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
             .await
             .map(|_| ())
             .map_err(|e| crate::core::Error::Persistence(e.to_string()))
-        })
     }
 
-    fn list_packs(
+    async fn list_packs(
         &self,
         tenant_id: crate::tenant::TenantId,
     ) -> Result<Vec<crate::rulepack::RulePack>, crate::core::Error> {
-        let rows = self.runtimes.block_on(async {
-            sqlx::query_as::<_, RulePackRow>(
+        let rows = sqlx::query_as::<_, RulePackRow>(
                 r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
                        rules, content_hash, created_at, updated_at
@@ -1237,10 +1172,9 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
             .bind(tenant_id.0)
             .fetch_all(self.pool.as_ref())
             .await
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
-        });
+            .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
 
-        rows.map(|r| r.into_iter().map(Into::into).collect())
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 }
 

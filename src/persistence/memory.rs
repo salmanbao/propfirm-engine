@@ -1,5 +1,6 @@
 //! In-memory store implementation (no persistence).
 
+use async_trait::async_trait;
 use crate::core::account::Account;
 use crate::core::ids::{AccountId, PositionId};
 use crate::core::position::Position;
@@ -25,11 +26,12 @@ impl InMemoryStore {
     }
 }
 
+#[async_trait]
 impl AccountStore for InMemoryStore {
-    fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
+    async fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
         Ok(self.accounts.read().get(&id).cloned())
     }
-    fn get_for_tenant(
+    async fn get_for_tenant(
         &self,
         tenant_id: crate::tenant::TenantId,
         id: AccountId,
@@ -41,7 +43,7 @@ impl AccountStore for InMemoryStore {
             .filter(|a| a.tenant_id == tenant_id)
             .cloned())
     }
-    fn put(&self, account: Account) -> Result<(), Error> {
+    async fn put(&self, account: Account) -> Result<(), Error> {
         // Last-write-wins path; bumps version unconditionally.
         let mut accounts = self.accounts.write();
         let mut updated = account;
@@ -61,7 +63,7 @@ impl AccountStore for InMemoryStore {
     /// **P1-8 fix**: in-memory optimistic concurrency check. Reads the
     /// persisted version and rejects the write if it doesn't match
     /// `expected_version`.
-    fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
+    async fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
         let mut accounts = self.accounts.write();
         let existing = accounts
             .get(&account.id)
@@ -79,7 +81,7 @@ impl AccountStore for InMemoryStore {
         *accounts.get_mut(&account.id).unwrap() = updated;
         Ok(())
     }
-    fn delete(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<(), Error> {
+    async fn delete(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<(), Error> {
         let account = self.accounts.read().get(&id).cloned();
         if let Some(account) = account {
             if account.tenant_id != tenant_id {
@@ -91,7 +93,7 @@ impl AccountStore for InMemoryStore {
         self.trades.write().remove(&id);
         Ok(())
     }
-    fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
+    async fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {
         Ok(self
             .positions
             .read()
@@ -102,13 +104,13 @@ impl AccountStore for InMemoryStore {
             .filter(super::super::core::position::Position::is_open)
             .collect())
     }
-    fn add_position(&self, position: Position) -> Result<(), Error> {
+    async fn add_position(&self, position: Position) -> Result<(), Error> {
         let mut w = self.positions.write();
         let v = w.entry(position.account_id).or_default();
         v.push(position);
         Ok(())
     }
-    fn update_position(&self, position: Position) -> Result<(), Error> {
+    async fn update_position(&self, position: Position) -> Result<(), Error> {
         let mut w = self.positions.write();
         let v = w.entry(position.account_id).or_default();
         if let Some(idx) = v.iter().position(|p| p.id == position.id) {
@@ -118,7 +120,7 @@ impl AccountStore for InMemoryStore {
         }
         Ok(())
     }
-    fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
+    async fn close_position(&self, position_id: PositionId) -> Result<(), Error> {
         let mut w = self.positions.write();
         for v in w.values_mut() {
             if let Some(idx) = v.iter().position(|p| p.id == position_id) {
@@ -129,7 +131,7 @@ impl AccountStore for InMemoryStore {
         }
         Err(Error::NotFound(format!("position {position_id} not found")))
     }
-    fn today_trades_since(
+    async fn today_trades_since(
         &self,
         id: AccountId,
         since: chrono::DateTime<chrono::Utc>,
@@ -144,10 +146,10 @@ impl AccountStore for InMemoryStore {
             .filter(|t| t.executed_at >= since)
             .collect())
     }
-    fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
+    async fn all_trades(&self, id: AccountId) -> Result<Vec<Trade>, Error> {
         Ok(self.trades.read().get(&id).cloned().unwrap_or_default())
     }
-    fn add_trade(&self, trade: Trade) -> Result<(), Error> {
+    async fn add_trade(&self, trade: Trade) -> Result<(), Error> {
         let mut w = self.trades.write();
         w.entry(trade.account_id).or_default().push(trade);
         Ok(())

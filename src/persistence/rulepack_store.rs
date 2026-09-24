@@ -23,23 +23,26 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 /// Storage trait for versioned rule packs (P0.7). Same structural shape
 /// as [`crate::persistence::traits::AccountStore`]: `Send + Sync`,
 /// tenant-scoped reads, typed errors.
+#[async_trait]
 pub trait RulePackStore: Send + Sync {
     /// Reads a pack by id. Tenant-scoped (P1-9): a pack belonging to a
     /// different tenant reads as not-found.
-    fn get_pack(&self, tenant_id: TenantId, id: &str) -> Result<Option<RulePack>, Error>;
+    async fn get_pack(&self, tenant_id: TenantId, id: &str) -> Result<Option<RulePack>, Error>;
 
     /// Inserts a pack. Fails with a conflict if the id already exists.
-    fn insert_pack(&self, pack: RulePack) -> Result<(), Error>;
+    async fn insert_pack(&self, pack: RulePack) -> Result<(), Error>;
 
     /// Replaces an existing pack (used for draft updates). Fails if the
     /// pack does not exist.
-    fn put_pack(&self, pack: RulePack) -> Result<(), Error>;
+    async fn put_pack(&self, pack: RulePack) -> Result<(), Error>;
 
     /// Returns all packs for a tenant (newest version first).
-    fn list_packs(&self, tenant_id: TenantId) -> Result<Vec<RulePack>, Error>;
+    async fn list_packs(&self, tenant_id: TenantId) -> Result<Vec<RulePack>, Error>;
 }
 
 /// In-memory [`RulePackStore`] implementation (P0.7).
@@ -55,8 +58,9 @@ impl InMemoryRulePackStore {
     }
 }
 
+#[async_trait]
 impl RulePackStore for InMemoryRulePackStore {
-    fn get_pack(&self, tenant_id: TenantId, id: &str) -> Result<Option<RulePack>, Error> {
+    async fn get_pack(&self, tenant_id: TenantId, id: &str) -> Result<Option<RulePack>, Error> {
         Ok(self
             .packs
             .read()
@@ -65,7 +69,7 @@ impl RulePackStore for InMemoryRulePackStore {
             .cloned())
     }
 
-    fn insert_pack(&self, pack: RulePack) -> Result<(), Error> {
+    async fn insert_pack(&self, pack: RulePack) -> Result<(), Error> {
         let mut w = self.packs.write();
         if w.contains_key(&pack.id) {
             return Err(Error::InvalidState(format!(
@@ -77,7 +81,7 @@ impl RulePackStore for InMemoryRulePackStore {
         Ok(())
     }
 
-    fn put_pack(&self, pack: RulePack) -> Result<(), Error> {
+    async fn put_pack(&self, pack: RulePack) -> Result<(), Error> {
         let mut w = self.packs.write();
         if !w.contains_key(&pack.id) {
             return Err(Error::NotFound(format!("rule pack {}", pack.id)));
@@ -86,7 +90,7 @@ impl RulePackStore for InMemoryRulePackStore {
         Ok(())
     }
 
-    fn list_packs(&self, tenant_id: TenantId) -> Result<Vec<RulePack>, Error> {
+    async fn list_packs(&self, tenant_id: TenantId) -> Result<Vec<RulePack>, Error> {
         let mut packs: Vec<RulePack> = self
             .packs
             .read()
