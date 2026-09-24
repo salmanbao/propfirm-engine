@@ -11,7 +11,8 @@ use propfirm::persistence::memory::InMemoryStore;
 use propfirm::persistence::traits::AccountStore;
 use propfirm::prelude::*;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     println!("=== Prop Firm Engine – CLI Demo ===\n");
 
     // 1. Build the challenge plan and account.
@@ -34,17 +35,19 @@ fn main() -> anyhow::Result<()> {
     // 2. Build the pipeline.
     let evaluator = Evaluator::new(&plan);
     let store = InMemoryStore::new();
-    store.put(account.clone())?;
+    store.put(account.clone()).await?;
     let notifier = LogNotifier::new();
     let mut pipeline = Pipeline::new(evaluator, store, notifier);
 
     // 3. Start the account.
     let now = chrono::Utc::now();
-    let result = pipeline.process_for_tenant(
-        tenant_id,
-        account.id,
-        PipelineEvent::AccountStarted { at: now },
-    )?;
+    let result = pipeline
+        .process_for_tenant(
+            tenant_id,
+            account.id,
+            PipelineEvent::AccountStarted { at: now },
+        )
+        .await?;
     println!(
         "\n[Started] decision={:?} events={}",
         result.snapshot.decision.kind,
@@ -69,11 +72,13 @@ fn main() -> anyhow::Result<()> {
         filled_quantity: Quantity::ZERO,
         avg_fill_price: None,
     };
-    let result = pipeline.process_for_tenant(
-        tenant_id,
-        account.id,
-        PipelineEvent::OrderSubmitted { order },
-    )?;
+    let result = pipeline
+        .process_for_tenant(
+            tenant_id,
+            account.id,
+            PipelineEvent::OrderSubmitted { order },
+        )
+        .await?;
     println!(
         "[Order] decision={:?} passed={} violations={}",
         result.snapshot.decision.kind,
@@ -95,15 +100,17 @@ fn main() -> anyhow::Result<()> {
     // synthesize a broker-reported equity that matches our expected value.
     let broker_equity = Money(dec!(10_200));
     let broker_balance = Money(dec!(10_000));
-    let result = pipeline.process_for_tenant(
-        tenant_id,
-        account.id,
-        PipelineEvent::Tick {
-            tick,
-            broker_equity,
-            broker_balance,
-        },
-    )?;
+    let result = pipeline
+        .process_for_tenant(
+            tenant_id,
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity,
+                broker_balance,
+            },
+        )
+        .await?;
     println!(
         "[Tick] equity={} balance={} daily_dd={}/{}",
         result.snapshot.account.equity,

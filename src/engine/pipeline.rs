@@ -187,20 +187,18 @@ where
     /// For strict tenant-scoped reads (e.g. when the caller doesn't
     /// trust the `account_id` to be globally unique within their store),
     /// use [`process_for_tenant`](Self::process_for_tenant) instead.
-    pub fn process(
+    pub async fn process(
         &mut self,
         account_id: crate::core::ids::AccountId,
         ev: PipelineEvent,
     ) -> crate::Result<PipelineResult> {
-        // Read the account (unscoped — account_id is UUIDv4 globally unique).
         let account = self
             .store
-            .get(account_id)?
+            .get(account_id)
+            .await?
             .ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
-        // Extract the account's own tenant_id; pass to the OCC-scoped
-        // process_for_tenant so the write uses put_with_version.
         let tenant_id = account.tenant_id;
-        self.process_with_loaded_account(account, tenant_id, ev)
+        self.process_with_loaded_account(account, tenant_id, ev).await
     }
 
     /// **P0-E fix**: tenant-scoped process. Reads via `get_for_tenant` so
@@ -208,7 +206,7 @@ where
     /// Writes via `put_with_version(expected_version)` so a concurrent
     /// writer between our read and write produces `Error::StateConflict`,
     /// which the caller must retry.
-    pub fn process_for_tenant(
+    pub async fn process_for_tenant(
         &mut self,
         tenant_id: crate::tenant::TenantId,
         account_id: crate::core::ids::AccountId,
@@ -216,13 +214,14 @@ where
     ) -> crate::Result<PipelineResult> {
         let account = self
             .store
-            .get_for_tenant(tenant_id, account_id)?
+            .get_for_tenant(tenant_id, account_id)
+            .await?
             .ok_or_else(|| {
                 crate::Error::NotFound(format!(
                     "account {account_id} not found for tenant {tenant_id}"
                 ))
             })?;
-        self.process_with_loaded_account(account, tenant_id, ev)
+        self.process_with_loaded_account(account, tenant_id, ev).await
     }
 
     /// Common path for `process` and `process_for_tenant` once the
@@ -239,7 +238,7 @@ where
         }
     }
 
-    fn process_with_loaded_account(
+    async fn process_with_loaded_account(
         &mut self,
         account: Account,
         _tenant_id: crate::tenant::TenantId,
@@ -250,10 +249,6 @@ where
         let mut state = AccountState::new(account);
         let mut events: Vec<DomainEvent> = Vec::new();
 
-        // P1.1 auto-rollover: if the event's timestamp falls in a new
-        // trading day compared to the account's current day, rollover
-        // automatically so correctness never depends on the caller
-        // sending DayRollover.
         if !matches!(ev, PipelineEvent::DayRollover { .. }) {
             let event_ts = ev.event_timestamp();
             let event_day_start = state.account.plan.trading_day_start(event_ts);
@@ -263,15 +258,19 @@ where
                 .unwrap_or_else(|| state.account.plan.trading_day_start(event_ts));
             if event_day_start > current_day_start {
                 let rollover_ts = event_ts;
-                // Advance through every missed trading day so the account
-                // cannot lag behind when events arrive several days late.
+                let mut first_rollover = true;
                 while state
                     .account
                     .current_trading_day_start
                     .map(|start| start < event_day_start)
                     .unwrap_or(true)
                 {
-                    let had_trades = !state.account.today_realized_pnl.0.is_zero();
+                    let had_trades = if first_rollover {
+                        !state.account.today_realized_pnl.0.is_zero()
+                    } else {
+                        false
+                    };
+                    first_rollover = false;
                     let next_start = state
                         .account
                         .plan
@@ -279,7 +278,7 @@ where
                     if next_start >= event_day_start {
                         state = state.rollover_day(had_trades, Some(event_ts));
                     } else {
-                        state = state.rollover_day(false, Some(next_start));
+                        state = state.rollover_day(had_trades, Some(next_start));
                     }
                 }
                 events.push(DomainEvent::new(
@@ -293,8 +292,7 @@ where
             }
         }
 
-        // Apply state transitions.
-        let applied = self.apply_event(state, &ev, &mut events)?;
+        let applied = self.apply_event(state, &ev, &mut events).await?;
         let (new_state, ctx_kind, open_positions, today_trades, recent_events) = (
             applied.state,
             applied.ctx_kind,
@@ -302,7 +300,6 @@ where
             applied.today_trades,
             applied.recent_events,
         );
-        // Build context
         let ctx = self.build_context(
             new_state.account.clone(),
             ctx_kind,
@@ -311,9 +308,7 @@ where
             &today_trades,
             recent_events,
         );
-        // Evaluate rules
         let result = self.evaluator.evaluate(&ctx)?;
-        // P0-2: post-evaluation state update.
         let mut final_state = new_state;
         if result.decision.is_target_hit() {
             final_state = final_state.mark_target_reached(ctx.server_time.ts());
@@ -339,9 +334,6 @@ where
                 },
                 ctx.server_time.ts(),
             ));
-            // §D.3: phase progression — when a phase's success conditions are
-            // met (target hit + min trading days), upgrade to the next phase.
-            // The new phase's limits take effect on the next evaluation.
             let from_phase = final_state.account.plan.phase;
             let to_phase = Self::next_phase_for(&from_phase);
             if let Ok(upped) = final_state.clone().upgrade_phase(to_phase) {
@@ -367,9 +359,6 @@ where
                 },
                 ctx.server_time.ts(),
             ));
-            // P1.10: emit a LiquidationInstruction when the decision is
-            // Liquidate or Emergency. The bridge consumes this event and
-            // closes all listed positions on the broker side.
             if matches!(
                 result.decision.kind,
                 crate::engine::decision::DecisionKind::Liquidate
@@ -415,29 +404,20 @@ where
                 ));
             }
         }
-        // P0-E: do NOT bump version here — the store is the single owner of
-        // version increments. `put_with_version` will bump on success or
-        // return `StateConflict` if another writer beat us.
-        // P1-14: stamp last_tick_ts if this was a tick event.
         match &ev {
             PipelineEvent::Tick { tick, .. } | PipelineEvent::TickEstimated { tick } => {
                 final_state.account.last_tick_ts = Some(tick.quote.ts);
             }
             _ => {}
         }
-        // Snapshot before write (so we can return it even on conflict-retry).
         let snap = Snapshot::new(&final_state.account, result.decision.clone());
-        // P0-E: persist via `put_with_version` so optimistic-concurrency
-        // conflicts are detected at the storage layer.
         self.store
-            .put_with_version(final_state.account.clone(), expected_version)?;
-        // Emit decision event
+            .put_with_version(final_state.account.clone(), expected_version)
+            .await?;
         let _decision_event = self.emit_decision_event(account_id, &result.decision, &mut events);
-        // Append events
         for e in &events {
             self.event_store.append(e.clone())?;
         }
-        // Notify on violations
         for v in result.violations() {
             self.notifier.notify_violation(v)?;
         }
@@ -448,7 +428,7 @@ where
         })
     }
 
-    fn apply_event(
+    async fn apply_event(
         &self,
         mut state: AccountState,
         ev: &PipelineEvent,
@@ -457,9 +437,12 @@ where
         use crate::rules::context::RuleContextKind::{
             OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
         };
-        let open_positions = self.store.open_positions(state.account.id)?;
+        let open_positions = self.store.open_positions(state.account.id).await?;
         let day_start = state.account.plan.trading_day_start(chrono::Utc::now());
-        let today_trades = self.store.today_trades_since(state.account.id, day_start)?;
+        let today_trades = self
+            .store
+            .today_trades_since(state.account.id, day_start)
+            .await?;
         let recent_events = self.event_store.recent(state.account.id, 50);
         match ev {
             PipelineEvent::AccountStarted { at } => {
@@ -647,8 +630,8 @@ where
                         override_record.account_id, state.account.id
                     )));
                 }
-                let mut events = self.event_store.all(state.account.id);
-                let clears_violation = events
+                let existing_events = self.event_store.all(state.account.id);
+                let clears_violation = existing_events
                     .iter()
                     .find_map(|e| match &e.kind {
                         crate::core::events::DomainEventKind::RuleViolated { violation } => {
