@@ -44,8 +44,8 @@ pub trait AccountStore: Send + Sync {
     /// and retry on conflict.
     fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error>;
 
-    /// Deletes an account.
-    fn delete(&self, id: AccountId) -> Result<(), Error>;
+    /// Deletes an account, scoped to a specific tenant.
+    fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error>;
 
     /// Returns all open positions for an account.
     fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error>;
@@ -92,8 +92,8 @@ impl AccountStore for Arc<dyn AccountStore> {
         self.as_ref().put_with_version(account, expected_version)
     }
 
-    fn delete(&self, id: AccountId) -> Result<(), Error> {
-        self.as_ref().delete(id)
+    fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
+        self.as_ref().delete(tenant_id, id)
     }
 
     fn open_positions(&self, id: AccountId) -> Result<Vec<Position>, Error> {

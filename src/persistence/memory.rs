@@ -79,7 +79,13 @@ impl AccountStore for InMemoryStore {
         *accounts.get_mut(&account.id).unwrap() = updated;
         Ok(())
     }
-    fn delete(&self, id: AccountId) -> Result<(), Error> {
+    fn delete(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<(), Error> {
+        let account = self.accounts.read().get(&id).cloned();
+        if let Some(account) = account {
+            if account.tenant_id != tenant_id {
+                return Ok(());
+            }
+        }
         self.accounts.write().remove(&id);
         self.positions.write().remove(&id);
         self.trades.write().remove(&id);

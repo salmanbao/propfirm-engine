@@ -326,10 +326,11 @@ impl AccountStore for PostgresStore {
         }
     }
 
-    fn delete(&self, id: AccountId) -> Result<(), Error> {
+    fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
         self.runtimes.block_on(async {
-            sqlx::query("DELETE FROM accounts WHERE id = $1")
+            sqlx::query("DELETE FROM accounts WHERE id = $1 AND tenant_id = $2")
                 .bind(id.0)
+                .bind(tenant_id.0)
                 .execute(self.pool.as_ref())
                 .await
                 .map_err(|e| Error::Persistence(e.to_string()))
@@ -1251,9 +1252,9 @@ struct RulePackRow {
     lifecycle: String,
     effective_from: chrono::DateTime<chrono::Utc>,
     rules: serde_json::Value,
-    content_hash: String,
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: chrono::DateTime<chrono::Utc>,
+    _content_hash: String,
+    _created_at: chrono::DateTime<chrono::Utc>,
+    _updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<RulePackRow> for crate::rulepack::RulePack {
