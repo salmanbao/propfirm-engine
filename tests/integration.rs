@@ -20,8 +20,8 @@ use propfirm::persistence::memory::InMemoryStore;
 use propfirm::persistence::traits::AccountStore;
 use propfirm::prelude::*;
 
-#[test]
-fn test_presets_validate() {
+#[tokio::test]
+async fn test_presets_validate() {
     ftmo_phase1().validate().expect("ftmo_phase1");
     ftmo_phase2().validate().expect("ftmo_phase2");
     ftmo_funded().validate().expect("ftmo_funded");
@@ -30,8 +30,8 @@ fn test_presets_validate() {
     surgetrader_plan().validate().expect("surgetrader");
 }
 
-#[test]
-fn test_account_start() {
+#[tokio::test]
+async fn test_account_start() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan);
     let account = account.start(chrono::Utc::now()).expect("start");
@@ -40,8 +40,8 @@ fn test_account_start() {
     assert!(account.deadline.is_some());
 }
 
-#[test]
-fn test_daily_drawdown_pass() {
+#[tokio::test]
+async fn test_daily_drawdown_pass() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -61,8 +61,8 @@ fn test_daily_drawdown_pass() {
     assert_eq!(result.decision.kind, DecisionKind::Pass);
 }
 
-#[test]
-fn test_daily_drawdown_breach() {
+#[tokio::test]
+async fn test_daily_drawdown_breach() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -88,8 +88,8 @@ fn test_daily_drawdown_breach() {
     );
 }
 
-#[test]
-fn test_max_drawdown_breach() {
+#[tokio::test]
+async fn test_max_drawdown_breach() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -113,8 +113,8 @@ fn test_max_drawdown_breach() {
     assert!(result.decision.kind.is_terminating());
 }
 
-#[test]
-fn test_profit_target_reached() {
+#[tokio::test]
+async fn test_profit_target_reached() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -158,8 +158,8 @@ fn test_profit_target_reached() {
     );
 }
 
-#[test]
-fn test_stop_loss_required() {
+#[tokio::test]
+async fn test_stop_loss_required() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -183,8 +183,8 @@ fn test_stop_loss_required() {
     );
 }
 
-#[test]
-fn test_hedging_blocked() {
+#[tokio::test]
+async fn test_hedging_blocked() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -219,8 +219,8 @@ fn test_hedging_blocked() {
     assert!(result.decision.kind.is_fail());
 }
 
-#[test]
-fn test_max_position_size() {
+#[tokio::test]
+async fn test_max_position_size() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -245,8 +245,8 @@ fn test_max_position_size() {
     );
 }
 
-#[test]
-fn test_max_open_positions() {
+#[tokio::test]
+async fn test_max_open_positions() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -282,8 +282,8 @@ fn test_max_open_positions() {
     assert!(result.decision.kind.is_fail());
 }
 
-#[test]
-fn test_min_trading_days_below() {
+#[tokio::test]
+async fn test_min_trading_days_below() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -296,8 +296,8 @@ fn test_min_trading_days_below() {
     let _ = result; // just ensure it runs without panicking
 }
 
-#[test]
-fn test_consistency_rule_warns() {
+#[tokio::test]
+async fn test_consistency_rule_warns() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -324,8 +324,8 @@ fn test_consistency_rule_warns() {
     );
 }
 
-#[test]
-fn test_pipeline_end_to_end() {
+#[tokio::test]
+async fn test_pipeline_end_to_end() {
     let mut plan = ftmo_phase1();
     // Make the test deterministic regardless of the day of week it runs on.
     plan.weekend_holding_allowed = true;
@@ -333,13 +333,14 @@ fn test_pipeline_end_to_end() {
     plan.news_trading_allowed = true;
     let account = Account::new(AccountId::new(), plan.clone());
     let store = InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let notifier = LogNotifier::new();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, store, notifier);
     let now = chrono::Utc::now();
     let result = pipeline
         .process(account.id, PipelineEvent::AccountStarted { at: now })
+        .await
         .unwrap();
     assert_eq!(result.snapshot.account.status, AccountStatus::Active);
     // Submit an order with SL/TP set
@@ -362,6 +363,7 @@ fn test_pipeline_end_to_end() {
     };
     let result = pipeline
         .process(account.id, PipelineEvent::OrderSubmitted { order })
+        .await
         .unwrap();
     assert!(
         result.passed(),
@@ -392,12 +394,13 @@ fn test_pipeline_end_to_end() {
                 broker_balance: account.balance,
             },
         )
+        .await
         .unwrap();
     assert!(result.passed());
 }
 
-#[test]
-fn test_account_state_apply_pnl() {
+#[tokio::test]
+async fn test_account_state_apply_pnl() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -433,8 +436,8 @@ fn test_account_state_apply_pnl() {
         state.account.largest_day_profit.0);
 }
 
-#[test]
-fn test_account_state_rollover() {
+#[tokio::test]
+async fn test_account_state_rollover() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -453,8 +456,8 @@ fn test_account_state_rollover() {
     assert_eq!(state.account.day_start_balance.0, dec!(10_100));
 }
 
-#[test]
-fn test_risk_metrics_smoke() {
+#[tokio::test]
+async fn test_risk_metrics_smoke() {
     let eq = vec![
         Money(dec!(10_000)),
         Money(dec!(10_200)),
@@ -470,8 +473,8 @@ fn test_risk_metrics_smoke() {
     assert_eq!(r.losing_trades, 1);
 }
 
-#[test]
-fn test_event_store_replay() {
+#[tokio::test]
+async fn test_event_store_replay() {
     use propfirm::core::events::{DomainEvent, DomainEventKind};
     use propfirm::events::store::EventStore;
     let store = EventStore::in_memory();
@@ -505,8 +508,8 @@ fn test_event_store_replay() {
     assert_eq!(replayed.status, AccountStatus::Active);
 }
 
-#[test]
-fn test_violation_validate() {
+#[tokio::test]
+async fn test_violation_validate() {
     use propfirm::core::ids::RuleId;
     use propfirm::core::violation::Violation;
     let v = Violation::new(
@@ -521,8 +524,8 @@ fn test_violation_validate() {
     v.validate().unwrap();
 }
 
-#[test]
-fn test_decision_aggregation() {
+#[tokio::test]
+async fn test_decision_aggregation() {
     use propfirm::core::ids::RuleId;
     use propfirm::rules::context::EvaluationScope;
     use propfirm::rules::traits::{RuleReport, RuleVerdict};
@@ -551,8 +554,8 @@ fn test_decision_aggregation() {
     assert_eq!(d.kind, DecisionKind::Warn);
 }
 
-#[test]
-fn test_position_unrealized_pnl() {
+#[tokio::test]
+async fn test_position_unrealized_pnl() {
     use propfirm::core::position::unrealized_pnl;
     let entry = Price(dec!(1.0800));
     let current = Price(dec!(1.0900));
@@ -561,8 +564,8 @@ fn test_position_unrealized_pnl() {
     assert_eq!(pnl.0, dec!(1000));
 }
 
-#[test]
-fn test_news_window_detection() {
+#[tokio::test]
+async fn test_news_window_detection() {
     // Friday 12:25 UTC – 5 minutes before NFP (12:30)
     use propfirm::rules::evaluators::news_trading::within_news_window;
     let friday_pre_news = chrono::DateTime::parse_from_rfc3339("2026-09-18T12:25:00Z")
@@ -576,8 +579,8 @@ fn test_news_window_detection() {
     assert!(within_news_window(sunday, 5).is_none());
 }
 
-#[test]
-fn test_copy_trading_detection() {
+#[tokio::test]
+async fn test_copy_trading_detection() {
     // REWRITTEN with the §A.2 cross-account fix (was: three same-account
     // events in recent_events — structurally self-referential). Copy
     // trading is now detected by correlating the trader's fill against a
@@ -631,8 +634,8 @@ fn test_copy_trading_detection() {
     );
 }
 
-#[test]
-fn test_time_limit_expired() {
+#[tokio::test]
+async fn test_time_limit_expired() {
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now() - chrono::Duration::days(40))
@@ -662,8 +665,8 @@ fn test_time_limit_expired() {
 // and must never silently change in future refactors.
 // ============================================================================
 
-#[test]
-fn p0_1_static_max_drawdown_does_not_breach_when_above_initial_floor() {
+#[tokio::test]
+async fn p0_1_static_max_drawdown_does_not_breach_when_above_initial_floor() {
     // Account grew to 105k then pulled back to 95k. Static max loss is
     // 10% of initial 100k → floor is 90k. 95k > 90k → NO breach.
     // The OLD code would have tripped because it measured dd from peak
@@ -702,8 +705,8 @@ fn p0_1_static_max_drawdown_does_not_breach_when_above_initial_floor() {
     );
 }
 
-#[test]
-fn p0_1_trailing_max_drawdown_does_breach_when_pullback_exceeds_trail() {
+#[tokio::test]
+async fn p0_1_trailing_max_drawdown_does_breach_when_pullback_exceeds_trail() {
     // Same scenario, but in trailing mode: peak=105k, current=95k, trail=10%
     // → floor = 105k - 10.5k = 94.5k. 95k > 94.5k → still OK.
     // But if current drops to 94k → 94k < 94.5k → BREACH.
@@ -733,8 +736,8 @@ fn p0_1_trailing_max_drawdown_does_breach_when_pullback_exceeds_trail() {
         result.decision.kind);
 }
 
-#[test]
-fn p0_2_target_reached_stays_pending_when_equity_dips_below() {
+#[tokio::test]
+async fn p0_2_target_reached_stays_pending_when_equity_dips_below() {
     // Trader hits target on day 1 of a 5-min-trading-day requirement.
     // Equity then dips back below target on day 2. The target_reached_at
     // timestamp must NOT be cleared — the account stays in
@@ -788,8 +791,8 @@ fn p0_2_target_reached_stays_pending_when_equity_dips_below() {
     );
 }
 
-#[test]
-fn p0_3_breach_beats_target_hit_on_same_tick() {
+#[tokio::test]
+async fn p0_3_breach_beats_target_hit_on_same_tick() {
     // Both MaxDrawdown breach and ProfitTarget hit on the same evaluation.
     // Per the binding spec, the breach MUST win — "breach wins, always".
     let plan = ftmo_phase1();
@@ -830,8 +833,8 @@ fn p0_3_breach_beats_target_hit_on_same_tick() {
     );
 }
 
-#[test]
-fn p0_4_reordering_rules_produces_same_decision() {
+#[tokio::test]
+async fn p0_4_reordering_rules_produces_same_decision() {
     // The SAME set of rules, registered in DIFFERENT orders, must produce
     // the SAME decision when both fire on the same tick. This is the
     // "one defensible answer" property — registration order cannot
@@ -911,8 +914,8 @@ fn p0_4_reordering_rules_produces_same_decision() {
 // P1 REGRESSION TESTS — broker-is-truth equity, stale ticks, etc.
 // ============================================================================
 
-#[test]
-fn p1_5_estimated_equity_does_not_terminate_account() {
+#[tokio::test]
+async fn p1_5_estimated_equity_does_not_terminate_account() {
     // Account breaches max drawdown, but the equity input is *estimated*
     // (e.g. an interim quote between broker sync windows). The breach
     // rule must DOWNGRADE to Warn — the account must NOT be terminated
@@ -955,8 +958,8 @@ fn p1_5_estimated_equity_does_not_terminate_account() {
     );
 }
 
-#[test]
-fn p1_5_broker_reported_equity_terminates_on_real_breach() {
+#[tokio::test]
+async fn p1_5_broker_reported_equity_terminates_on_real_breach() {
     // Companion to the above: with broker-reported equity, a real breach
     // terminates the account as expected.
     let plan = ftmo_phase1().with_loss_reference(propfirm::config::plan::LossReference::Static);
@@ -987,8 +990,8 @@ fn p1_5_broker_reported_equity_terminates_on_real_breach() {
     );
 }
 
-#[test]
-fn p1_14_stale_tick_is_rejected_by_pipeline() {
+#[tokio::test]
+async fn p1_14_stale_tick_is_rejected_by_pipeline() {
     // A tick older than 10 minutes must be rejected before evaluation runs.
     let mut plan = ftmo_phase1();
     plan.weekend_holding_allowed = true;
@@ -999,7 +1002,7 @@ fn p1_14_stale_tick_is_rejected_by_pipeline() {
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
     use propfirm::persistence::traits::AccountStore;
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
@@ -1016,14 +1019,16 @@ fn p1_14_stale_tick_is_rejected_by_pipeline() {
             ts: stale_ts,
         },
     );
-    let result = pipeline.process(
-        account.id,
-        PipelineEvent::Tick {
-            tick,
-            broker_equity: account.equity,
-            broker_balance: account.balance,
-        },
-    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: account.equity,
+                broker_balance: account.balance,
+            },
+        )
+        .await;
     assert!(
         matches!(result, Err(propfirm::Error::TickRejected(_))),
         "stale tick must be rejected with TickRejected; got {:?}",
@@ -1031,8 +1036,8 @@ fn p1_14_stale_tick_is_rejected_by_pipeline() {
     );
 }
 
-#[test]
-fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
+#[tokio::test]
+async fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     // After processing tick at time T, a tick at time T-1 must be rejected
     // (replay protection).
     let mut plan = ftmo_phase1();
@@ -1044,7 +1049,7 @@ fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
     use propfirm::persistence::traits::AccountStore;
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
@@ -1070,6 +1075,7 @@ fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
                 broker_balance: account.balance,
             },
         )
+        .await
         .unwrap();
     // Second tick at T-1 (older) — must be rejected.
     let t2 = t1 - chrono::Duration::minutes(1);
@@ -1081,14 +1087,16 @@ fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
             ts: t2,
         },
     );
-    let result = pipeline.process(
-        account.id,
-        PipelineEvent::Tick {
-            tick: tick2,
-            broker_equity: account.equity,
-            broker_balance: account.balance,
-        },
-    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick: tick2,
+                broker_equity: account.equity,
+                broker_balance: account.balance,
+            },
+        )
+        .await;
     assert!(
         matches!(result, Err(propfirm::Error::TickRejected(_))),
         "out-of-order tick must be rejected; got {:?}",
@@ -1096,8 +1104,8 @@ fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     );
 }
 
-#[test]
-fn p1_8_optimistic_concurrency_rejects_stale_write() {
+#[tokio::test]
+async fn p1_8_optimistic_concurrency_rejects_stale_write() {
     // Two concurrent writers: writer A reads at v=0, writer B writes
     // (bumping to v=1), then writer A tries to write expecting v=0 →
     // must get StateConflict.
@@ -1107,15 +1115,15 @@ fn p1_8_optimistic_concurrency_rejects_stale_write() {
         .start(chrono::Utc::now())
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     // Writer B writes (bumps version to 1).
     let mut b_account = account.clone();
     b_account.balance = Money(dec!(10_500));
-    store.put(b_account).unwrap();
+    store.put(b_account).await.unwrap();
     // Writer A tries to write expecting v=0 — must fail.
     let mut a_account = account.clone();
     a_account.balance = Money(dec!(9_900));
-    let result = store.put_with_version(a_account, 0);
+    let result = store.put_with_version(a_account, 0).await;
     assert!(
         matches!(result, Err(propfirm::Error::StateConflict(_, _, _))),
         "stale write must be rejected with StateConflict; got {:?}",
@@ -1123,8 +1131,8 @@ fn p1_8_optimistic_concurrency_rejects_stale_write() {
     );
 }
 
-#[test]
-fn p1_9_tenant_isolation_filter() {
+#[tokio::test]
+async fn p1_9_tenant_isolation_filter() {
     // An account belonging to tenant A must NOT be visible to tenant B
     // via get_for_tenant.
     use propfirm::persistence::traits::AccountStore;
@@ -1136,21 +1144,21 @@ fn p1_9_tenant_isolation_filter() {
         .start(chrono::Utc::now())
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(acc_a.clone()).unwrap();
+    store.put(acc_a.clone()).await.unwrap();
     // Tenant B tries to read A's account — must get None.
-    let result = store.get_for_tenant(tenant_b, acc_a.id).unwrap();
+    let result = store.get_for_tenant(tenant_b, acc_a.id).await.unwrap();
     assert!(
         result.is_none(),
         "P1-9: tenant B must not see tenant A's account; got {:?}",
         result
     );
     // Tenant A reads own account — must succeed.
-    let result = store.get_for_tenant(tenant_a, acc_a.id).unwrap();
+    let result = store.get_for_tenant(tenant_a, acc_a.id).await.unwrap();
     assert!(result.is_some(), "tenant A must see own account");
 }
 
-#[test]
-fn p1_11_override_clears_breach_state() {
+#[tokio::test]
+async fn p1_11_override_clears_breach_state() {
     // An account in Failed status, given an Override record, must
     // transition back to Active.
     use propfirm::core::ids::ViolationId;
@@ -1187,8 +1195,8 @@ fn p1_11_override_clears_breach_state() {
     );
 }
 
-#[test]
-fn p1_12_emergency_stop_short_circuits() {
+#[tokio::test]
+async fn p1_12_emergency_stop_short_circuits() {
     // An EmergencyStop event forces EmergencyStopped status on the account.
     use propfirm::persistence::traits::AccountStore;
     let mut plan = ftmo_phase1();
@@ -1199,7 +1207,7 @@ fn p1_12_emergency_stop_short_circuits() {
         .start(chrono::Utc::now())
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
@@ -1215,6 +1223,7 @@ fn p1_12_emergency_stop_short_circuits() {
                 at: chrono::Utc::now(),
             },
         )
+        .await
         .unwrap();
     assert_eq!(
         result.snapshot.account.status,
@@ -1224,8 +1233,8 @@ fn p1_12_emergency_stop_short_circuits() {
     );
 }
 
-#[test]
-fn p1_7_pure_evaluate_produces_stable_input_hash() {
+#[tokio::test]
+async fn p1_7_pure_evaluate_produces_stable_input_hash() {
     // Same (account, pack, tick, server_time) → same input_hash. Different
     // (account, pack, tick, server_time) → different input_hash (with
     // overwhelming probability on sha256).
@@ -1345,8 +1354,8 @@ fn p1_7_pure_evaluate_produces_stable_input_hash() {
     assert_eq!(v1.pack_id, "test-pack-v1");
 }
 
-#[test]
-fn p1_1_daily_dd_equity_vs_balance_basis_divergence() {
+#[tokio::test]
+async fn p1_1_daily_dd_equity_vs_balance_basis_divergence() {
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::rules::context::RuleContext;
     use propfirm::rules::evaluators::daily_drawdown::DailyDrawdownRule;
@@ -1397,8 +1406,8 @@ fn p1_1_daily_dd_equity_vs_balance_basis_divergence() {
     );
 }
 
-#[test]
-fn p1_1_daily_dd_balance_basis_does_not_terminate() {
+#[tokio::test]
+async fn p1_1_daily_dd_balance_basis_does_not_terminate() {
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::rules::context::RuleContext;
     use propfirm::rules::evaluators::daily_drawdown::DailyDrawdownRule;

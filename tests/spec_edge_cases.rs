@@ -74,8 +74,8 @@ fn tick_now() -> Tick {
 // Edge 1: equity exactly at the limit fires.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_1_equity_exactly_at_limit_fires() {
+#[tokio::test]
+async fn spec_3_4_edge_1_equity_exactly_at_limit_fires() {
     // Trailing max-loss: peak 100k, trail 10% → floor = 90k.
     // Equity exactly at 90k = 100k - 10k = floor exactly.
     // With tolerance 1¢, exact-equal does NOT breach (uses `>` not `>=`).
@@ -107,8 +107,8 @@ fn spec_3_4_edge_1_equity_exactly_at_limit_fires() {
 // Edge 2: target reached then equity falls below — stays pending (P0-2).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
+#[tokio::test]
+async fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
     // (Covered by p0_2_target_reached_stays_pending_when_equity_dips_below —
     // duplicated here as a named, permanent test-vector.)
     let plan = ftmo_phase1().with_min_days(5);
@@ -140,8 +140,8 @@ fn spec_3_4_edge_2_target_reached_stays_pending_through_dip() {
 // Edge 3: breach + pass on same tick → breach wins (P0-3).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_3_breach_beats_pass_on_same_tick() {
+#[tokio::test]
+async fn spec_3_4_edge_3_breach_beats_pass_on_same_tick() {
     // (Covered by p0_3_breach_beats_target_hit_on_same_tick —
     // duplicated here as a named, permanent test-vector.)
     let acc = account_at(94_000, 105_000, LossReference::Trailing);
@@ -166,8 +166,8 @@ fn spec_3_4_edge_3_breach_beats_pass_on_same_tick() {
 // Edge 4: static max-loss never moves regardless of peak (P0-1).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_4_static_floor_never_moves() {
+#[tokio::test]
+async fn spec_3_4_edge_4_static_floor_never_moves() {
     // Static max-loss: 10% of 100k = 10k limit. Floor is 90k forever.
     // Account at 95k (peak 200k) → 5k dd < 10k limit → no breach.
     let acc = account_at(95_000, 200_000, LossReference::Static);
@@ -186,8 +186,8 @@ fn spec_3_4_edge_4_static_floor_never_moves() {
 // Edge 5: trailing max-loss floats up with peak (P0-1).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_5_trailing_floor_floats_up() {
+#[tokio::test]
+async fn spec_3_4_edge_5_trailing_floor_floats_up() {
     // Trailing max-loss: peak 200k, trail 10% → floor = 180k.
     // Account at 175k → 25k dd > 20k limit → BREACH.
     let acc = account_at(175_000, 200_000, LossReference::Trailing);
@@ -206,8 +206,8 @@ fn spec_3_4_edge_5_trailing_floor_floats_up() {
 // Edge 7: estimated equity cannot terminate (P1-5).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
+#[tokio::test]
+async fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static); // breach on static
     let ev = Evaluator::new(&acc.plan);
     let result = ev
@@ -224,8 +224,8 @@ fn spec_3_4_edge_7_estimated_equity_cannot_terminate() {
 // Edge 8: broker-reported equity can terminate (P1-5).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_8_broker_equity_can_terminate() {
+#[tokio::test]
+async fn spec_3_4_edge_8_broker_equity_can_terminate() {
     let acc = account_at(89_000, 100_000, LossReference::Static);
     let ev = Evaluator::new(&acc.plan);
     let result = ev
@@ -242,8 +242,8 @@ fn spec_3_4_edge_8_broker_equity_can_terminate() {
 // Edge 13: tolerance absorbs sub-cent rounding noise (P2).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
+#[tokio::test]
+async fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
     // Static max-loss: 10% of 100k = 10k limit. Floor = 90k.
     // Equity at 90_000.005 (half a cent below floor + tolerance 1¢ = ok).
     // Should NOT breach because tolerance 1¢ absorbs the 0.5¢ noise.
@@ -265,8 +265,8 @@ fn spec_3_4_edge_13_tolerance_absorbs_subcent_noise() {
 // Edge 11: override clears breach state (P1-11).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_11_override_clears_breach_state() {
+#[tokio::test]
+async fn spec_3_4_edge_11_override_clears_breach_state() {
     use propfirm::core::ids::ViolationId;
     use propfirm::override_engine::Override;
     let mut acc = account_at(95_000, 100_000, LossReference::Static);
@@ -291,15 +291,15 @@ fn spec_3_4_edge_11_override_clears_breach_state() {
 // Edge 12: emergency stop short-circuits (P1-12).
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_3_4_edge_12_emergency_stop_short_circuits() {
+#[tokio::test]
+async fn spec_3_4_edge_12_emergency_stop_short_circuits() {
     use propfirm::persistence::traits::AccountStore;
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
     let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
@@ -315,6 +315,7 @@ fn spec_3_4_edge_12_emergency_stop_short_circuits() {
                 at: chrono::Utc::now(),
             },
         )
+        .await
         .unwrap();
     assert_eq!(
         result.snapshot.account.status,
@@ -331,8 +332,8 @@ fn spec_3_4_edge_12_emergency_stop_short_circuits() {
 /// a limit equal to 100% of the reference, which can never breach.
 /// After the fix, the caller receives `Ok(None)` and must explicitly
 /// fall back to the plan-derived limit.
-#[test]
-fn a1_effective_money_none_must_return_none_not_reference() {
+#[tokio::test]
+async fn a1_effective_money_none_must_return_none_not_reference() {
     use propfirm::core::types::{dec, Money};
     use propfirm::rulepack::RuleUnit;
     use propfirm::rules::params::RuleParams;
@@ -368,8 +369,8 @@ fn a1_effective_money_none_must_return_none_not_reference() {
     assert_eq!(result, Some(Money(dec!(5000))));
 }
 
-#[test]
-fn p1_1_auto_rollover_on_future_tick() {
+#[tokio::test]
+async fn p1_1_auto_rollover_on_future_tick() {
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::core::account::Account;
     use propfirm::core::ids::AccountId;
@@ -384,7 +385,7 @@ fn p1_1_auto_rollover_on_future_tick() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
     let store = InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
 
@@ -395,9 +396,10 @@ fn p1_1_auto_rollover_on_future_tick() {
                 at: chrono::Utc::now(),
             },
         )
+        .await
         .unwrap();
 
-    let pre = pipeline.store.get(account.id).unwrap().unwrap();
+    let pre = pipeline.store.get(account.id).await.unwrap().unwrap();
     assert_eq!(pre.trading_day_index, 0, "start at day 0");
 
     let tomorrow = chrono::Utc::now() + chrono::Duration::days(1);
@@ -418,9 +420,10 @@ fn p1_1_auto_rollover_on_future_tick() {
                 broker_balance: account.balance,
             },
         )
+        .await
         .unwrap();
 
-    let post = pipeline.store.get(account.id).unwrap().unwrap();
+    let post = pipeline.store.get(account.id).await.unwrap().unwrap();
     assert!(
         post.trading_day_index >= 1,
         "auto-rollover must have fired: trading_day_index={}, events={:?}",
@@ -437,8 +440,8 @@ fn p1_1_auto_rollover_on_future_tick() {
     );
 }
 
-#[test]
-fn p1_1_auto_rollover_not_triggered_for_current_day() {
+#[tokio::test]
+async fn p1_1_auto_rollover_not_triggered_for_current_day() {
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::core::account::Account;
     use propfirm::core::ids::AccountId;
@@ -453,7 +456,7 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
     let store = InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
 
@@ -464,6 +467,7 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
                 at: chrono::Utc::now(),
             },
         )
+        .await
         .unwrap();
 
     let tick = Tick::new(
@@ -483,9 +487,10 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
                 broker_balance: account.balance,
             },
         )
+        .await
         .unwrap();
 
-    let post = pipeline.store.get(account.id).unwrap().unwrap();
+    let post = pipeline.store.get(account.id).await.unwrap().unwrap();
     assert_eq!(
         post.trading_day_index, 0,
         "same-day tick must NOT trigger auto-rollover"
@@ -506,8 +511,8 @@ fn p1_1_auto_rollover_not_triggered_for_current_day() {
     );
 }
 
-#[test]
-fn p1_2_eod_trailing_floor_resets_once_per_day() {
+#[tokio::test]
+async fn p1_2_eod_trailing_floor_resets_once_per_day() {
     use propfirm::config::plan::LossReference;
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::core::account::Account;
@@ -578,8 +583,8 @@ fn p1_2_eod_trailing_floor_resets_once_per_day() {
 /// day with trades count one day late. This test pins the corrected behavior:
 /// the first trade of a day increments immediately, and rollover does not
 /// double-count.
-#[test]
-fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
+#[tokio::test]
+async fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
     let plan = ftmo_phase1();
     let acc = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
@@ -645,8 +650,8 @@ fn spec_3_4_edge_14_mark_active_trading_day_wired_and_idempotent() {
 /// §D.3: phase progression — when a phase's success conditions are met
 /// (target hit + min trading days), the account upgrades to the next phase
 /// and emits a `PlanUpgraded` event.
-#[test]
-fn spec_d3_phase_progression_emits_plan_upgraded() {
+#[tokio::test]
+async fn spec_d3_phase_progression_emits_plan_upgraded() {
     use propfirm::core::events::DomainEventKind;
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
@@ -659,7 +664,7 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
         .start(chrono::Utc::now())
         .unwrap();
     let store = InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
     let notifier = LogNotifier::new();
     let evaluator = propfirm::engine::evaluator::Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, store.clone(), notifier);
@@ -677,6 +682,7 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
     );
     pipeline
         .process(account.id, PipelineEvent::OrderSubmitted { order })
+        .await
         .unwrap();
 
     let trade = propfirm::core::trade::Trade {
@@ -702,6 +708,7 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
     };
     pipeline
         .process(account.id, PipelineEvent::TradeFilled { trade })
+        .await
         .unwrap();
 
     // Now hit the profit target with a broker tick.
@@ -724,6 +731,7 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
                 broker_balance: Money(dec!(15000)),
             },
         )
+        .await
         .unwrap();
 
     // Check that we got a PlanUpgraded event (Phase1 → Phase2).
@@ -737,7 +745,7 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
     );
 
     // Verify the account is now in Phase2.
-    let stored = store.get(account.id).unwrap().unwrap();
+    let stored = store.get(account.id).await.unwrap().unwrap();
     assert_eq!(
         stored.plan.phase,
         propfirm::config::plan::ChallengePhase::Phase2,
@@ -749,8 +757,8 @@ fn spec_d3_phase_progression_emits_plan_upgraded() {
 // Edge 14 (D.4): LiquidationRequested lists the correct open positions.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_d4_liquidation_requested_lists_correct_positions() {
+#[tokio::test]
+async fn spec_d4_liquidation_requested_lists_correct_positions() {
     use propfirm::core::events::DomainEventKind;
     use propfirm::core::position::{Position, PositionSide};
     use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
@@ -769,7 +777,7 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
     account.balance = Money(dec!(8_900));
 
     let store = InMemoryStore::new();
-    store.put(account.clone()).unwrap();
+    store.put(account.clone()).await.unwrap();
 
     let evaluator = Evaluator::new(&account.plan);
     let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
@@ -802,8 +810,8 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
         None,
         None,
     );
-    pipeline.store.add_position(p1.clone()).unwrap();
-    pipeline.store.add_position(p2.clone()).unwrap();
+    pipeline.store.add_position(p1.clone()).await.unwrap();
+    pipeline.store.add_position(p2.clone()).await.unwrap();
 
     let tick = Tick::new(
         Symbol::new("EURUSD"),
@@ -823,6 +831,7 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
                 broker_balance: Money(dec!(8_900)),
             },
         )
+        .await
         .unwrap();
 
     // A Liquidate decision must have been emitted.
@@ -877,8 +886,8 @@ fn spec_d4_liquidation_requested_lists_correct_positions() {
 // Edge 14: missing-metric handling produces GapFlagged, not silent default.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn spec_gap_flagged_decision_surfaces_gap_flag() {
+#[tokio::test]
+async fn spec_gap_flagged_decision_surfaces_gap_flag() {
     use propfirm::core::ids::{AccountId, RuleId};
     use propfirm::core::violation::Violation;
     use propfirm::engine::decision::{Decision, DecisionKind};
@@ -909,8 +918,8 @@ fn spec_gap_flagged_decision_surfaces_gap_flag() {
     assert_eq!(decision.all_violations[0].message, "gap-flagged regression");
 }
 
-#[test]
-fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
+#[tokio::test]
+async fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
     use propfirm::config::plan::LossReference;
     use propfirm::config::presets::ftmo_phase1;
     use propfirm::core::account::Account;
@@ -943,8 +952,8 @@ fn p1_1_rollover_advances_persisted_day_boundary_by_exactly_one_day() {
     );
 }
 
-#[test]
-fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
+#[tokio::test]
+async fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
     use propfirm::config::plan::ChallengePlan;
     use propfirm::core::ids::AccountId;
     use propfirm::core::types::Money;
@@ -976,26 +985,28 @@ fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
     state.account.current_trading_day_start = Some(two_days_ago);
 
     let store = InMemoryStore::new();
-    store.put(state.account.clone()).unwrap(); // Store the modified account
+    store.put(state.account.clone()).await.unwrap(); // Store the modified account
     let mut pipeline = Pipeline::new(Evaluator::new(&plan), store, LogNotifier::new());
 
     // Event arrives two trading days later.
     let event_ts = chrono::Utc::now();
-    let result = pipeline.process(
-        account.id,
-        PipelineEvent::Tick {
-            tick: Tick::new(
-                Symbol::new("EURUSD"),
-                Quote {
-                    bid: Price(dec!(1.0)),
-                    ask: Price(dec!(1.0)),
-                    ts: event_ts,
-                },
-            ),
-            broker_equity: Money(dec!(100_000)),
-            broker_balance: Money(dec!(100_000)),
-        },
-    );
+    let result = pipeline
+        .process(
+            account.id,
+            PipelineEvent::Tick {
+                tick: Tick::new(
+                    Symbol::new("EURUSD"),
+                    Quote {
+                        bid: Price(dec!(1.0)),
+                        ask: Price(dec!(1.0)),
+                        ts: event_ts,
+                    },
+                ),
+                broker_equity: Money(dec!(100_000)),
+                broker_balance: Money(dec!(100_000)),
+            },
+        )
+        .await;
     assert!(result.is_ok(), "multi-day gap must not error: {result:?}");
     let applied = result.unwrap();
     // Should have advanced by two trading days.
@@ -1005,8 +1016,8 @@ fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
     );
 }
 
-#[test]
-fn p1_1_rollover_respects_calendar_day_across_dst() {
+#[tokio::test]
+async fn p1_1_rollover_respects_calendar_day_across_dst() {
     use chrono::TimeZone;
     use propfirm::config::plan::ChallengePlan;
     use propfirm::core::ids::AccountId;
@@ -1046,8 +1057,8 @@ fn p1_1_rollover_respects_calendar_day_across_dst() {
     );
 }
 
-#[test]
-fn debug_multi_day_rollover() {
+#[tokio::test]
+async fn debug_multi_day_rollover() {
     use propfirm::config::plan::ChallengePlan;
     use propfirm::core::ids::AccountId;
     use propfirm::core::types::Money;
