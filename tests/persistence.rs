@@ -31,7 +31,11 @@ mod postgres_tests {
 
         store.put(account.clone()).await.unwrap();
 
-        let fetched = store.get(account.id).await.unwrap().expect("account not found");
+        let fetched = store
+            .get(account.id)
+            .await
+            .unwrap()
+            .expect("account not found");
         assert_eq!(fetched.id, account.id);
         assert_eq!(fetched.status, account.status);
         assert_eq!(fetched.equity, account.equity);

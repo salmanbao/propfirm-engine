@@ -1,12 +1,12 @@
 //! In-memory store implementation (no persistence).
 
-use async_trait::async_trait;
 use crate::core::account::Account;
 use crate::core::ids::{AccountId, PositionId};
 use crate::core::position::Position;
 use crate::core::trade::Trade;
 use crate::core::Error;
 use crate::persistence::traits::AccountStore;
+use async_trait::async_trait;
 use chrono::Utc;
 use parking_lot::RwLock;
 use std::collections::HashMap;

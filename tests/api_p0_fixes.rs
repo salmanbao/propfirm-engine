@@ -158,7 +158,7 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
         !body.contains("\"Liquidate\"") && !body.contains("\"Fail\""),
         "estimated equity must NOT terminate via the endpoint; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_5_missing_equity_source_defaults_to_estimated() {
@@ -177,7 +177,7 @@ async fn p0_5_missing_equity_source_defaults_to_estimated() {
         !body.contains("\"Liquidate\"") && !body.contains("\"Fail\""),
         "absent equity_source must default to estimated (never terminate); got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
@@ -195,7 +195,7 @@ async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
         body.contains("\"Liquidate\""),
         "broker-reported equity below the static floor must Liquidate; got: {body}"
     );
-    }
+}
 
 // ---------------------------------------------------------------------------
 // P0.6 — positions and trades on the stateless path
@@ -236,7 +236,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
         resp.contains("weekend") || resp.contains("Weekend"),
         "an open position over the weekend must produce a weekend violation via the endpoint; got: {resp}"
     );
-    }
+}
 
 // ---------------------------------------------------------------------------
 // P0.7 — rule-pack lifecycle endpoints
@@ -370,7 +370,7 @@ async fn p0_7_rule_pack_full_lifecycle_works() {
         body.contains("\"superseded\""),
         "final read must show superseded; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_7_illegal_transition_draft_to_superseded_is_409() {

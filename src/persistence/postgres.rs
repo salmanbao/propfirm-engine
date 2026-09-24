@@ -51,7 +51,11 @@ impl PostgresStore {
 
 #[async_trait]
 impl AccountStore for PostgresStore {
-    async fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+    async fn get_for_tenant(
+        &self,
+        tenant_id: TenantId,
+        id: AccountId,
+    ) -> Result<Option<Account>, Error> {
         let row = sqlx::query_as::<_, AccountRow>(
             r#"
              SELECT id, tenant_id, account_type, status, challenge_id, plan,
@@ -442,10 +446,10 @@ impl AccountStore for PostgresStore {
             "#,
         )
         .bind(id.0)
-    .bind(since)
-    .fetch_all(self.pool.as_ref())
-    .await
-    .map_err(|e| Error::Persistence(e.to_string()))?;
+        .bind(since)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -462,9 +466,9 @@ impl AccountStore for PostgresStore {
             "#,
         )
         .bind(id.0)
-    .fetch_all(self.pool.as_ref())
-    .await
-    .map_err(|e| Error::Persistence(e.to_string()))?;
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
@@ -897,9 +901,7 @@ pub struct PostgresIdempotencyStore {
 impl PostgresIdempotencyStore {
     #[must_use]
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self {
-            pool,
-        }
+        Self { pool }
     }
 }
 
@@ -914,20 +916,20 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
         let row = sqlx::query_as::<_, IdempotencyEntryRow>(
-                r#"
+            r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
                  WHERE tenant_id = $1
                    AND endpoint = $2
                    AND idempotency_key = $3
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(endpoint)
-            .bind(key)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()));
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint)
+        .bind(key)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()));
 
         match row {
             Ok(Some(row)) => {
@@ -952,20 +954,20 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
         let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
-                r#"
+            r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
                  WHERE tenant_id = $1
                    AND endpoint = $2
                    AND idempotency_key = $3
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(endpoint)
-            .bind(key)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()));
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint)
+        .bind(key)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()));
 
         match existing {
             Ok(Some(row)) if row.body_hash != body_hash => {
@@ -978,21 +980,21 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         }
 
         let insert = sqlx::query(
-                r#"
+            r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
                 VALUES ($1, $2, $3, $4, $5)
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(endpoint)
-            .bind(key)
-            .bind(&body_hash)
-            .bind(response)
-            .execute(self.pool.as_ref())
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::Persistence(e.to_string()));
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint)
+        .bind(key)
+        .bind(&body_hash)
+        .bind(response)
+        .execute(self.pool.as_ref())
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::Persistence(e.to_string()));
 
         match insert {
             Ok(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
@@ -1010,20 +1012,20 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
         let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
-                r#"
+            r#"
                 SELECT response, body_hash
                   FROM idempotency_entries
                  WHERE tenant_id = $1
                    AND endpoint = $2
                    AND idempotency_key = $3
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(endpoint)
-            .bind(key)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| Error::Persistence(e.to_string()));
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint)
+        .bind(key)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()));
 
         if let Ok(Some(row)) = existing {
             if row.body_hash != body_hash {
@@ -1033,21 +1035,21 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         }
 
         let insert = sqlx::query(
-                r#"
+            r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
                 VALUES ($1, $2, $3, $4, $5)
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(endpoint)
-            .bind(key)
-            .bind(&body_hash)
-            .bind(response)
-            .execute(self.pool.as_ref())
-            .await
-            .map(|_| ())
-            .map_err(|e| Error::Persistence(e.to_string()));
+        )
+        .bind(tenant_id.0)
+        .bind(endpoint)
+        .bind(key)
+        .bind(&body_hash)
+        .bind(response)
+        .execute(self.pool.as_ref())
+        .await
+        .map(|_| ())
+        .map_err(|e| Error::Persistence(e.to_string()));
 
         match insert {
             Ok(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
@@ -1078,9 +1080,7 @@ pub struct PostgresRulePackStore {
 impl PostgresRulePackStore {
     #[must_use]
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self {
-            pool,
-        }
+        Self { pool }
     }
 }
 
@@ -1092,48 +1092,48 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         id: &str,
     ) -> Result<Option<crate::rulepack::RulePack>, crate::core::Error> {
         let row = sqlx::query_as::<_, RulePackRow>(
-                r#"
+            r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
                        rules, content_hash, created_at, updated_at
                   FROM rule_packs
                  WHERE tenant_id = $1
                    AND id = $2
                 "#,
-            )
-            .bind(tenant_id.0)
-            .bind(id)
-            .fetch_optional(self.pool.as_ref())
-            .await
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
+        )
+        .bind(tenant_id.0)
+        .bind(id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
 
         Ok(row.map(Into::into))
     }
 
     async fn insert_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
         sqlx::query(
-                r#"
+            r#"
                 INSERT INTO rule_packs
                     (id, tenant_id, version, lifecycle, effective_from,
                      rules, content_hash, created_at, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
                 "#,
-            )
-            .bind(&pack.id)
-            .bind(pack.tenant_id.0)
-            .bind(pack.version as i32)
-            .bind(pack.lifecycle.to_string())
-            .bind(pack.effective_from)
-            .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
-            .bind(pack.content_hash())
-            .execute(self.pool.as_ref())
-            .await
-            .map(|_| ())
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        )
+        .bind(&pack.id)
+        .bind(pack.tenant_id.0)
+        .bind(pack.version as i32)
+        .bind(pack.lifecycle.to_string())
+        .bind(pack.effective_from)
+        .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
+        .bind(pack.content_hash())
+        .execute(self.pool.as_ref())
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))
     }
 
     async fn put_pack(&self, pack: crate::rulepack::RulePack) -> Result<(), crate::core::Error> {
         sqlx::query(
-                r#"
+            r#"
                 UPDATE rule_packs
                    SET lifecycle = $3,
                        effective_from = $4,
@@ -1143,17 +1143,17 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
                  WHERE tenant_id = $1
                    AND id = $2
                 "#,
-            )
-            .bind(pack.tenant_id.0)
-            .bind(&pack.id)
-            .bind(pack.lifecycle.to_string())
-            .bind(pack.effective_from)
-            .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
-            .bind(pack.content_hash())
-            .execute(self.pool.as_ref())
-            .await
-            .map(|_| ())
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))
+        )
+        .bind(pack.tenant_id.0)
+        .bind(&pack.id)
+        .bind(pack.lifecycle.to_string())
+        .bind(pack.effective_from)
+        .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
+        .bind(pack.content_hash())
+        .execute(self.pool.as_ref())
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))
     }
 
     async fn list_packs(
@@ -1161,18 +1161,18 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         tenant_id: crate::tenant::TenantId,
     ) -> Result<Vec<crate::rulepack::RulePack>, crate::core::Error> {
         let rows = sqlx::query_as::<_, RulePackRow>(
-                r#"
+            r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
                        rules, content_hash, created_at, updated_at
                   FROM rule_packs
                  WHERE tenant_id = $1
                  ORDER BY version DESC, id ASC
                 "#,
-            )
-            .bind(tenant_id.0)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
+        )
+        .bind(tenant_id.0)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
 
         Ok(rows.into_iter().map(Into::into).collect())
     }

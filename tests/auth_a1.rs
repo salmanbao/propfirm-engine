@@ -79,7 +79,9 @@ async fn make_state() -> Arc<tokio::sync::RwLock<ServerState>> {
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(plan, auth)));
     {
         let s = state.read().await;
-        propfirm::persistence::traits::AccountStore::put(&s.store, account.clone()).await.unwrap();
+        propfirm::persistence::traits::AccountStore::put(&s.store, account.clone())
+            .await
+            .unwrap();
     }
     state
 }
@@ -135,7 +137,7 @@ async fn a1_missing_credentials_rejected_401() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
+}
 
 #[tokio::test]
 async fn a1_wrong_token_rejected_401() {
@@ -150,7 +152,7 @@ async fn a1_wrong_token_rejected_401() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
+}
 
 #[tokio::test]
 async fn a1_valid_service_bearer_accepted() {
@@ -184,7 +186,7 @@ async fn a1_valid_service_bearer_accepted() {
         "correlation_id must be present for audit"
     );
     assert!(!correlation_id.unwrap().is_empty());
-    }
+}
 
 #[tokio::test]
 async fn a1_tenant_header_trusted_after_service_auth() {
@@ -209,7 +211,7 @@ async fn a1_tenant_header_trusted_after_service_auth() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    }
+}
 
 #[tokio::test]
 async fn a1_health_reachable_without_credentials() {
@@ -217,7 +219,7 @@ async fn a1_health_reachable_without_credentials() {
     let (status, body, _) = send_raw(app, Method::GET, "/health", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "health must be exempt from auth");
     assert_eq!(body, "ok");
-    }
+}
 
 #[tokio::test]
 async fn a1_ready_reachable_without_credentials() {
@@ -225,7 +227,7 @@ async fn a1_ready_reachable_without_credentials() {
     let (status, body, _) = send_raw(app, Method::GET, "/ready", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "ready must be exempt from auth");
     assert_eq!(body, "ready");
-    }
+}
 
 #[tokio::test]
 async fn a1_internal_accepts_active_service_token() {
@@ -255,7 +257,7 @@ async fn a1_internal_accepts_active_service_token() {
         StatusCode::OK,
         "active service token must open /internal/*"
     );
-    }
+}
 
 #[tokio::test]
 async fn a1_internal_accepts_previous_token_during_rotation() {
@@ -285,7 +287,7 @@ async fn a1_internal_accepts_previous_token_during_rotation() {
         StatusCode::OK,
         "previous rotation token must still be accepted during overlap"
     );
-    }
+}
 
 #[tokio::test]
 async fn a1_internal_rejects_unknown_bearer() {
@@ -301,7 +303,7 @@ async fn a1_internal_rejects_unknown_bearer() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
+}
 
 #[test]
 fn a1_from_env_fails_closed() {

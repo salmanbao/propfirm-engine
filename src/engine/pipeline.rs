@@ -198,7 +198,8 @@ where
             .await?
             .ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
         let tenant_id = account.tenant_id;
-        self.process_with_loaded_account(account, tenant_id, ev).await
+        self.process_with_loaded_account(account, tenant_id, ev)
+            .await
     }
 
     /// **P0-E fix**: tenant-scoped process. Reads via `get_for_tenant` so
@@ -221,7 +222,8 @@ where
                     "account {account_id} not found for tenant {tenant_id}"
                 ))
             })?;
-        self.process_with_loaded_account(account, tenant_id, ev).await
+        self.process_with_loaded_account(account, tenant_id, ev)
+            .await
     }
 
     /// Common path for `process` and `process_for_tenant` once the

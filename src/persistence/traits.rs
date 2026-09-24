@@ -24,7 +24,11 @@ pub trait AccountStore: Send + Sync {
     /// Reads an account, scoped to a specific tenant. Returns `None` if
     /// the account doesn't exist OR if it belongs to a different tenant.
     /// This is the *only* read path in multi-tenant deployments.
-    async fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error>;
+    async fn get_for_tenant(
+        &self,
+        tenant_id: TenantId,
+        id: AccountId,
+    ) -> Result<Option<Account>, Error>;
 
     /// Bootstrap read — fetches an account without tenant scoping.
     ///
@@ -78,7 +82,11 @@ pub trait AccountStore: Send + Sync {
 
 #[async_trait]
 impl AccountStore for Arc<dyn AccountStore> {
-    async fn get_for_tenant(&self, tenant_id: TenantId, id: AccountId) -> Result<Option<Account>, Error> {
+    async fn get_for_tenant(
+        &self,
+        tenant_id: TenantId,
+        id: AccountId,
+    ) -> Result<Option<Account>, Error> {
         self.as_ref().get_for_tenant(tenant_id, id).await
     }
 
@@ -91,7 +99,9 @@ impl AccountStore for Arc<dyn AccountStore> {
     }
 
     async fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error> {
-        self.as_ref().put_with_version(account, expected_version).await
+        self.as_ref()
+            .put_with_version(account, expected_version)
+            .await
     }
 
     async fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {

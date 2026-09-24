@@ -12,12 +12,12 @@ use crate::core::types::{Price, Quantity, Symbol};
 use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
 use crate::rulepack::RulePack;
-use axum::extract::{Path, State, Extension};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use tokio::sync::RwLock;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
@@ -102,14 +102,16 @@ pub async fn evaluate_internal(
         let response = evaluate_internal_impl(&state, tenant_id, req).await?;
         let response_str = serde_json::to_string(&response)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        match s.idempotency.check_and_remember(
-            tenant_id,
-            "POST /internal/v1/evaluate",
-            key,
-            &body,
-            &response_str,
-        )
-        .await
+        match s
+            .idempotency
+            .check_and_remember(
+                tenant_id,
+                "POST /internal/v1/evaluate",
+                key,
+                &body,
+                &response_str,
+            )
+            .await
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
                 let cached = serde_json::from_str(&cached)
@@ -408,7 +410,6 @@ pub async fn breach_report(
     }))
 }
 
-
 pub async fn evaluate_order(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -473,7 +474,6 @@ pub async fn evaluate_order(
     }))
 }
 
-
 pub async fn get_account(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -495,7 +495,6 @@ pub async fn get_account(
 }
 
 // Rule-pack CRUD endpoints (P2-API).
-
 
 pub async fn create_rule_pack(
     State(state): State<SharedState>,

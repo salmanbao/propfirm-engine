@@ -17,8 +17,8 @@ use crate::notifications::log::LogNotifier;
 use crate::persistence::memory::InMemoryStore;
 use crate::persistence::rulepack_store::{InMemoryRulePackStore, RulePackStore};
 use crate::persistence::traits::AccountStore;
-use tokio::sync::RwLock;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct ServerState {
     pub evaluator: Evaluator,

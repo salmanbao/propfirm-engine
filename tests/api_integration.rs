@@ -139,7 +139,7 @@ async fn p0_a_get_account_returns_seeded_account_not_404() {
         body.contains("10000"),
         "body should contain account balance; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_a_get_account_for_unknown_id_returns_404() {
@@ -187,7 +187,7 @@ async fn p0_a_evaluate_order_returns_verdict() {
         !body.to_lowercase().contains("not found"),
         "body should not be a 404 error; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_a_manual_run_returns_decision() {
@@ -215,7 +215,7 @@ async fn p0_a_manual_run_returns_decision() {
         body.contains("decision_kind"),
         "body should contain decision_kind; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_a_breach_report_returns_violations_array() {
@@ -235,7 +235,7 @@ async fn p0_a_breach_report_returns_violations_array() {
         body.contains("violations"),
         "body should contain violations array; got: {body}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_a_override_for_unknown_account_returns_404() {
@@ -265,7 +265,7 @@ async fn p0_a_override_for_unknown_account_returns_404() {
         status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
         "override for unknown account should fail; got {status}"
     );
-    }
+}
 
 #[tokio::test]
 async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
