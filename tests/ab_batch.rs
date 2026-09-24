@@ -96,8 +96,8 @@ fn time_limit_entry(value: Decimal, enabled: bool) -> RuleEntry {
 // §B — time_limit pack-driven
 // ---------------------------------------------------------------------------
 
-#[test]
-fn b_time_limit_pack_value_overrides_plan() {
+#[tokio::test]
+async fn b_time_limit_pack_value_overrides_plan() {
     // Account started 10 days ago; plan deadline = +30 days from now
     // (not yet expired). Pack entry says 5 days → deadline = start + 5d
     // → expired → Fail.
@@ -122,8 +122,8 @@ fn b_time_limit_pack_value_overrides_plan() {
     );
 }
 
-#[test]
-fn b_time_limit_pack_enabled_false_disables() {
+#[tokio::test]
+async fn b_time_limit_pack_enabled_false_disables() {
     let mut acc = active_account();
     acc.started_at = Some(chrono::Utc::now() - chrono::Duration::days(40));
     acc.deadline = Some(chrono::Utc::now() - chrono::Duration::days(10)); // expired
@@ -191,8 +191,8 @@ fn grid_ctx(acc: &Account, prices: &[Decimal]) -> RuleContext {
     ctx
 }
 
-#[test]
-fn b_grid_pack_value_changes_verdict() {
+#[tokio::test]
+async fn b_grid_pack_value_changes_verdict() {
     let mut acc = active_account();
     acc.plan.grid_trading_allowed = false;
     // Four entries at uniform 10-pip spacing (CV = 0) — a grid under any
@@ -217,8 +217,8 @@ fn b_grid_pack_value_changes_verdict() {
     );
 }
 
-#[test]
-fn b_grid_irregular_spacing_does_not_fire() {
+#[tokio::test]
+async fn b_grid_irregular_spacing_does_not_fire() {
     let mut acc = active_account();
     acc.plan.grid_trading_allowed = false;
     // Irregular spacing: gaps of 10, 90, 20 pips → CV far above 0.05.
@@ -261,8 +261,8 @@ fn other_account_trade(
     )
 }
 
-#[test]
-fn a2_cross_account_copy_detected() {
+#[tokio::test]
+async fn a2_cross_account_copy_detected() {
     // Other accounts trading the same symbol/side/size within the window:
     // 2 correlations → Warn (suspicious), 3 → Fail (default threshold).
     let mut acc = active_account();
@@ -299,8 +299,8 @@ fn a2_cross_account_copy_detected() {
     );
 }
 
-#[test]
-fn a2_same_account_trades_never_correlate() {
+#[tokio::test]
+async fn a2_same_account_trades_never_correlate() {
     // The old self-referential rule fired on the account's own fills.
     // The new rule must ignore own-account trades entirely.
     let mut acc = active_account();
@@ -318,8 +318,8 @@ fn a2_same_account_trades_never_correlate() {
     ));
 }
 
-#[test]
-fn a2_outside_window_does_not_correlate() {
+#[tokio::test]
+async fn a2_outside_window_does_not_correlate() {
     let mut acc = active_account();
     acc.plan.copy_trading_allowed = false;
     let now = chrono::Utc::now();
@@ -343,8 +343,8 @@ fn a2_outside_window_does_not_correlate() {
     ));
 }
 
-#[test]
-fn b_copy_pack_value_changes_threshold() {
+#[tokio::test]
+async fn b_copy_pack_value_changes_threshold() {
     // Pack value = 1 → a SINGLE correlated reference trade fails
     // (default threshold 3 would only Warn).
     let mut acc = active_account();
@@ -380,8 +380,8 @@ fn b_copy_pack_value_changes_threshold() {
 // §A.2 — TickEstimated single-quote valuation (documented limitation)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
+#[tokio::test]
+async fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
     // The estimate path values EVERY open position with the single quote
     // on the tick. A position on a different symbol gets an economically
     // meaningless P&L — this test pins the actual (documented) semantics
@@ -400,7 +400,7 @@ fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
     acc.tenant_id = propfirm::tenant::TenantId::named("t");
     acc.balance = Money(dec!(100_000));
     acc.equity = Money(dec!(100_000));
-    store.put(acc.clone()).unwrap();
+    store.put(acc.clone()).await.unwrap();
 
     // Open position on GBPUSD; tick arrives on EURUSD.
     let position = propfirm::core::position::Position::open(
@@ -416,7 +416,7 @@ fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
         None,
         None,
     );
-    store.add_position(position).unwrap();
+    store.add_position(position).await.unwrap();
 
     let tick = Tick::new(
         Symbol::new("EURUSD"),
@@ -428,6 +428,7 @@ fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
     );
     let result = pipeline
         .process_for_tenant(acc.tenant_id, acc.id, PipelineEvent::TickEstimated { tick })
+        .await
         .unwrap();
     // With contract_size 1 and the EURUSD quote applied to a GBPUSD
     // position: estimated equity = balance + (1.08 - 1.26) × 100_000 = 82_000.

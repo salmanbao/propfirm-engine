@@ -14,15 +14,14 @@ mod postgres_tests {
     use propfirm::persistence::postgres::PostgresStore;
     use propfirm::persistence::traits::AccountStore;
 
-    #[test]
-    fn postgres_put_and_get_roundtrip() {
+    #[tokio::test]
+    async fn postgres_put_and_get_roundtrip() {
         let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
             "postgres://postgres:password@localhost:5432/propfirm_test".to_string()
         });
 
-        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
-        let store = runtime
-            .block_on(PostgresStore::connect(&database_url))
+        let store = PostgresStore::connect(&database_url)
+            .await
             .expect("failed to connect to postgres");
 
         let plan = ftmo_phase1();
@@ -30,23 +29,22 @@ mod postgres_tests {
             .start(chrono::Utc::now())
             .unwrap();
 
-        store.put(account.clone()).unwrap();
+        store.put(account.clone()).await.unwrap();
 
-        let fetched = store.get(account.id).unwrap().expect("account not found");
+        let fetched = store.get(account.id).await.unwrap().expect("account not found");
         assert_eq!(fetched.id, account.id);
         assert_eq!(fetched.status, account.status);
         assert_eq!(fetched.equity, account.equity);
     }
 
-    #[test]
-    fn postgres_open_positions_and_trades() {
+    #[tokio::test]
+    async fn postgres_open_positions_and_trades() {
         let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
             "postgres://postgres:password@localhost:5432/propfirm_test".to_string()
         });
 
-        let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
-        let store = runtime
-            .block_on(PostgresStore::connect(&database_url))
+        let store = PostgresStore::connect(&database_url)
+            .await
             .expect("failed to connect to postgres");
 
         let plan = ftmo_phase1();
@@ -54,7 +52,7 @@ mod postgres_tests {
             .start(chrono::Utc::now())
             .unwrap();
 
-        store.put(account.clone()).unwrap();
+        store.put(account.clone()).await.unwrap();
 
         let position = Position::open(
             account.id,
@@ -70,15 +68,15 @@ mod postgres_tests {
             None,
         );
 
-        store.add_position(position.clone()).unwrap();
+        store.add_position(position.clone()).await.unwrap();
 
-        let open = store.open_positions(account.id).unwrap();
+        let open = store.open_positions(account.id).await.unwrap();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, position.id);
 
-        store.close_position(position.id).unwrap();
+        store.close_position(position.id).await.unwrap();
 
-        let closed = store.open_positions(account.id).unwrap();
+        let closed = store.open_positions(account.id).await.unwrap();
         assert!(
             closed.is_empty(),
             "closed position must not appear in open_positions"
