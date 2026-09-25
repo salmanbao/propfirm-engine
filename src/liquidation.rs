@@ -18,7 +18,10 @@ use crate::core::violation::ViolationKind;
 /// A single position to be liquidated. Carries the minimum data the
 /// bridge needs to issue a close-market order on the broker side.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct LiquidationPosition {
     pub position_id: PositionId,
     pub symbol: Symbol,
@@ -42,7 +45,10 @@ impl LiquidationPosition {
 
 /// The reason the engine requested liquidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum LiquidationReason {
     /// A rule produced `DecisionKind::Liquidate` (e.g. max drawdown
     /// breach with broker-reported equity).
@@ -68,7 +74,10 @@ impl std::fmt::Display for LiquidationReason {
 /// positions immediately. The bridge is expected to acknowledge with
 /// `TradeFilled` events for each position (P1.10 + bridge integration).
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct LiquidationInstruction {
     /// Unique id of this instruction (used by the bridge to dedupe).
     pub id: crate::core::ids::EventId,

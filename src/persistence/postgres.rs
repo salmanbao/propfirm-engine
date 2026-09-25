@@ -1483,7 +1483,10 @@ impl crate::events::store::EventStore for PostgresStore {
         Ok(())
     }
 
-    async fn all(&self, id: crate::core::ids::AccountId) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
+    async fn all(
+        &self,
+        id: crate::core::ids::AccountId,
+    ) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, account_id, kind, payload, occurred_at
@@ -1499,7 +1502,11 @@ impl crate::events::store::EventStore for PostgresStore {
         Ok(rows.into_iter().filter_map(|r| r.try_into().ok()).collect())
     }
 
-    async fn recent(&self, id: crate::core::ids::AccountId, n: usize) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
+    async fn recent(
+        &self,
+        id: crate::core::ids::AccountId,
+        n: usize,
+    ) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
         let rows = sqlx::query_as::<_, EventRow>(
             r#"
             SELECT id, account_id, kind, payload, occurred_at
@@ -1514,10 +1521,8 @@ impl crate::events::store::EventStore for PostgresStore {
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
-        let mut events: Vec<crate::core::events::DomainEvent> = rows
-            .into_iter()
-            .filter_map(|r| r.try_into().ok())
-            .collect();
+        let mut events: Vec<crate::core::events::DomainEvent> =
+            rows.into_iter().filter_map(|r| r.try_into().ok()).collect();
         events.reverse();
         Ok(events)
     }

@@ -59,8 +59,7 @@ pub trait AccountStore: Send + Sync {
         expected_version: u64,
         events: &[crate::core::events::DomainEvent],
     ) -> Result<(), Error> {
-        self.put_with_version(account, expected_version)
-            .await?;
+        self.put_with_version(account, expected_version).await?;
         if let Some(store) = self.event_store() {
             for ev in events {
                 store.append(ev.clone()).await?;
@@ -147,8 +146,7 @@ impl AccountStore for Arc<dyn AccountStore> {
         expected_version: u64,
         events: &[crate::core::events::DomainEvent],
     ) -> Result<(), Error> {
-        self.put_with_version(account, expected_version)
-            .await?;
+        self.put_with_version(account, expected_version).await?;
         if let Some(store) = self.event_store() {
             for ev in events {
                 store.append(ev.clone()).await?;

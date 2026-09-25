@@ -486,27 +486,29 @@ where
                 let new_state = state
                     .apply_realized_pnl(pnl, commission, swap, trade.executed_at)
                     .mark_active_trading_day();
-                
+
                 // Broker fill ingestion: atomically persist trade and update position
                 let position = match trade.trade_side {
-                    crate::core::trade::TradeSide::Entry => {
-                        Position::open(
-                            trade.account_id,
-                            trade.symbol.clone(),
-                            crate::core::position::PositionSide::from_order(trade.side),
-                            trade.price,
-                            trade.quantity,
-                            trade.executed_at,
-                            trade.commission,
-                            None,
-                            None,
-                            None,
-                            trade.comment.clone(),
-                        )
-                    }
+                    crate::core::trade::TradeSide::Entry => Position::open(
+                        trade.account_id,
+                        trade.symbol.clone(),
+                        crate::core::position::PositionSide::from_order(trade.side),
+                        trade.price,
+                        trade.quantity,
+                        trade.executed_at,
+                        trade.commission,
+                        None,
+                        None,
+                        None,
+                        trade.comment.clone(),
+                    ),
                     crate::core::trade::TradeSide::Exit => {
                         if let Some(exit_info) = &trade.exit_info {
-                            if let Some(mut pos) = open_positions.iter().find(|p| p.id == exit_info.position_id).cloned() {
+                            if let Some(mut pos) = open_positions
+                                .iter()
+                                .find(|p| p.id == exit_info.position_id)
+                                .cloned()
+                            {
                                 pos.status = crate::core::position::PositionStatus::Closed;
                                 pos.closed_at = Some(trade.executed_at);
                                 pos.realized_pnl = exit_info.realized_pnl;
@@ -519,7 +521,9 @@ where
                                     id: exit_info.position_id,
                                     account_id: trade.account_id,
                                     symbol: trade.symbol.clone(),
-                                    side: crate::core::position::PositionSide::from_order(trade.side),
+                                    side: crate::core::position::PositionSide::from_order(
+                                        trade.side,
+                                    ),
                                     opened_at: trade.executed_at,
                                     closed_at: Some(trade.executed_at),
                                     status: crate::core::position::PositionStatus::Closed,
@@ -536,29 +540,31 @@ where
                                 }
                             }
                         } else {
-                            return Err(crate::Error::Persistence("exit trade missing exit_info".to_string()));
+                            return Err(crate::Error::Persistence(
+                                "exit trade missing exit_info".to_string(),
+                            ));
                         }
                     }
-                    _ => {
-                        Position::open(
-                            trade.account_id,
-                            trade.symbol.clone(),
-                            crate::core::position::PositionSide::from_order(trade.side),
-                            trade.price,
-                            trade.quantity,
-                            trade.executed_at,
-                            trade.commission,
-                            None,
-                            None,
-                            None,
-                            trade.comment.clone(),
-                        )
-                    }
+                    _ => Position::open(
+                        trade.account_id,
+                        trade.symbol.clone(),
+                        crate::core::position::PositionSide::from_order(trade.side),
+                        trade.price,
+                        trade.quantity,
+                        trade.executed_at,
+                        trade.commission,
+                        None,
+                        None,
+                        None,
+                        trade.comment.clone(),
+                    ),
                 };
-                
+
                 // Atomically persist trade and position
-                self.store.add_trade_and_update_position(trade.clone(), position).await?;
-                
+                self.store
+                    .add_trade_and_update_position(trade.clone(), position)
+                    .await?;
+
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::TradeFilled {

@@ -11,7 +11,10 @@ use crate::core::Error;
 /// Severity of a violation – determines whether it terminates the account
 /// or just warns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum ViolationSeverity {
     /// Informational only; no consequence.
     Info,
@@ -36,7 +39,10 @@ impl std::fmt::Display for ViolationSeverity {
 
 /// Category of violation. Used for filtering and dashboards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum ViolationKind {
     /// Daily drawdown limit breached.
     DailyDrawdown,
@@ -120,7 +126,10 @@ impl std::fmt::Display for ViolationKind {
 /// A rule violation record. Stored in the audit log and surfaced to the
 /// trader via notifications.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct Violation {
     pub id: ViolationId,
     pub account_id: AccountId,
