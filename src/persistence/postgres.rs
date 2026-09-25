@@ -655,6 +655,7 @@ impl AccountStore for PostgresStore {
         .bind(trade_row.trade_side)
         .bind(trade_row.price)
         .bind(trade_row.quantity)
+        .bind(trade_row.commission)
         .bind(trade_row.swap)
         .bind(trade_row.executed_at)
         .bind(trade_row.position_id)
@@ -712,6 +713,197 @@ impl AccountStore for PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn ingest_trade_fill(
+        &self,
+        trade: Trade,
+        position: Position,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        // 1. Persist the trade
+        let trade_row = TradeRow::from(trade);
+        sqlx::query(
+            r#"
+            INSERT INTO trades
+              (id, account_id, symbol, side, trade_side, price, quantity,
+               commission, swap, executed_at, position_id, realized_pnl,
+               exit_price, closed_quantity, entry_price, comment, created_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            "#,
+        )
+        .bind(trade_row.id)
+        .bind(trade_row.account_id)
+        .bind(trade_row.symbol)
+        .bind(trade_row.side)
+        .bind(trade_row.trade_side)
+        .bind(trade_row.price)
+        .bind(trade_row.quantity)
+        .bind(trade_row.commission)
+        .bind(trade_row.swap)
+        .bind(trade_row.executed_at)
+        .bind(trade_row.position_id)
+        .bind(trade_row.realized_pnl)
+        .bind(trade_row.exit_price)
+        .bind(trade_row.closed_quantity)
+        .bind(trade_row.entry_price)
+        .bind(trade_row.comment)
+        .bind(trade_row.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        // 2. Update the position
+        let position_row = PositionRow::from(position);
+        sqlx::query(
+            r#"
+            UPDATE positions
+               SET account_id = $2,
+                   symbol = $3,
+                   side = $4,
+                   opened_quantity = $5,
+                   open_quantity = $6,
+                   avg_entry_price = $7,
+                   status = $8,
+                   opened_at = $9,
+                   closed_at = $10,
+                   realized_pnl = $11,
+                   swap = $12,
+                   commission = $13,
+                   stop_loss = $14,
+                   take_profit = $15,
+                   magic = $16,
+                   comment = $17,
+                   updated_at = NOW()
+              WHERE id = $1
+            "#,
+        )
+        .bind(position_row.id)
+        .bind(position_row.account_id)
+        .bind(position_row.symbol)
+        .bind(position_row.side)
+        .bind(position_row.opened_quantity)
+        .bind(position_row.open_quantity)
+        .bind(position_row.avg_entry_price)
+        .bind(position_row.status)
+        .bind(position_row.opened_at)
+        .bind(position_row.closed_at)
+        .bind(position_row.realized_pnl)
+        .bind(position_row.swap)
+        .bind(position_row.commission)
+        .bind(position_row.stop_loss)
+        .bind(position_row.take_profit)
+        .bind(position_row.magic)
+        .bind(position_row.comment)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        // 3. Persist account with events (transactional)
+        let account_row = AccountRow::from_account(&account);
+        sqlx::query(
+            r#"
+            UPDATE accounts
+               SET tenant_id = $2,
+                   account_type = $3,
+                   status = $4,
+                   challenge_id = $5,
+                   plan = $6,
+                   initial_balance = $7,
+                   balance = $8,
+                   equity = $9,
+                   estimated_equity = $10,
+                   estimated_balance = $11,
+                   peak_equity = $12,
+                   peak_balance = $13,
+                   started_at = $14,
+                   deadline = $15,
+                   day_start_balance = $16,
+                   trading_day_index = $17,
+                   active_trading_days = $18,
+                   day_counted_today = $19,
+                   today_realized_pnl = $20,
+                   total_realized_pnl = $21,
+                   total_commissions = $22,
+                   total_swaps = $23,
+                   largest_day_profit = $24,
+                   largest_day_loss = $25,
+                   sum_positive_days_profit = $26,
+                   day_start_equity = $27,
+                   current_trading_day_start = $28,
+                   target_reached_at = $29,
+                   target_reached_on_day = $30,
+                   version = $31,
+                   last_tick_ts = $32,
+                   last_trade_at = $33,
+                   payout_count = $34,
+                   balance_at_last_payout = $35,
+                   refund_used = $36,
+                   updated_at = NOW()
+              WHERE id = $1
+                AND version = $37
+            "#,
+        )
+        .bind(account_row.id)
+        .bind(account_row.tenant_id)
+        .bind(account_row.account_type)
+        .bind(account_row.status)
+        .bind(account_row.challenge_id)
+        .bind(account_row.plan)
+        .bind(account_row.initial_balance)
+        .bind(account_row.balance)
+        .bind(account_row.equity)
+        .bind(account_row.estimated_equity)
+        .bind(account_row.estimated_balance)
+        .bind(account_row.peak_equity)
+        .bind(account_row.peak_balance)
+        .bind(account_row.started_at)
+        .bind(account_row.deadline)
+        .bind(account_row.day_start_balance)
+        .bind(account_row.trading_day_index)
+        .bind(account_row.active_trading_days)
+        .bind(account_row.day_counted_today)
+        .bind(account_row.today_realized_pnl)
+        .bind(account_row.total_realized_pnl)
+        .bind(account_row.total_commissions)
+        .bind(account_row.total_swaps)
+        .bind(account_row.largest_day_profit)
+        .bind(account_row.largest_day_loss)
+        .bind(account_row.sum_positive_days_profit)
+        .bind(account_row.day_start_equity)
+        .bind(account_row.current_trading_day_start)
+        .bind(account_row.target_reached_at)
+        .bind(account_row.target_reached_on_day)
+        .bind(account_row.version)
+        .bind(account_row.last_tick_ts)
+        .bind(account_row.last_trade_at)
+        .bind(account_row.payout_count)
+        .bind(account_row.balance_at_last_payout)
+        .bind(account_row.refund_used)
+        .bind(expected_version as i64) // optimistic concurrency check
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        // 4. Persist events
+        if let Some(store) = self.event_store() {
+            for ev in events {
+                store.append(ev.clone()).await?;
+            }
+        }
 
         tx.commit()
             .await

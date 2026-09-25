@@ -39,6 +39,8 @@ pub struct AppliedEvent {
     pub today_trades: Vec<Trade>,
     /// Recent domain events fetched from the event store.
     pub recent_events: Vec<DomainEvent>,
+    /// Trade fill data for atomic ingestion (only Some for TradeFilled events)
+    pub trade_fill: Option<(Trade, Position)>,
 }
 
 /// Inputs to the pipeline.
@@ -295,12 +297,13 @@ where
         }
 
         let applied = self.apply_event(state, &ev, &mut events).await?;
-        let (new_state, ctx_kind, open_positions, today_trades, recent_events) = (
+        let (new_state, ctx_kind, open_positions, today_trades, recent_events, trade_fill) = (
             applied.state,
             applied.ctx_kind,
             applied.open_positions,
             applied.today_trades,
             applied.recent_events,
+            applied.trade_fill,
         );
         let ctx = self.build_context(
             new_state.account.clone(),
@@ -423,9 +426,21 @@ where
                 ctx.server_time.ts(),
             ));
         }
-        self.store
-            .put_with_version_and_events(final_state.account.clone(), expected_version, &events)
-            .await?;
+        if let Some((trade, position)) = trade_fill {
+            self.store
+                .ingest_trade_fill(
+                    trade,
+                    position,
+                    final_state.account.clone(),
+                    expected_version,
+                    &events,
+                )
+                .await?;
+        } else {
+            self.store
+                .put_with_version_and_events(final_state.account.clone(), expected_version, &events)
+                .await?;
+        }
         for v in result.violations() {
             self.notifier.notify_violation(v)?;
         }
@@ -468,6 +483,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             PipelineEvent::OrderSubmitted { order: _ } => Ok(AppliedEvent {
@@ -476,6 +492,7 @@ where
                 open_positions,
                 today_trades,
                 recent_events,
+                trade_fill: None,
             }),
             PipelineEvent::TradeFilled { trade } => {
                 // Apply realized P&L on exits
@@ -487,7 +504,9 @@ where
                     .apply_realized_pnl(pnl, commission, swap, trade.executed_at)
                     .mark_active_trading_day();
 
-                // Broker fill ingestion: atomically persist trade and update position
+                // Broker fill ingestion data - will be persisted atomically
+                // via ingest_trade_fill in process_with_loaded_account after rule evaluation.
+                // This avoids persisting the fill before we know the evaluation result.
                 let position = match trade.trade_side {
                     crate::core::trade::TradeSide::Entry => Position::open(
                         trade.account_id,
@@ -560,11 +579,6 @@ where
                     ),
                 };
 
-                // Atomically persist trade and position
-                self.store
-                    .add_trade_and_update_position(trade.clone(), position)
-                    .await?;
-
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::TradeFilled {
@@ -578,6 +592,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: Some((trade.clone(), position)),
                 })
             }
             PipelineEvent::Tick {
@@ -624,6 +639,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             PipelineEvent::TickEstimated { tick } => {
@@ -646,6 +662,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             PipelineEvent::DayRollover { had_trades_today } => {
@@ -664,6 +681,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             PipelineEvent::EndOfDay => Ok(AppliedEvent {
@@ -672,6 +690,7 @@ where
                 open_positions,
                 today_trades,
                 recent_events,
+                trade_fill: None,
             }),
             PipelineEvent::OnDemand => Ok(AppliedEvent {
                 state,
@@ -679,6 +698,7 @@ where
                 open_positions,
                 today_trades,
                 recent_events,
+                trade_fill: None,
             }),
             // P1-12: emergency stop short-circuits state transition;
             // the actual `Emergency` verdict is produced in `process()`
@@ -704,6 +724,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             // P1-11: override-breach reverts the account from
@@ -768,6 +789,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             // §D.2: payout request — evaluate via the plan's payout
@@ -818,6 +840,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
             // §D.2: payout approval — execute the payout (bookkeeping +
@@ -858,6 +881,7 @@ where
                     open_positions,
                     today_trades,
                     recent_events,
+                    trade_fill: None,
                 })
             }
         }

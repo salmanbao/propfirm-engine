@@ -114,6 +114,25 @@ pub trait AccountStore: Send + Sync {
         self.update_position(position).await?;
         Ok(())
     }
+
+    /// Atomically persists a trade, position, account update, and events
+    /// in a single transaction. Postgres-backed stores should implement this as
+    /// `BEGIN; add_trade; update_position; put_with_version; append events; COMMIT;`.
+    /// In-memory backends may simply execute the three operations sequentially.
+    async fn ingest_trade_fill(
+        &self,
+        trade: Trade,
+        position: Position,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        self.add_trade(trade.clone()).await?;
+        self.update_position(position).await?;
+        self.put_with_version_and_events(account, expected_version, events)
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -146,13 +165,9 @@ impl AccountStore for Arc<dyn AccountStore> {
         expected_version: u64,
         events: &[crate::core::events::DomainEvent],
     ) -> Result<(), Error> {
-        self.put_with_version(account, expected_version).await?;
-        if let Some(store) = self.event_store() {
-            for ev in events {
-                store.append(ev.clone()).await?;
-            }
-        }
-        Ok(())
+        self.as_ref()
+            .put_with_version_and_events(account, expected_version, events)
+            .await
     }
 
     fn event_store(&self) -> Option<&dyn crate::events::store::EventStore> {
@@ -202,6 +217,19 @@ impl AccountStore for Arc<dyn AccountStore> {
     ) -> Result<(), Error> {
         self.as_ref()
             .add_trade_and_update_position(trade, position)
+            .await
+    }
+
+    async fn ingest_trade_fill(
+        &self,
+        trade: Trade,
+        position: Position,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        self.as_ref()
+            .ingest_trade_fill(trade, position, account, expected_version, events)
             .await
     }
 }
