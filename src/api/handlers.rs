@@ -387,7 +387,11 @@ pub async fn breach_report(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     // Pull all violations from the event log for this account.
-    let events = s.event_store.all(account_id);
+    let events = s
+        .event_store
+        .all(account_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let violations: Vec<ViolationSummary> = events
         .iter()
         .filter_map(|e| match &e.kind {

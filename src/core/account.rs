@@ -13,6 +13,7 @@ use crate::core::{invalid_state, Error};
 /// Type of the account – distinguishes between evaluation phases and funded
 /// status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccountType {
     /// Phase 1 evaluation.
     Phase1,
@@ -37,6 +38,7 @@ impl std::fmt::Display for AccountType {
 
 /// Lifecycle status of the account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccountStatus {
     /// Evaluation not started.
     Pending,
@@ -480,6 +482,7 @@ impl Account {
 /// Point-in-time snapshot of an account, suitable for serialization and
 /// transmission to the trader UI.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 pub struct AccountSnapshot {
     pub id: AccountId,
     pub account_type: AccountType,

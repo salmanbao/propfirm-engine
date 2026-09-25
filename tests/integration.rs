@@ -476,8 +476,8 @@ async fn test_risk_metrics_smoke() {
 #[tokio::test]
 async fn test_event_store_replay() {
     use propfirm::core::events::{DomainEvent, DomainEventKind};
-    use propfirm::events::store::EventStore;
-    let store = EventStore::in_memory();
+    use propfirm::events::store::{EventStore, InMemoryEventStore};
+    let store = InMemoryEventStore::in_memory();
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
     let ev1 = DomainEvent::new(
@@ -485,7 +485,7 @@ async fn test_event_store_replay() {
         DomainEventKind::AccountStarted,
         chrono::Utc::now(),
     );
-    store.append(ev1).unwrap();
+    store.append(ev1).await.unwrap();
     let ev2 = DomainEvent::new(
         account.id,
         DomainEventKind::TradeFilled {
@@ -503,8 +503,8 @@ async fn test_event_store_replay() {
         },
         chrono::Utc::now(),
     );
-    store.append(ev2).unwrap();
-    let replayed = store.replay(account.id, account.clone()).unwrap();
+    store.append(ev2).await.unwrap();
+    let replayed = store.replay(account.id, account.clone()).await.unwrap();
     assert_eq!(replayed.status, AccountStatus::Active);
 }
 

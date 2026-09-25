@@ -3,61 +3,75 @@
 use crate::core::events::DomainEvent;
 use crate::core::ids::AccountId;
 use crate::core::Error;
+use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Append-only event log.
-#[derive(Clone)]
-pub struct EventStore {
+/// Append-only event log backend.
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    /// Appends a new event to the log.
+    async fn append(&self, ev: DomainEvent) -> Result<(), Error>;
+    /// Returns all events for an account, in order.
+    async fn all(&self, id: AccountId) -> Result<Vec<DomainEvent>, Error>;
+    /// Returns the most recent `n` events for an account.
+    async fn recent(&self, id: AccountId, n: usize) -> Result<Vec<DomainEvent>, Error>;
+    /// Replays the event log to reconstruct account state.
+    async fn replay(
+        &self,
+        id: AccountId,
+        initial: crate::core::account::Account,
+    ) -> Result<crate::core::account::Account, Error>;
+}
+
+/// In-memory event store implementation.
+#[derive(Clone, Default)]
+pub struct InMemoryEventStore {
     events: Arc<RwLock<HashMap<AccountId, Vec<DomainEvent>>>>,
 }
 
-impl Default for EventStore {
-    fn default() -> Self {
-        Self::in_memory()
+impl InMemoryEventStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self::new()
     }
 }
 
-impl EventStore {
-    #[must_use]
-    pub fn in_memory() -> Self {
-        EventStore {
-            events: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub fn append(&self, ev: DomainEvent) -> Result<(), Error> {
+#[async_trait]
+impl EventStore for InMemoryEventStore {
+    async fn append(&self, ev: DomainEvent) -> Result<(), Error> {
         let mut w = self.events.write();
         w.entry(ev.account_id).or_default().push(ev);
         Ok(())
     }
 
-    #[must_use]
-    pub fn all(&self, id: AccountId) -> Vec<DomainEvent> {
-        self.events.read().get(&id).cloned().unwrap_or_default()
+    async fn all(&self, id: AccountId) -> Result<Vec<DomainEvent>, Error> {
+        Ok(self.events.read().get(&id).cloned().unwrap_or_default())
     }
 
-    #[must_use]
-    pub fn recent(&self, id: AccountId, n: usize) -> Vec<DomainEvent> {
-        let all = self.all(id);
+    async fn recent(&self, id: AccountId, n: usize) -> Result<Vec<DomainEvent>, Error> {
+        let all = self.all(id).await?;
         let len = all.len();
         if len > n {
-            all[len - n..].to_vec()
+            Ok(all[len - n..].to_vec())
         } else {
-            all
+            Ok(all)
         }
     }
 
-    /// Replays the entire event log to reconstruct account state. Returns
-    /// the final account after applying all events.
-    pub fn replay(
+    async fn replay(
         &self,
         id: AccountId,
         initial: crate::core::account::Account,
     ) -> Result<crate::core::account::Account, Error> {
         use crate::core::events::DomainEventKind as K;
-        let events = self.all(id);
+        let events = self.all(id).await?;
         let mut acc = initial;
         for ev in events {
             match ev.kind {

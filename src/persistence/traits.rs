@@ -49,6 +49,30 @@ pub trait AccountStore: Send + Sync {
     /// and retry on conflict.
     async fn put_with_version(&self, account: Account, expected_version: u64) -> Result<(), Error>;
 
+    /// Atomically persists an account update and a batch of domain events
+    /// in a single transaction. Postgres-backed stores should implement
+    /// this as `BEGIN; put_with_version; append events; COMMIT;`.
+    /// In-memory backends may simply execute the two operations sequentially.
+    async fn put_with_version_and_events(
+        &self,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        self.put_with_version(account, expected_version)
+            .await?;
+        if let Some(store) = self.event_store() {
+            for ev in events {
+                store.append(ev.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn event_store(&self) -> Option<&dyn crate::events::store::EventStore> {
+        None
+    }
+
     /// Deletes an account, scoped to a specific tenant.
     async fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error>;
 
@@ -78,6 +102,19 @@ pub trait AccountStore: Send + Sync {
 
     /// Adds a trade.
     async fn add_trade(&self, trade: Trade) -> Result<(), Error>;
+
+    /// Atomically persists a trade and updates its related position in a
+    /// single transaction. Postgres-backed stores should implement this as
+    /// `BEGIN; add_trade; update_position; COMMIT;`.
+    async fn add_trade_and_update_position(
+        &self,
+        trade: Trade,
+        position: Position,
+    ) -> Result<(), Error> {
+        self.add_trade(trade.clone()).await?;
+        self.update_position(position).await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -102,6 +139,26 @@ impl AccountStore for Arc<dyn AccountStore> {
         self.as_ref()
             .put_with_version(account, expected_version)
             .await
+    }
+
+    async fn put_with_version_and_events(
+        &self,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        self.put_with_version(account, expected_version)
+            .await?;
+        if let Some(store) = self.event_store() {
+            for ev in events {
+                store.append(ev.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn event_store(&self) -> Option<&dyn crate::events::store::EventStore> {
+        None
     }
 
     async fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
@@ -138,5 +195,15 @@ impl AccountStore for Arc<dyn AccountStore> {
 
     async fn add_trade(&self, trade: Trade) -> Result<(), Error> {
         self.as_ref().add_trade(trade).await
+    }
+
+    async fn add_trade_and_update_position(
+        &self,
+        trade: Trade,
+        position: Position,
+    ) -> Result<(), Error> {
+        self.as_ref()
+            .add_trade_and_update_position(trade, position)
+            .await
     }
 }

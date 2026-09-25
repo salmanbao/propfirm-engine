@@ -296,6 +296,126 @@ impl AccountStore for PostgresStore {
         }
     }
 
+    fn event_store(&self) -> Option<&dyn crate::events::store::EventStore> {
+        Some(self)
+    }
+
+    async fn put_with_version_and_events(
+        &self,
+        account: Account,
+        expected_version: u64,
+        events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        let row = AccountRow::from_account(&account);
+        let result = sqlx::query(
+            r#"
+             UPDATE accounts
+                SET status = $2,
+                    balance = $3,
+                    equity = $4,
+                    estimated_equity = $5,
+                    estimated_balance = $6,
+                    peak_equity = $7,
+                    peak_balance = $8,
+                    day_start_balance = $9,
+                    trading_day_index = $10,
+                    active_trading_days = $11,
+                    day_counted_today = $12,
+                    today_realized_pnl = $13,
+                    total_realized_pnl = $14,
+                    total_commissions = $15,
+                    total_swaps = $16,
+                    largest_day_profit = $17,
+                    largest_day_loss = $18,
+                    sum_positive_days_profit = $19,
+                    day_start_equity = $20,
+                    current_trading_day_start = $21,
+                    target_reached_at = $22,
+                    target_reached_on_day = $23,
+                    last_tick_ts = $24,
+                    last_trade_at = $25,
+                    payout_count = $26,
+                    balance_at_last_payout = $27,
+                    last_payout_at = $28,
+                    refund_used = $29,
+                    version = version + 1,
+                    updated_at = NOW()
+             WHERE id = $1 AND version = $30
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.status)
+        .bind(row.balance)
+        .bind(row.equity)
+        .bind(row.estimated_equity)
+        .bind(row.estimated_balance)
+        .bind(row.peak_equity)
+        .bind(row.peak_balance)
+        .bind(row.day_start_balance)
+        .bind(row.trading_day_index)
+        .bind(row.active_trading_days)
+        .bind(row.day_counted_today)
+        .bind(row.today_realized_pnl)
+        .bind(row.total_realized_pnl)
+        .bind(row.total_commissions)
+        .bind(row.total_swaps)
+        .bind(row.largest_day_profit)
+        .bind(row.largest_day_loss)
+        .bind(row.sum_positive_days_profit)
+        .bind(row.day_start_equity)
+        .bind(row.current_trading_day_start)
+        .bind(row.target_reached_at)
+        .bind(row.target_reached_on_day)
+        .bind(row.last_tick_ts)
+        .bind(row.last_trade_at)
+        .bind(row.payout_count)
+        .bind(row.balance_at_last_payout)
+        .bind(row.last_payout_at)
+        .bind(row.refund_used)
+        .bind(expected_version as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        if result.rows_affected() != 1 {
+            return Err(Error::StateConflict(
+                format!("account {}", row.id),
+                expected_version,
+                row.version.try_into().unwrap(),
+            ));
+        }
+
+        for ev in events {
+            let payload = serde_json::json!({
+                "event": ev,
+            });
+            sqlx::query(
+                r#"
+                INSERT INTO events (id, account_id, kind, payload, occurred_at)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(ev.id.raw())
+            .bind(ev.account_id.raw())
+            .bind(format!("{:?}", ev.kind))
+            .bind(payload)
+            .bind(ev.occurred_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, tenant_id: TenantId, id: AccountId) -> Result<(), Error> {
         sqlx::query("DELETE FROM accounts WHERE id = $1 AND tenant_id = $2")
             .bind(id.0)
@@ -504,6 +624,98 @@ impl AccountStore for PostgresStore {
         .await
         .map_err(|e| Error::Persistence(e.to_string()))?;
 
+        Ok(())
+    }
+
+    async fn add_trade_and_update_position(
+        &self,
+        trade: Trade,
+        position: Position,
+    ) -> Result<(), Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        let trade_row = TradeRow::from(trade);
+        sqlx::query(
+            r#"
+            INSERT INTO trades
+              (id, account_id, symbol, side, trade_side, price, quantity,
+               commission, swap, executed_at, position_id, realized_pnl,
+               exit_price, closed_quantity, entry_price, comment, created_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            "#,
+        )
+        .bind(trade_row.id)
+        .bind(trade_row.account_id)
+        .bind(trade_row.symbol)
+        .bind(trade_row.side)
+        .bind(trade_row.trade_side)
+        .bind(trade_row.price)
+        .bind(trade_row.quantity)
+        .bind(trade_row.swap)
+        .bind(trade_row.executed_at)
+        .bind(trade_row.position_id)
+        .bind(trade_row.realized_pnl)
+        .bind(trade_row.exit_price)
+        .bind(trade_row.closed_quantity)
+        .bind(trade_row.entry_price)
+        .bind(trade_row.comment)
+        .bind(trade_row.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        let position_row = PositionRow::from(position);
+        sqlx::query(
+            r#"
+            UPDATE positions
+               SET account_id = $2,
+                   symbol = $3,
+                   side = $4,
+                   opened_quantity = $5,
+                   open_quantity = $6,
+                   avg_entry_price = $7,
+                   status = $8,
+                   opened_at = $9,
+                   closed_at = $10,
+                   realized_pnl = $11,
+                   swap = $12,
+                   commission = $13,
+                   stop_loss = $14,
+                   take_profit = $15,
+                   magic = $16,
+                   comment = $17,
+                   updated_at = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(position_row.id)
+        .bind(position_row.account_id)
+        .bind(position_row.symbol)
+        .bind(position_row.side)
+        .bind(position_row.opened_quantity)
+        .bind(position_row.open_quantity)
+        .bind(position_row.avg_entry_price)
+        .bind(position_row.status)
+        .bind(position_row.opened_at)
+        .bind(position_row.closed_at)
+        .bind(position_row.realized_pnl)
+        .bind(position_row.swap)
+        .bind(position_row.commission)
+        .bind(position_row.stop_loss)
+        .bind(position_row.take_profit)
+        .bind(position_row.magic)
+        .bind(position_row.comment)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Persistence(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
         Ok(())
     }
 }
@@ -953,37 +1165,15 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         response: &str,
     ) -> crate::api::idempotency::IdempotencyOutcome {
         let body_hash = hash_body(request_body);
-        let existing = sqlx::query_as::<_, IdempotencyEntryRow>(
-            r#"
-                SELECT response, body_hash
-                  FROM idempotency_entries
-                 WHERE tenant_id = $1
-                   AND endpoint = $2
-                   AND idempotency_key = $3
-                "#,
-        )
-        .bind(tenant_id.0)
-        .bind(endpoint)
-        .bind(key)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .map_err(|e| Error::Persistence(e.to_string()));
-
-        match existing {
-            Ok(Some(row)) if row.body_hash != body_hash => {
-                return crate::api::idempotency::IdempotencyOutcome::Conflict;
-            }
-            Ok(Some(row)) => {
-                return crate::api::idempotency::IdempotencyOutcome::Replay(row.response);
-            }
-            _ => {}
-        }
-
-        let insert = sqlx::query(
+        let result = sqlx::query_as::<_, IdempotencyEntryRow>(
             r#"
                 INSERT INTO idempotency_entries
                     (tenant_id, endpoint, idempotency_key, body_hash, response)
                 VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (tenant_id, endpoint, idempotency_key) DO UPDATE SET
+                    body_hash = EXCLUDED.body_hash,
+                    response = EXCLUDED.response
+                RETURNING response, body_hash
                 "#,
         )
         .bind(tenant_id.0)
@@ -991,13 +1181,19 @@ impl crate::api::idempotency::IdempotencyBackend for PostgresIdempotencyStore {
         .bind(key)
         .bind(&body_hash)
         .bind(response)
-        .execute(self.pool.as_ref())
+        .fetch_optional(self.pool.as_ref())
         .await
-        .map(|_| ())
         .map_err(|e| Error::Persistence(e.to_string()));
 
-        match insert {
-            Ok(_) => crate::api::idempotency::IdempotencyOutcome::Fresh,
+        match result {
+            Ok(Some(row)) => {
+                if row.body_hash == body_hash {
+                    crate::api::idempotency::IdempotencyOutcome::Replay(row.response)
+                } else {
+                    crate::api::idempotency::IdempotencyOutcome::Conflict
+                }
+            }
+            Ok(None) => crate::api::idempotency::IdempotencyOutcome::Fresh,
             Err(_) => crate::api::idempotency::IdempotencyOutcome::Error,
         }
     }
@@ -1094,11 +1290,13 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         let row = sqlx::query_as::<_, RulePackRow>(
             r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
-                       rules, content_hash, created_at, updated_at
+                       rules, content_hash, created_at, updated_at,
+                       description, initial_balance, leverage, profit_target_pct,
+                       superseded_by
                   FROM rule_packs
                  WHERE tenant_id = $1
                    AND id = $2
-                "#,
+                 "#,
         )
         .bind(tenant_id.0)
         .bind(id)
@@ -1114,8 +1312,10 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
             r#"
                 INSERT INTO rule_packs
                     (id, tenant_id, version, lifecycle, effective_from,
-                     rules, content_hash, created_at, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())
+                     rules, content_hash, created_at, updated_at,
+                     description, initial_balance, leverage, profit_target_pct,
+                     superseded_by)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now(),$8,$9,$10,$11,$12)
                 "#,
         )
         .bind(&pack.id)
@@ -1125,6 +1325,11 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         .bind(pack.effective_from)
         .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
         .bind(pack.content_hash())
+        .bind(pack.description.clone())
+        .bind(pack.initial_balance.0)
+        .bind(pack.leverage as i32)
+        .bind(pack.profit_target_pct.0)
+        .bind(pack.superseded_by.clone())
         .execute(self.pool.as_ref())
         .await
         .map(|_| ())
@@ -1139,10 +1344,15 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
                        effective_from = $4,
                        rules = $5,
                        content_hash = $6,
-                       updated_at = now()
+                       updated_at = now(),
+                       description = $7,
+                       initial_balance = $8,
+                       leverage = $9,
+                       profit_target_pct = $10,
+                       superseded_by = $11
                  WHERE tenant_id = $1
                    AND id = $2
-                "#,
+                 "#,
         )
         .bind(pack.tenant_id.0)
         .bind(&pack.id)
@@ -1150,6 +1360,11 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         .bind(pack.effective_from)
         .bind(serde_json::to_value(&pack.rules).unwrap_or_default())
         .bind(pack.content_hash())
+        .bind(pack.description.clone())
+        .bind(pack.initial_balance.0)
+        .bind(pack.leverage as i32)
+        .bind(pack.profit_target_pct.0)
+        .bind(pack.superseded_by.clone())
         .execute(self.pool.as_ref())
         .await
         .map(|_| ())
@@ -1163,11 +1378,13 @@ impl crate::persistence::rulepack_store::RulePackStore for PostgresRulePackStore
         let rows = sqlx::query_as::<_, RulePackRow>(
             r#"
                 SELECT id, tenant_id, version, lifecycle, effective_from,
-                       rules, content_hash, created_at, updated_at
+                       rules, content_hash, created_at, updated_at,
+                       description, initial_balance, leverage, profit_target_pct,
+                       superseded_by
                   FROM rule_packs
                  WHERE tenant_id = $1
                  ORDER BY version DESC, id ASC
-                "#,
+                 "#,
         )
         .bind(tenant_id.0)
         .fetch_all(self.pool.as_ref())
@@ -1189,6 +1406,11 @@ struct RulePackRow {
     _content_hash: String,
     _created_at: chrono::DateTime<chrono::Utc>,
     _updated_at: chrono::DateTime<chrono::Utc>,
+    description: String,
+    initial_balance: rust_decimal::Decimal,
+    leverage: i32,
+    profit_target_pct: rust_decimal::Decimal,
+    superseded_by: Option<String>,
 }
 
 impl From<RulePackRow> for crate::rulepack::RulePack {
@@ -1208,12 +1430,143 @@ impl From<RulePackRow> for crate::rulepack::RulePack {
             tenant_id: crate::tenant::TenantId(row.tenant_id),
             lifecycle,
             effective_from: row.effective_from,
-            superseded_by: None,
-            description: String::new(),
+            superseded_by: row.superseded_by,
+            description: row.description,
             rules,
-            initial_balance: crate::core::types::Money::ZERO,
-            leverage: 1,
-            profit_target_pct: crate::core::types::Pct::ZERO,
+            initial_balance: crate::core::types::Money(row.initial_balance),
+            leverage: row.leverage as u32,
+            profit_target_pct: crate::core::types::Pct(row.profit_target_pct),
         }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+pub struct EventRow {
+    pub id: uuid::Uuid,
+    pub account_id: uuid::Uuid,
+    pub kind: String,
+    pub payload: serde_json::Value,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl TryFrom<EventRow> for crate::core::events::DomainEvent {
+    type Error = ();
+
+    fn try_from(row: EventRow) -> Result<Self, Self::Error> {
+        let event = row.payload.get("event").ok_or(())?;
+        let event: crate::core::events::DomainEvent =
+            serde_json::from_value(event.clone()).map_err(|_| ())?;
+        Ok(event)
+    }
+}
+
+#[async_trait]
+impl crate::events::store::EventStore for PostgresStore {
+    async fn append(&self, ev: crate::core::events::DomainEvent) -> Result<(), crate::core::Error> {
+        let payload = serde_json::json!({
+            "event": ev,
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO events (id, account_id, kind, payload, occurred_at)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(ev.id.raw())
+        .bind(ev.account_id.raw())
+        .bind(format!("{:?}", ev.kind))
+        .bind(payload)
+        .bind(ev.occurred_at)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn all(&self, id: crate::core::ids::AccountId) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, account_id, kind, payload, occurred_at
+              FROM events
+             WHERE account_id = $1
+             ORDER BY occurred_at ASC, id ASC
+            "#,
+        )
+        .bind(id.raw())
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
+        Ok(rows.into_iter().filter_map(|r| r.try_into().ok()).collect())
+    }
+
+    async fn recent(&self, id: crate::core::ids::AccountId, n: usize) -> Result<Vec<crate::core::events::DomainEvent>, crate::core::Error> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT id, account_id, kind, payload, occurred_at
+              FROM events
+             WHERE account_id = $1
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT $2
+            "#,
+        )
+        .bind(id.raw())
+        .bind(n as i64)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| crate::core::Error::Persistence(e.to_string()))?;
+        let mut events: Vec<crate::core::events::DomainEvent> = rows
+            .into_iter()
+            .filter_map(|r| r.try_into().ok())
+            .collect();
+        events.reverse();
+        Ok(events)
+    }
+
+    async fn replay(
+        &self,
+        id: crate::core::ids::AccountId,
+        initial: crate::core::account::Account,
+    ) -> Result<crate::core::account::Account, crate::core::Error> {
+        use crate::core::events::DomainEventKind as K;
+        let events = self.all(id).await?;
+        let mut acc = initial;
+        for ev in events {
+            match ev.kind {
+                K::AccountStarted => {
+                    acc = acc.start(ev.occurred_at)?;
+                }
+                K::AccountStatusChanged { to, .. } => {
+                    acc.status = to;
+                }
+                K::TradeFilled { trade } => {
+                    let net = trade.net_pnl();
+                    acc.balance = crate::core::types::Money(acc.balance.0 + net.0);
+                    acc.total_realized_pnl =
+                        crate::core::types::Money(acc.total_realized_pnl.0 + net.0);
+                    if acc.balance.0 > acc.peak_balance.0 {
+                        acc.peak_balance = acc.balance;
+                    }
+                }
+                K::DayRollover {
+                    new_day_index,
+                    day_start,
+                } => {
+                    if acc.today_realized_pnl.0 != crate::core::types::dec!(0) {
+                        acc.active_trading_days += 1;
+                    }
+                    acc.trading_day_index = new_day_index;
+                    acc.day_start_balance = day_start;
+                    acc.today_realized_pnl = crate::core::types::Money::ZERO;
+                }
+                K::TickEvaluated { equity } => {
+                    acc.equity = equity;
+                    if equity.0 > acc.peak_equity.0 {
+                        acc.peak_equity = equity;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(acc)
     }
 }

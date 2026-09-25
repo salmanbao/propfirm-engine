@@ -81,6 +81,19 @@ impl AccountStore for InMemoryStore {
         *accounts.get_mut(&account.id).unwrap() = updated;
         Ok(())
     }
+
+    fn event_store(&self) -> Option<&dyn crate::events::store::EventStore> {
+        None
+    }
+
+    async fn put_with_version_and_events(
+        &self,
+        account: Account,
+        expected_version: u64,
+        _events: &[crate::core::events::DomainEvent],
+    ) -> Result<(), Error> {
+        self.put_with_version(account, expected_version).await
+    }
     async fn delete(&self, tenant_id: crate::tenant::TenantId, id: AccountId) -> Result<(), Error> {
         let account = self.accounts.read().get(&id).cloned();
         if let Some(account) = account {
@@ -152,6 +165,23 @@ impl AccountStore for InMemoryStore {
     async fn add_trade(&self, trade: Trade) -> Result<(), Error> {
         let mut w = self.trades.write();
         w.entry(trade.account_id).or_default().push(trade);
+        Ok(())
+    }
+
+    async fn add_trade_and_update_position(
+        &self,
+        trade: Trade,
+        position: Position,
+    ) -> Result<(), Error> {
+        let mut trades = self.trades.write();
+        trades.entry(trade.account_id).or_default().push(trade);
+        let mut positions = self.positions.write();
+        let v = positions.entry(position.account_id).or_default();
+        if let Some(idx) = v.iter().position(|p| p.id == position.id) {
+            v[idx] = position;
+        } else {
+            v.push(position);
+        }
         Ok(())
     }
 }

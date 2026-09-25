@@ -14,6 +14,7 @@ use crate::core::violation::Violation;
 
 /// Type of domain event.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 pub enum DomainEventKind {
     /// Account opened / started.
     AccountStarted,
@@ -94,6 +95,7 @@ pub enum DomainEventKind {
 
 /// A fully-timestamped domain event.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
 pub struct DomainEvent {
     pub id: EventId,
     pub account_id: AccountId,

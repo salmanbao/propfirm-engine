@@ -11,15 +11,15 @@ use crate::core::order::Order;
 use crate::core::position::Position;
 use crate::core::tick::Tick;
 use crate::core::trade::Trade;
-use crate::core::types::{Money, Timestamp};
+use crate::core::types::{Money, Quantity, Timestamp};
 use crate::engine::decision::{Decision, DecisionKind};
 use crate::engine::evaluator::Evaluator;
 use crate::engine::snapshot::Snapshot;
 use crate::engine::state::{equity_after_tick, AccountState};
 use crate::equity_input::EquityInput;
-use crate::events::store::EventStore;
 use crate::notifications::traits::Notifier;
 use crate::persistence::traits::AccountStore;
+use std::sync::Arc;
 
 /// **P1-14 fix**: a tick older than this many minutes from wall-clock "now"
 /// is rejected before evaluation runs, regardless of whether it would have
@@ -158,7 +158,7 @@ where
     pub evaluator: Evaluator,
     pub store: S,
     pub notifier: N,
-    pub event_store: EventStore,
+    pub event_store: Arc<dyn crate::events::store::EventStore>,
 }
 
 impl<S, N> Pipeline<S, N>
@@ -171,7 +171,7 @@ where
             evaluator,
             store,
             notifier,
-            event_store: EventStore::in_memory(),
+            event_store: Arc::new(crate::events::store::InMemoryEventStore::new()),
         }
     }
 
@@ -413,13 +413,19 @@ where
             _ => {}
         }
         let snap = Snapshot::new(&final_state.account, result.decision.clone());
-        self.store
-            .put_with_version(final_state.account.clone(), expected_version)
-            .await?;
         let _decision_event = self.emit_decision_event(account_id, &result.decision, &mut events);
-        for e in &events {
-            self.event_store.append(e.clone())?;
+        for v in result.violations() {
+            events.push(DomainEvent::new(
+                account_id,
+                DomainEventKind::RuleViolated {
+                    violation: v.clone(),
+                },
+                ctx.server_time.ts(),
+            ));
         }
+        self.store
+            .put_with_version_and_events(final_state.account.clone(), expected_version, &events)
+            .await?;
         for v in result.violations() {
             self.notifier.notify_violation(v)?;
         }
@@ -440,12 +446,13 @@ where
             OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
         };
         let open_positions = self.store.open_positions(state.account.id).await?;
-        let day_start = state.account.plan.trading_day_start(chrono::Utc::now());
+        let event_ts = ev.event_timestamp();
+        let day_start = state.account.plan.trading_day_start(event_ts);
         let today_trades = self
             .store
             .today_trades_since(state.account.id, day_start)
             .await?;
-        let recent_events = self.event_store.recent(state.account.id, 50);
+        let recent_events = self.event_store.recent(state.account.id, 50).await?;
         match ev {
             PipelineEvent::AccountStarted { at } => {
                 let new_acc = state.account.clone().start(*at)?;
@@ -479,6 +486,79 @@ where
                 let new_state = state
                     .apply_realized_pnl(pnl, commission, swap, trade.executed_at)
                     .mark_active_trading_day();
+                
+                // Broker fill ingestion: atomically persist trade and update position
+                let position = match trade.trade_side {
+                    crate::core::trade::TradeSide::Entry => {
+                        Position::open(
+                            trade.account_id,
+                            trade.symbol.clone(),
+                            crate::core::position::PositionSide::from_order(trade.side),
+                            trade.price,
+                            trade.quantity,
+                            trade.executed_at,
+                            trade.commission,
+                            None,
+                            None,
+                            None,
+                            trade.comment.clone(),
+                        )
+                    }
+                    crate::core::trade::TradeSide::Exit => {
+                        if let Some(exit_info) = &trade.exit_info {
+                            if let Some(mut pos) = open_positions.iter().find(|p| p.id == exit_info.position_id).cloned() {
+                                pos.status = crate::core::position::PositionStatus::Closed;
+                                pos.closed_at = Some(trade.executed_at);
+                                pos.realized_pnl = exit_info.realized_pnl;
+                                pos.open_quantity = Quantity::ZERO;
+                                pos
+                            } else {
+                                // Synthetic closed position for tests/external fills where the
+                                // original position is not tracked in this store.
+                                Position {
+                                    id: exit_info.position_id,
+                                    account_id: trade.account_id,
+                                    symbol: trade.symbol.clone(),
+                                    side: crate::core::position::PositionSide::from_order(trade.side),
+                                    opened_at: trade.executed_at,
+                                    closed_at: Some(trade.executed_at),
+                                    status: crate::core::position::PositionStatus::Closed,
+                                    avg_entry_price: exit_info.entry_price,
+                                    opened_quantity: exit_info.closed_quantity,
+                                    open_quantity: Quantity::ZERO,
+                                    realized_pnl: exit_info.realized_pnl,
+                                    commission: trade.commission,
+                                    swap: trade.swap,
+                                    stop_loss: None,
+                                    take_profit: None,
+                                    magic: None,
+                                    comment: trade.comment.clone(),
+                                }
+                            }
+                        } else {
+                            return Err(crate::Error::Persistence("exit trade missing exit_info".to_string()));
+                        }
+                    }
+                    _ => {
+                        Position::open(
+                            trade.account_id,
+                            trade.symbol.clone(),
+                            crate::core::position::PositionSide::from_order(trade.side),
+                            trade.price,
+                            trade.quantity,
+                            trade.executed_at,
+                            trade.commission,
+                            None,
+                            None,
+                            None,
+                            trade.comment.clone(),
+                        )
+                    }
+                };
+                
+                // Atomically persist trade and position
+                self.store.add_trade_and_update_position(trade.clone(), position).await?;
+                
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::TradeFilled {
@@ -632,7 +712,7 @@ where
                         override_record.account_id, state.account.id
                     )));
                 }
-                let existing_events = self.event_store.all(state.account.id);
+                let existing_events = self.event_store.all(state.account.id).await?;
                 let clears_violation = existing_events
                     .iter()
                     .find_map(|e| match &e.kind {
