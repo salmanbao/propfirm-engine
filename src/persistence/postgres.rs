@@ -766,55 +766,101 @@ impl AccountStore for PostgresStore {
         .await
         .map_err(|e| Error::Persistence(e.to_string()))?;
 
-        // 2. Update the position
-        let position_row = PositionRow::from(position);
-        sqlx::query(
-            r#"
-            UPDATE positions
-               SET account_id = $2,
-                   symbol = $3,
-                   side = $4,
-                   opened_quantity = $5,
-                   open_quantity = $6,
-                   avg_entry_price = $7,
-                   status = $8,
-                   opened_at = $9,
-                   closed_at = $10,
-                   realized_pnl = $11,
-                   swap = $12,
-                   commission = $13,
-                   stop_loss = $14,
-                   take_profit = $15,
-                   magic = $16,
-                   comment = $17,
-                   updated_at = NOW()
-              WHERE id = $1
-            "#,
-        )
-        .bind(position_row.id)
-        .bind(position_row.account_id)
-        .bind(position_row.symbol)
-        .bind(position_row.side)
-        .bind(position_row.opened_quantity)
-        .bind(position_row.open_quantity)
-        .bind(position_row.avg_entry_price)
-        .bind(position_row.status)
-        .bind(position_row.opened_at)
-        .bind(position_row.closed_at)
-        .bind(position_row.realized_pnl)
-        .bind(position_row.swap)
-        .bind(position_row.commission)
-        .bind(position_row.stop_loss)
-        .bind(position_row.take_profit)
-        .bind(position_row.magic)
-        .bind(position_row.comment)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Persistence(e.to_string()))?;
+        // 2. Persist the position (upsert: INSERT for new Entry, UPDATE for Exit)
+        let position_row = PositionRow::from(position.clone());
+        let is_entry = position.status == crate::core::position::PositionStatus::Open;
 
-        // 3. Persist account with events (transactional)
+        if is_entry {
+            // New position opened by this fill - INSERT
+            sqlx::query(
+                r#"
+                INSERT INTO positions
+                  (id, account_id, symbol, side, opened_quantity, open_quantity, avg_entry_price,
+                   status, opened_at, closed_at, realized_pnl,
+                   swap, commission, stop_loss, take_profit, magic, comment,
+                   created_at, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                "#,
+            )
+            .bind(position_row.id)
+            .bind(position_row.account_id)
+            .bind(position_row.symbol)
+            .bind(position_row.side)
+            .bind(position_row.opened_quantity)
+            .bind(position_row.open_quantity)
+            .bind(position_row.avg_entry_price)
+            .bind(position_row.status)
+            .bind(position_row.opened_at)
+            .bind(position_row.closed_at)
+            .bind(position_row.realized_pnl)
+            .bind(position_row.swap)
+            .bind(position_row.commission)
+            .bind(position_row.stop_loss)
+            .bind(position_row.take_profit)
+            .bind(position_row.magic)
+            .bind(position_row.comment)
+            .bind(position_row.created_at)
+            .bind(position_row.updated_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        } else {
+            // Exit or modification - UPDATE, and verify row affected
+            let result = sqlx::query(
+                r#"
+                UPDATE positions
+                   SET account_id = $2,
+                       symbol = $3,
+                       side = $4,
+                       opened_quantity = $5,
+                       open_quantity = $6,
+                       avg_entry_price = $7,
+                       status = $8,
+                       opened_at = $9,
+                       closed_at = $10,
+                       realized_pnl = $11,
+                       swap = $12,
+                       commission = $13,
+                       stop_loss = $14,
+                       take_profit = $15,
+                       magic = $16,
+                       comment = $17,
+                       updated_at = NOW()
+                 WHERE id = $1
+                "#,
+            )
+            .bind(position_row.id)
+            .bind(position_row.account_id)
+            .bind(position_row.symbol)
+            .bind(position_row.side)
+            .bind(position_row.opened_quantity)
+            .bind(position_row.open_quantity)
+            .bind(position_row.avg_entry_price)
+            .bind(position_row.status)
+            .bind(position_row.opened_at)
+            .bind(position_row.closed_at)
+            .bind(position_row.realized_pnl)
+            .bind(position_row.swap)
+            .bind(position_row.commission)
+            .bind(position_row.stop_loss)
+            .bind(position_row.take_profit)
+            .bind(position_row.magic)
+            .bind(position_row.comment)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+
+            if result.rows_affected() != 1 {
+                return Err(Error::Persistence(format!(
+                    "position {} not found or already closed for exit fill",
+                    position_row.id
+                )));
+            }
+        }
+
+        // 3. Persist account with events (transactional) - increment version, include last_payout_at
         let account_row = AccountRow::from_account(&account);
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE accounts
                SET tenant_id = $2,
@@ -846,15 +892,16 @@ impl AccountStore for PostgresStore {
                    current_trading_day_start = $28,
                    target_reached_at = $29,
                    target_reached_on_day = $30,
-                   version = $31,
-                   last_tick_ts = $32,
-                   last_trade_at = $33,
-                   payout_count = $34,
-                   balance_at_last_payout = $35,
+                   version = version + 1,
+                   last_tick_ts = $31,
+                   last_trade_at = $32,
+                   payout_count = $33,
+                   balance_at_last_payout = $34,
+                   last_payout_at = $35,
                    refund_used = $36,
                    updated_at = NOW()
-              WHERE id = $1
-                AND version = $37
+             WHERE id = $1
+               AND version = $37
             "#,
         )
         .bind(account_row.id)
@@ -887,22 +934,44 @@ impl AccountStore for PostgresStore {
         .bind(account_row.current_trading_day_start)
         .bind(account_row.target_reached_at)
         .bind(account_row.target_reached_on_day)
-        .bind(account_row.version)
         .bind(account_row.last_tick_ts)
         .bind(account_row.last_trade_at)
         .bind(account_row.payout_count)
         .bind(account_row.balance_at_last_payout)
+        .bind(account_row.last_payout_at)
         .bind(account_row.refund_used)
         .bind(expected_version as i64) // optimistic concurrency check
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::Persistence(e.to_string()))?;
 
-        // 4. Persist events
-        if let Some(store) = self.event_store() {
-            for ev in events {
-                store.append(ev.clone()).await?;
-            }
+        if result.rows_affected() != 1 {
+            return Err(Error::StateConflict(
+                format!("account {}", account_row.id),
+                expected_version,
+                account_row.version.try_into().unwrap(),
+            ));
+        }
+
+        // 4. Persist events using the SAME transaction handle
+        for ev in events {
+            let payload = serde_json::json!({
+                "event": ev,
+            });
+            sqlx::query(
+                r#"
+                INSERT INTO events (id, account_id, kind, payload, occurred_at)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(ev.id.raw())
+            .bind(ev.account_id.raw())
+            .bind(format!("{:?}", ev.kind))
+            .bind(payload)
+            .bind(ev.occurred_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Persistence(e.to_string()))?;
         }
 
         tx.commit()
