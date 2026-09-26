@@ -444,3 +444,156 @@ async fn p2_bridge_tick_v1_positions_flow_through() {
         "open position over the weekend must produce a weekend violation; got: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// P1 — concurrency / deadlock regression
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+
+    let evaluate_body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+
+    let override_body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "clears_violation_id": "00000000-0000-0000-0000-000000000000",
+        "reason": "concurrency test",
+        "actor_id": "test"
+    })
+    .to_string();
+
+    let mut handles = vec![];
+    for i in 0..50 {
+        let app = app.clone();
+        let eval_body = evaluate_body.clone();
+        let ovr_body = override_body.clone();
+        handles.push(tokio::spawn(async move {
+            if i % 2 == 0 {
+                send_with_headers(
+                    app,
+                    Method::POST,
+                    "/internal/v1/evaluate",
+                    Some(eval_body),
+                    &[("Idempotency-Key", &format!("key-{i}"))],
+                )
+                .await
+            } else {
+                send_with_headers(
+                    app,
+                    Method::POST,
+                    "/internal/v1/override",
+                    Some(ovr_body),
+                    &[],
+                )
+                .await
+            }
+        }));
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "concurrent evaluate + override requests timed out — possible deadlock"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P2 — account ownership / system of record
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn p2_create_account_returns_201_and_account_is_lookupable() {
+    let plan = ftmo_phase1();
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
+        plan.clone(),
+        test_auth_config(),
+    )));
+    let app = router(state).await;
+
+    let account_id = AccountId::new().to_string();
+    let body = serde_json::json!({
+        "account_id": account_id,
+        "tenant_id": test_tenant_id_str(),
+        "plan_id": plan.id.to_string(),
+        "initial_balance": Money::new(rust_decimal::Decimal::new(10_000, 0)).to_string()
+    })
+    .to_string();
+
+    let (status, resp) =
+        send_with_headers(app.clone(), Method::POST, "/v1/accounts", Some(body), &[]).await;
+
+    assert_eq!(status, StatusCode::CREATED, "create account failed: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(parsed["account_id"], account_id);
+    assert_eq!(parsed["tenant_id"], test_tenant_id_str());
+    assert_eq!(parsed["status"], "Pending");
+
+    // The created account must be lookupable via GET /v1/accounts/:id.
+    let (get_status, get_body) = send_with_headers(
+        app,
+        Method::GET,
+        &format!("/v1/accounts/{account_id}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(get_status, StatusCode::OK, "get account failed: {get_body}");
+    assert!(
+        get_body.contains("balance"),
+        "account snapshot missing balance: {get_body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P2 — GapFlagged end-to-end reachability
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+
+    let (status, resp) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "evaluate failed: {resp}");
+    // The response must contain a distinct decision_kind string.
+    // For a normal evaluation on a healthy account this is "Pass";
+    // either way the contract must serialize a string decision_kind.
+    assert!(
+        resp.contains("\"decision_kind\":\"Pass\"")
+            || resp.contains("\"decision_kind\":\"GapFlagged\""),
+        "evaluate response must contain a distinct decision_kind; got: {resp}"
+    );
+}

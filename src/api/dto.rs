@@ -51,3 +51,18 @@ impl From<&crate::core::account::AccountSnapshot> for AccountSnapshotDto {
         }
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccountRequest {
+    pub account_id: String,
+    pub tenant_id: String,
+    pub plan_id: String,
+    pub initial_balance: Option<Money>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccountResponse {
+    pub account_id: String,
+    pub tenant_id: String,
+    pub status: String,
+}

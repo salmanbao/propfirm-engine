@@ -5,7 +5,10 @@
 //! the server tracks the last N idempotency keys per endpoint to
 //! deduplicate retries.
 
-use crate::api::dto::{AccountSnapshotDto, EvaluateOrderRequest, EvaluateOrderResponse};
+use crate::api::dto::{
+    AccountSnapshotDto, CreateAccountRequest, CreateAccountResponse, EvaluateOrderRequest,
+    EvaluateOrderResponse,
+};
 use crate::core::ids::AccountId;
 use crate::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
 use crate::core::types::{Price, Quantity, Symbol};
@@ -97,8 +100,8 @@ pub async fn evaluate_internal(
     // P0.8: idempotency — key → first response, conflicting bodies 409.
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let s = state.read().await.clone();
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        let s = state.read().await;
         let response = evaluate_internal_impl(&state, tenant_id, req).await?;
         let response_str = serde_json::to_string(&response)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -574,7 +577,7 @@ pub async fn get_account(
     let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let uuid = Uuid::from_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let account_id = AccountId::from_uuid(uuid);
-    let s = state.read().await;
+    let s = state.read().await.clone();
     let acc = s
         .store
         .get_for_tenant(tenant_id, account_id)
@@ -583,6 +586,47 @@ pub async fn get_account(
         .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
     let snap: crate::core::account::AccountSnapshot = (&acc).into();
     Ok(Json(AccountSnapshotDto::from(&snap)))
+}
+
+/// `POST /v1/accounts` — register a new account for a tenant.
+///
+/// The engine is the system of record for accounts. This endpoint creates
+/// the account aggregate in `AccountStore` so subsequent evaluate/manual-run
+/// calls can load it by `account_id`.
+pub async fn create_account(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
+    Json(req): Json<CreateAccountRequest>,
+) -> Result<(StatusCode, Json<CreateAccountResponse>), (StatusCode, String)> {
+    let _tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let account_id = AccountId::from_uuid(
+        Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+    );
+    let tenant_id = crate::tenant::TenantId::from_str(&req.tenant_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let plan_id = crate::core::ids::ChallengeId::from_str(&req.plan_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut plan = crate::config::presets::ftmo_phase1();
+    plan.id = plan_id;
+    if let Some(initial_balance) = req.initial_balance {
+        plan.initial_balance_money = initial_balance;
+    }
+    let mut account = crate::core::account::Account::new(account_id, plan);
+    account = account.with_tenant(tenant_id);
+    let s = state.read().await.clone();
+    s.store
+        .put(account.clone())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateAccountResponse {
+            account_id: account.id.to_string(),
+            tenant_id: account.tenant_id.to_string(),
+            status: format!("{:?}", account.status),
+        }),
+    ))
 }
 
 // DTOs for the new endpoints.

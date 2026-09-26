@@ -35,7 +35,9 @@ async fn main() -> anyhow::Result<()> {
     // 2. Build the pipeline.
     let evaluator = Evaluator::new(&plan);
     let store = InMemoryStore::new();
-    store.put(account.clone()).await?;
+    store
+        .put_with_version(account.clone(), account.version)
+        .await?;
     let notifier = LogNotifier::new();
     let mut pipeline = Pipeline::new(evaluator, store, notifier);
 

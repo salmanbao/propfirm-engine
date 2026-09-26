@@ -30,17 +30,20 @@ pub trait AccountStore: Send + Sync {
         id: AccountId,
     ) -> Result<Option<Account>, Error>;
 
-    /// Bootstrap read — fetches an account without tenant scoping.
+    /// **Deprecated/internal**: reads an account without tenant scoping.
     ///
-    /// Intended *only* for internal-API endpoints where the caller needs
-    /// the account's own `tenant_id` before it can issue a scoped read
-    /// (e.g. `Pipeline::process`). Production code that already knows
-    /// the tenant MUST use `get_for_tenant`.
+    /// Retained only for bootstrap/internal paths where the caller needs
+    /// the account's own `tenant_id` before issuing a scoped read.
+    /// Production code that already knows the tenant MUST use
+    /// [`get_for_tenant`](Self::get_for_tenant).
     async fn get(&self, id: AccountId) -> Result<Option<Account>, Error>;
 
-    /// Writes an account without optimistic-concurrency checking. Last
-    /// write wins. Use [`put_with_version`](Self::put_with_version) in
-    /// any code path that requires concurrent-safety.
+    /// **Deprecated/internal**: writes an account without optimistic-
+    /// concurrency checking. Last write wins.
+    ///
+    /// Retained only for internal/bootstrap writes. Production code MUST
+    /// use [`put_with_version`](Self::put_with_version) for concurrent
+    /// safety.
     async fn put(&self, account: Account) -> Result<(), Error>;
 
     /// **P1-8 fix**: writes an account with optimistic-concurrency checking.

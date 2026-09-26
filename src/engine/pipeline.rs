@@ -179,16 +179,9 @@ where
 
     /// Processes a single pipeline event.
     ///
-    /// **P0-E fix**: reads the account (`account_id` is globally unique —
-    /// `UUIDv4`), then writes via `put_with_version` (optimistic
-    /// concurrency — a concurrent writer between our read and write
-    /// produces `Error::StateConflict`, which the caller must retry).
-    /// The pipeline is no longer the version owner; the store is — so
-    /// there's no double-increment.
-    ///
-    /// For strict tenant-scoped reads (e.g. when the caller doesn't
-    /// trust the `account_id` to be globally unique within their store),
-    /// use [`process_for_tenant`](Self::process_for_tenant) instead.
+    /// **Deprecated/internal**: reads the account without tenant scoping.
+    /// Production code should use [`process_for_tenant`](Self::process_for_tenant)
+    /// for strict tenant isolation.
     pub async fn process(
         &mut self,
         account_id: crate::core::ids::AccountId,

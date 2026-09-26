@@ -34,8 +34,8 @@
 
 use crate::api::auth::auth_layer;
 use crate::api::handlers::{
-    breach_report, emergency_stop, evaluate_internal, evaluate_order, get_account, health,
-    manual_run, override_breach, ready, validate_rule_pack, SharedState,
+    breach_report, create_account, emergency_stop, evaluate_internal, evaluate_order, get_account,
+    health, manual_run, override_breach, ready, validate_rule_pack, SharedState,
 };
 use axum::{
     routing::{get, post},
@@ -54,6 +54,7 @@ pub async fn router(state: SharedState) -> Router {
         .route("/internal/v1/breach-report/:account_id", get(breach_report))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/accounts/:id", get(get_account))
+        .route("/v1/accounts", post(create_account))
         // Rule pack validation endpoint (stateless, no storage required)
         .route("/v1/rule-packs/validate", post(validate_rule_pack))
         // §A.1: the auth config rides in the request extensions so the

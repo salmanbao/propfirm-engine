@@ -28,6 +28,8 @@ impl InMemoryStore {
 
 #[async_trait]
 impl AccountStore for InMemoryStore {
+    /// **Deprecated/internal**: reads an account without tenant scoping.
+    /// Retained for bootstrap/internal paths only.
     async fn get(&self, id: AccountId) -> Result<Option<Account>, Error> {
         Ok(self.accounts.read().get(&id).cloned())
     }
