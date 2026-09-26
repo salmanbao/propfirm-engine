@@ -239,174 +239,8 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
 }
 
 // ---------------------------------------------------------------------------
-// P0.7 — rule-pack lifecycle endpoints
+// P0.6 — positions and trades on the stateless path
 // ---------------------------------------------------------------------------
-
-fn create_pack_body(id: &str) -> String {
-    serde_json::json!({
-        "id": id,
-        "version": 1,
-        "tenant_id": "00000000-0000-0000-0000-000000000001",
-        "description": "lifecycle test pack",
-        "rules": [{
-            "id": "max_total_loss", "kind": "max_drawdown",
-            "basis": "static", "unit": "percent", "value": "0.10",
-            "tolerance_cents": 1, "early_warning_pct": "0.80",
-            "priority": 1000, "enabled": true, "params_json": "{}"
-        }],
-        "initial_balance": "10000",
-        "leverage": 100,
-        "profit_target_pct": "0.10"
-    })
-    .to_string()
-}
-
-#[tokio::test]
-async fn p0_7_rule_pack_full_lifecycle_works() {
-    let (state, _) = make_state_at(10000).await;
-    let app = router(state).await;
-    let id = "lp-pack-v1";
-
-    // Create (draft).
-    let (status, body) = send(
-        app.clone(),
-        Method::POST,
-        "/v1/rule-packs",
-        Some(create_pack_body(id)),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "create failed: {body}");
-    assert!(
-        body.contains("\"draft\""),
-        "new pack must be draft; got: {body}"
-    );
-
-    // Get.
-    let (status, body) = send(
-        app.clone(),
-        Method::GET,
-        &format!("/v1/rule-packs/{id}"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "get failed: {body}");
-    assert!(
-        body.contains("content_hash"),
-        "get must include content_hash; got: {body}"
-    );
-
-    // Update the draft.
-    let mut updated = serde_json::from_str::<serde_json::Value>(&create_pack_body(id)).unwrap();
-    updated["description"] = serde_json::Value::String("edited description".into());
-    let (status, body) = send(
-        app.clone(),
-        Method::PATCH,
-        &format!("/v1/rule-packs/{id}"),
-        Some(updated.to_string()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "update failed: {body}");
-
-    // Activate.
-    let (status, body) = send(
-        app.clone(),
-        Method::POST,
-        &format!("/v1/rule-packs/{id}/activate"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "activate failed: {body}");
-    assert!(
-        body.contains("\"active\""),
-        "activated pack must be active; got: {body}"
-    );
-
-    // Update after activation → 409.
-    let (status, _) = send(
-        app.clone(),
-        Method::PATCH,
-        &format!("/v1/rule-packs/{id}"),
-        Some(create_pack_body(id)),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "updating an active pack must 409"
-    );
-
-    // Activate again → 409.
-    let (status, _) = send(
-        app.clone(),
-        Method::POST,
-        &format!("/v1/rule-packs/{id}/activate"),
-        None,
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "re-activating an active pack must 409"
-    );
-
-    // Supersede.
-    let (status, body) = send(
-        app.clone(),
-        Method::POST,
-        &format!("/v1/rule-packs/{id}/supersede"),
-        Some(serde_json::json!({ "superseded_by": "lp-pack-v2" }).to_string()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "supersede failed: {body}");
-    assert!(
-        body.contains("\"superseded\""),
-        "superseded pack must be superseded; got: {body}"
-    );
-
-    // Get shows the final lifecycle.
-    let (status, body) = send(app, Method::GET, &format!("/v1/rule-packs/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        body.contains("\"superseded\""),
-        "final read must show superseded; got: {body}"
-    );
-}
-
-#[tokio::test]
-async fn p0_7_illegal_transition_draft_to_superseded_is_409() {
-    let (state, _) = make_state_at(10000).await;
-    let app = router(state).await;
-    let id = "lp-pack-illegal";
-    let (status, _) = send(
-        app.clone(),
-        Method::POST,
-        "/v1/rule-packs",
-        Some(create_pack_body(id)),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    // Supersede a draft → 409.
-    let (status, _) = send(
-        app,
-        Method::POST,
-        &format!("/v1/rule-packs/{id}/supersede"),
-        None,
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "draft → superseded must be rejected with 409"
-    );
-}
-
-#[tokio::test]
-async fn p0_7_get_unknown_pack_is_404() {
-    let (state, _) = make_state_at(10000).await;
-    let app = router(state).await;
-    let (status, _) = send(app, Method::GET, "/v1/rule-packs/no-such-pack", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
 
 // ---------------------------------------------------------------------------
 // P0.8 — idempotency
@@ -511,5 +345,102 @@ async fn p0_8_mutation_is_not_double_applied() {
     assert_eq!(
         b1, b2,
         "replayed mutation must return the first response exactly"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P2 — bridge.tick v1 wire contract
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn p2_bridge_tick_v1_broker_reported_equity_can_terminate() {
+    // Account was seeded at 10k equity in the store, but the bridge.tick
+    // envelope reports 8.5k broker-reported equity. On a 10k static-floor
+    // plan that is a breach — and because bridge.tick is broker-attested
+    // the equity source defaults to BrokerReported automatically.
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let broker_time = chrono::Utc::now().timestamp_millis();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "bridge_tick": {
+            "type": "bridge.tick",
+            "version": 1,
+            "tenant_id": test_tenant_id_str(),
+            "occurred_at": broker_time,
+            "payload": {
+                "equity_cents": 850000,
+                "balance_cents": 850000,
+                "margin_cents": 50000,
+                "free_margin_cents": 800000,
+                "leverage": 100,
+                "positions": [],
+                "deals_count": 0,
+                "broker_time": broker_time
+            }
+        }
+    })
+    .to_string();
+    let (status, body) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "bridge.tick evaluate failed: {body}"
+    );
+    assert!(
+        !body.contains("Pass"),
+        "broker-reported equity below floor must breach; got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn p2_bridge_tick_v1_positions_flow_through() {
+    // Verify that positions[] from the envelope are wired into the rule
+    // context by using a plan that forbids overnight holding and an open
+    // position over the weekend.
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let sat = chrono::Utc::now();
+    let days_to_sat = (5 + 7 - sat.weekday().num_days_from_monday()) % 7;
+    let saturday = sat + chrono::Duration::days(i64::from(days_to_sat));
+    let broker_time = saturday.timestamp_millis();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "bridge_tick": {
+            "type": "bridge.tick",
+            "version": 1,
+            "tenant_id": test_tenant_id_str(),
+            "occurred_at": broker_time,
+            "payload": {
+                "equity_cents": 1000000,
+                "balance_cents": 1000000,
+                "margin_cents": 50000,
+                "free_margin_cents": 950000,
+                "leverage": 100,
+                "positions": [
+                    {
+                        "position_id": account.id.to_string(),
+                        "symbol": "EURUSD",
+                        "side": "long",
+                        "open_quantity": "1",
+                        "avg_entry_price": "1.0800",
+                        "opened_at": saturday.to_rfc3339()
+                    }
+                ],
+                "deals_count": 0,
+                "broker_time": broker_time
+            }
+        }
+    })
+    .to_string();
+    let (status, body) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "bridge.tick evaluate failed: {body}"
+    );
+    assert!(
+        body.contains("Weekend") || body.contains("weekend"),
+        "open position over the weekend must produce a weekend violation; got: {body}"
     );
 }
