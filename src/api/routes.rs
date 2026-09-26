@@ -34,12 +34,11 @@
 
 use crate::api::auth::auth_layer;
 use crate::api::handlers::{
-    activate_rule_pack, breach_report, create_rule_pack, emergency_stop, evaluate_internal,
-    evaluate_order, get_account, get_rule_pack, health, manual_run, override_breach, ready,
-    supersed_rule_pack, update_rule_pack, SharedState,
+    breach_report, emergency_stop, evaluate_internal, evaluate_order, get_account, health,
+    manual_run, override_breach, ready, validate_rule_pack, SharedState,
 };
 use axum::{
-    routing::{get, patch, post},
+    routing::{get, post},
     Router,
 };
 
@@ -55,11 +54,8 @@ pub async fn router(state: SharedState) -> Router {
         .route("/internal/v1/breach-report/:account_id", get(breach_report))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/accounts/:id", get(get_account))
-        .route("/v1/rule-packs", post(create_rule_pack))
-        .route("/v1/rule-packs/:id", get(get_rule_pack))
-        .route("/v1/rule-packs/:id", patch(update_rule_pack))
-        .route("/v1/rule-packs/:id/activate", post(activate_rule_pack))
-        .route("/v1/rule-packs/:id/supersede", post(supersed_rule_pack))
+        // Rule pack validation endpoint (stateless, no storage required)
+        .route("/v1/rule-packs/validate", post(validate_rule_pack))
         // §A.1: the auth config rides in the request extensions so the
         // middleware can authenticate each call; the middleware then
         // injects the resolved AuthedIdentity. Layer order matters: the
