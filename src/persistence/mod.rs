@@ -1,7 +1,4 @@
-//! Persistence layer: account + trade + rule-pack storage.
+//! Persistence layer: in-memory account + trade storage.
 
 pub mod memory;
-#[cfg(feature = "postgres")]
-pub mod postgres;
-pub mod rulepack_store;
 pub mod traits;
