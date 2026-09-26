@@ -18,7 +18,7 @@ RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/cli.rs
 
 # Build dependencies (cached unless lockfile changes)
-RUN cargo build --release --features server,tracing --bin propfirm-server --bin propfirm-cli
+RUN cargo build --release --features server,tracing,tokio-cli --bin propfirm-server --bin propfirm-cli
 
 # Now copy the real source
 COPY src ./src
@@ -31,7 +31,7 @@ COPY examples ./examples
 RUN rm -rf target
 
 # Build the actual binaries
-RUN cargo build --release --features server,tracing --bin propfirm-server --bin propfirm-cli
+RUN cargo build --release --features server,tracing,tokio-cli --bin propfirm-server --bin propfirm-cli
 
 FROM debian:bookworm-slim
 

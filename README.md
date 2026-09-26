@@ -134,7 +134,7 @@ realistic_load/1000      time:   [4.7542 ms  4.8719 ms  4.9978 ms]
 cargo build --release
 
 # Run the CLI demo (end-to-end: account start → order submit → tick → risk metrics)
-cargo run --release --bin propfirm-cli
+cargo run --release --features tokio-cli --bin propfirm-cli
 
 # Run the HTTP server (optional)
 cargo run --release --features server --bin propfirm-server
