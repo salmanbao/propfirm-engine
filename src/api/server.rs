@@ -15,7 +15,6 @@ use crate::config::plan::ChallengePlan;
 use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
 use crate::persistence::memory::InMemoryStore;
-use crate::persistence::rulepack_store::{InMemoryRulePackStore, RulePackStore};
 use crate::persistence::traits::AccountStore;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -25,7 +24,6 @@ pub struct ServerState {
     pub store: Arc<dyn AccountStore>,
     pub notifier: LogNotifier,
     pub event_store: Arc<dyn crate::events::store::EventStore>,
-    pub rule_pack_store: Arc<dyn RulePackStore>,
     pub idempotency: Arc<dyn IdempotencyBackend>,
     /// **§A.1 fix**: parsed auth configuration (per-tenant keys + service
     /// token. Required to build the router; an unauthenticated server
@@ -40,16 +38,14 @@ impl Clone for ServerState {
     /// making every endpoint other than `/health` return 404.
     ///
     /// `InMemoryStore`, `LogNotifier`, `EventStore`,
-    /// `InMemoryRulePackStore`, and `IdempotencyStore` are all
-    /// `Arc`-backed, so cloning them is cheap (bumps a refcount)
-    /// and shares the underlying state.
+    /// and `IdempotencyStore` are all `Arc`-backed, so cloning them is cheap
+    /// (bumps a refcount) and shares the underlying state.
     fn clone(&self) -> Self {
         ServerState {
             evaluator: self.evaluator.clone(),
             store: self.store.clone(),
             notifier: self.notifier.clone(),
             event_store: self.event_store.clone(),
-            rule_pack_store: self.rule_pack_store.clone(),
             idempotency: self.idempotency.clone(),
             auth: self.auth.clone(),
         }
@@ -64,37 +60,9 @@ impl ServerState {
             store: Arc::new(InMemoryStore::new()),
             notifier: LogNotifier::new(),
             event_store: Arc::new(crate::events::store::InMemoryEventStore::new()),
-            rule_pack_store: Arc::new(InMemoryRulePackStore::new()),
             idempotency: Arc::new(IdempotencyStore::with_defaults()),
             auth,
         }
-    }
-
-    /// Build a `ServerState` backed by Postgres. This is the production
-    /// constructor when the `postgres` feature is enabled.
-    #[cfg(feature = "postgres")]
-    pub async fn with_postgres(
-        plan: ChallengePlan,
-        auth: AuthConfig,
-        database_url: &str,
-    ) -> Result<Self, crate::core::Error> {
-        use crate::persistence::postgres::{PostgresIdempotencyStore, PostgresRulePackStore};
-        let postgres = crate::persistence::postgres::PostgresStore::connect(database_url).await?;
-        let store: Arc<dyn AccountStore> = Arc::new(postgres.clone());
-        let rule_pack_store: Arc<dyn RulePackStore> =
-            Arc::new(PostgresRulePackStore::new(postgres.pool()));
-        let idempotency: Arc<dyn IdempotencyBackend> =
-            Arc::new(PostgresIdempotencyStore::new(postgres.pool()));
-
-        Ok(ServerState {
-            evaluator: Evaluator::new(&plan),
-            store,
-            notifier: LogNotifier::new(),
-            event_store: Arc::new(postgres.clone()),
-            rule_pack_store,
-            idempotency,
-            auth,
-        })
     }
 
     #[must_use]
@@ -130,22 +98,7 @@ pub async fn run_server_with_auth(
     plan: ChallengePlan,
     auth: AuthConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = {
-        #[cfg(feature = "postgres")]
-        {
-            match std::env::var("DATABASE_URL") {
-                Ok(url) => ServerState::with_postgres(plan.clone(), auth.clone(), &url).await?,
-                Err(_) => {
-                    eprintln!("WARNING: postgres feature enabled but DATABASE_URL is not set; falling back to in-memory store");
-                    ServerState::new(plan, auth)
-                }
-            }
-        }
-        #[cfg(not(feature = "postgres"))]
-        {
-            ServerState::new(plan, auth)
-        }
-    };
+    let state = ServerState::new(plan, auth);
 
     let state: SharedState = Arc::new(RwLock::new(state));
     let app = crate::api::routes::router(state).await;
