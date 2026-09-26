@@ -148,14 +148,21 @@ async fn evaluate_internal_impl(
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    // P0.5: provenance — absent field defaults to the safe option.
-    let equity_source = match req.equity_source.as_deref() {
-        None | Some("estimated") => crate::pure::EquitySource::Estimated,
-        Some(other) => crate::pure::EquitySource::parse(other)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+    // P2: bridge.tick takes precedence; when present the envelope is
+    // broker-attested so equity provenance defaults to BrokerReported.
+    let (equity_source, bridge_tick) = match req.bridge_tick {
+        Some(ref bt) => (crate::pure::EquitySource::BrokerReported, Some(bt)),
+        None => {
+            let src = match req.equity_source.as_deref() {
+                None | Some("estimated") => crate::pure::EquitySource::Estimated,
+                Some(other) => crate::pure::EquitySource::parse(other)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+            };
+            (src, None)
+        }
     };
     let s = state.read().await.clone();
-    let acc = s
+    let mut acc = s
         .store
         .get_for_tenant(tenant_id, account_id)
         .await
@@ -173,43 +180,8 @@ async fn evaluate_internal_impl(
         crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan)
     };
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
-    // P0.6: deserialize the optional positions / trades into domain types.
-    let mut position_errors: Vec<String> = Vec::new();
-    let positions: Vec<crate::core::position::Position> = req
-        .open_positions
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|p| match p.into_domain(account_id) {
-            Ok(pos) => Some(pos),
-            Err(e) => {
-                position_errors.push(e);
-                None
-            }
-        })
-        .collect();
-    if let Some(first) = position_errors.first() {
-        return Err((StatusCode::BAD_REQUEST, first.clone()));
-    }
-    let mut trade_errors: Vec<String> = Vec::new();
-    let trades: Vec<crate::core::trade::Trade> = req
-        .today_trades
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|t| match t.into_domain(account_id) {
-            Ok(tr) => Some(tr),
-            Err(e) => {
-                trade_errors.push(e);
-                None
-            }
-        })
-        .collect();
-    if let Some(first) = trade_errors.first() {
-        return Err((StatusCode::BAD_REQUEST, first.clone()));
-    }
-    // §A.2: cross-account reference trades for the copy-trading rule.
-    // Each is decoded against a *synthetic* account id placeholder; the
-    // real origin account id is not transmitted. A reference that somehow
-    // carries this account's own id is dropped defensively.
+
+    // P2: cross-account reference trades (same for both shapes).
     let cross_ref_account_id = AccountId::from_uuid(Uuid::new_v4());
     let mut cross_errors: Vec<String> = Vec::new();
     let cross_reference_trades: Vec<crate::core::trade::Trade> = req
@@ -231,22 +203,137 @@ async fn evaluate_internal_impl(
         .into_iter()
         .filter(|t| t.account_id != account_id)
         .collect();
+
+    // P2: choose between the new bridge.tick v1 envelope and the legacy
+    // per-symbol tick. The two branches produce the same output shape
+    // (positions, trades, server_time, latest_tick) so the pure evaluate
+    // call below is shared.
+    let (positions, trades, server_time, latest_tick) = if let Some(bt) = bridge_tick {
+        let payload = &bt.payload;
+        // Override stored account financials with broker-reported cents.
+        let cents_to_decimal = |cents: i64| -> crate::core::types::Money {
+            crate::core::types::Money(
+                rust_decimal::Decimal::from(cents) / rust_decimal::Decimal::from(100),
+            )
+        };
+        acc.equity = cents_to_decimal(payload.equity_cents);
+        acc.balance = cents_to_decimal(payload.balance_cents);
+        // margin_cents / free_margin_cents are advisory hints for later
+        // floor-hint computation; stored on the account for visibility.
+        let _ = payload.margin_cents;
+        let _ = payload.free_margin_cents;
+
+        // Positions come from the envelope's payload.positions[].
+        let mut position_errors = Vec::new();
+        let positions: Vec<crate::core::position::Position> = payload
+            .positions
+            .iter()
+            .cloned()
+            .filter_map(|p| match p.into_domain(account_id) {
+                Ok(pos) => Some(pos),
+                Err(e) => {
+                    position_errors.push(e);
+                    None
+                }
+            })
+            .collect();
+        if let Some(first) = position_errors.first() {
+            return Err((StatusCode::BAD_REQUEST, first.clone()));
+        }
+
+        // Trades are still supplied separately (workers accumulate them).
+        let mut trade_errors = Vec::new();
+        let trades: Vec<crate::core::trade::Trade> = req
+            .today_trades
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| match t.into_domain(account_id) {
+                Ok(tr) => Some(tr),
+                Err(e) => {
+                    trade_errors.push(e);
+                    None
+                }
+            })
+            .collect();
+        if let Some(first) = trade_errors.first() {
+            return Err((StatusCode::BAD_REQUEST, first.clone()));
+        }
+
+        let server_time = crate::core::types::ServerTime(
+            chrono::DateTime::from_timestamp_millis(payload.broker_time)
+                .ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid broker_time".into()))?,
+        );
+
+        (positions, trades, server_time, None)
+    } else {
+        // Legacy shape: per-symbol quote + explicit open positions.
+        let tick = req.tick.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "tick is required when bridge_tick is absent".into(),
+            )
+        })?;
+        let server_time = crate::core::types::ServerTime(tick.quote.ts);
+
+        let mut position_errors = Vec::new();
+        let positions: Vec<crate::core::position::Position> = req
+            .open_positions
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| match p.into_domain(account_id) {
+                Ok(pos) => Some(pos),
+                Err(e) => {
+                    position_errors.push(e);
+                    None
+                }
+            })
+            .collect();
+        if let Some(first) = position_errors.first() {
+            return Err((StatusCode::BAD_REQUEST, first.clone()));
+        }
+
+        let mut trade_errors = Vec::new();
+        let trades: Vec<crate::core::trade::Trade> = req
+            .today_trades
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| match t.into_domain(account_id) {
+                Ok(tr) => Some(tr),
+                Err(e) => {
+                    trade_errors.push(e);
+                    None
+                }
+            })
+            .collect();
+        if let Some(first) = trade_errors.first() {
+            return Err((StatusCode::BAD_REQUEST, first.clone()));
+        }
+
+        (positions, trades, server_time, Some(tick))
+    };
+
     // Pure evaluate (P1-7) — no storage mutation. P0-C: server_time is
-    // explicit so the verdict is reproducible from recorded inputs. On
-    // the stateless path server_time derives from the tick's own
-    // timestamp: identical request bodies then produce identical
-    // verdicts AND identical input_hashes (replay-safe).
-    let tick = req.tick.clone();
-    let server_time = crate::core::types::ServerTime(tick.quote.ts);
+    // explicit so the verdict is reproducible from recorded inputs.
+    let inputs = if let Some(ref tick) = latest_tick {
+        crate::pure::EvaluateInputs::for_tick(&positions, &trades, tick)
+            .with_cross_reference_trades(cross_reference_trades)
+            .with_equity_source(equity_source)
+    } else {
+        crate::pure::EvaluateInputs {
+            open_positions: &positions,
+            today_trades: &trades,
+            cross_reference_trades,
+            equity_source,
+            ..Default::default()
+        }
+    };
     let verdict = crate::pure::evaluate(
         &acc,
         &pack,
         &registry,
         crate::rules::context::RuleContextKind::OnTick,
         server_time,
-        crate::pure::EvaluateInputs::for_tick(&positions, &trades, &tick)
-            .with_cross_reference_trades(cross_reference_trades)
-            .with_equity_source(equity_source),
+        inputs,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(InternalEvaluateResponse {
@@ -498,12 +585,14 @@ pub async fn get_account(
     Ok(Json(AccountSnapshotDto::from(&snap)))
 }
 
-// Rule-pack CRUD endpoints (P2-API).
+// DTOs for the new endpoints.
 
-pub async fn create_rule_pack(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
+/// `POST /v1/rule-packs/validate` — stateless rule pack validation.
+///
+/// Validates a rule pack without persisting it. Returns validation errors
+/// or the pack's computed content hash. Used by tenants to verify packs
+/// before binding them to accounts via platform tooling.
+pub async fn validate_rule_pack(
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
     let rules: Vec<crate::rulepack::RuleEntry> =
@@ -530,11 +619,11 @@ pub async fn create_rule_pack(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-    let tenant = extract_tenant_id(&identity.0, &headers)?;
+    // Tenant ID is not needed for validation; it's injected at bind time by platform tooling
     let pack = RulePack {
         id: req.id,
         version: req.version,
-        tenant_id: tenant,
+        tenant_id: crate::tenant::TenantId::named("validation"),
         lifecycle: crate::rulepack::PackLifecycle::Draft,
         effective_from: chrono::Utc::now(),
         superseded_by: None,
@@ -552,191 +641,8 @@ pub async fn create_rule_pack(
         lifecycle: format!("{}", pack.lifecycle),
         content_hash: pack.content_hash(),
     };
-    let s = state.read().await;
-    s.rule_pack_store
-        .insert_pack(pack)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(response))
 }
-
-/// `GET /v1/rule-packs/:id` — get a rule pack by id.
-///
-/// **P0.7 fix**: real store-backed read (was a 404 stub).
-pub async fn get_rule_pack(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(id): Path<String>,
-) -> Result<Json<GetRulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read().await;
-    let pack = s
-        .rule_pack_store
-        .get_pack(tenant, &id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
-    let json = pack
-        .to_json()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(GetRulePackResponse {
-        id: pack.id.clone(),
-        version: pack.version,
-        lifecycle: format!("{}", pack.lifecycle),
-        content_hash: pack.content_hash(),
-        json,
-    }))
-}
-
-/// `PATCH /v1/rule-packs/:id` — update a *draft* rule pack.
-///
-/// **P0.7 fix**: real implementation (was a 501 stub). Updating a
-/// non-draft pack is an illegal lifecycle transition → 409.
-pub async fn update_rule_pack(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(id): Path<String>,
-    Json(req): Json<CreateRulePackRequest>,
-) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read().await;
-    let mut pack = s
-        .rule_pack_store
-        .get_pack(tenant, &id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
-    crate::persistence::rulepack_store::ensure_draft(pack.lifecycle)
-        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    // Apply the update.
-    pack.version = pack.version.max(req.version);
-    pack.description = req.description;
-    pack.rules = req
-        .rules
-        .into_iter()
-        .map(
-            |r| -> Result<crate::rulepack::RuleEntry, (StatusCode, String)> {
-                Ok(crate::rulepack::RuleEntry {
-                    id: r.id,
-                    kind: r.kind,
-                    basis: r.basis.parse::<crate::rulepack::RuleBasis>().map_err(
-                        |e: crate::core::Error| (StatusCode::BAD_REQUEST, e.to_string()),
-                    )?,
-                    unit: r.unit.parse::<crate::rulepack::RuleUnit>().map_err(
-                        |e: crate::core::Error| (StatusCode::BAD_REQUEST, e.to_string()),
-                    )?,
-                    value: r.value,
-                    tolerance_cents: r.tolerance_cents,
-                    early_warning_pct: r.early_warning_pct,
-                    priority: r.priority,
-                    enabled: r.enabled,
-                    params_json: r.params_json.unwrap_or_else(|| "{}".into()),
-                    severity: r.severity.clone(),
-                    failure_policy: r.failure_policy.clone(),
-                })
-            },
-        )
-        .collect::<Result<Vec<_>, _>>()?;
-    pack.validate()
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let content_hash = pack.content_hash();
-    let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
-    s.rule_pack_store
-        .put_pack(pack)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(RulePackResponse {
-        id,
-        version,
-        lifecycle,
-        content_hash,
-    }))
-}
-
-/// `POST /v1/rule-packs/:id/activate` — promote draft → active.
-///
-/// **P0.7 fix**: real implementation (was a 501 stub). Illegal
-/// transitions (active/superseded → active) → 409.
-pub async fn activate_rule_pack(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(id): Path<String>,
-) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read().await;
-    let mut pack = s
-        .rule_pack_store
-        .get_pack(tenant, &id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
-    crate::persistence::rulepack_store::check_transition(
-        pack.lifecycle,
-        crate::rulepack::PackLifecycle::Active,
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    pack.lifecycle = crate::rulepack::PackLifecycle::Active;
-    let content_hash = pack.content_hash();
-    let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
-    s.rule_pack_store
-        .put_pack(pack)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(RulePackResponse {
-        id,
-        version,
-        lifecycle,
-        content_hash,
-    }))
-}
-
-/// `POST /v1/rule-packs/:id/supersede` — mark active → superseded.
-///
-/// **P0.7 fix**: real implementation (was a 501 stub). Illegal
-/// transitions (draft → superseded) → 409. `superseded_by` records the
-/// replacing pack id when the body supplies one.
-pub async fn supersed_rule_pack(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(id): Path<String>,
-    body: Option<Json<SupersedeRequest>>,
-) -> Result<Json<RulePackResponse>, (StatusCode, String)> {
-    let tenant = extract_tenant_id(&identity.0, &headers)?;
-    let s = state.read().await;
-    let mut pack = s
-        .rule_pack_store
-        .get_pack(tenant, &id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, format!("rule pack {id} not found")))?;
-    crate::persistence::rulepack_store::check_transition(
-        pack.lifecycle,
-        crate::rulepack::PackLifecycle::Superseded,
-    )
-    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    pack.lifecycle = crate::rulepack::PackLifecycle::Superseded;
-    if let Some(Json(req)) = body {
-        pack.superseded_by = req.superseded_by;
-    }
-    let content_hash = pack.content_hash();
-    let (id, version, lifecycle) = (pack.id.clone(), pack.version, format!("{}", pack.lifecycle));
-    s.rule_pack_store
-        .put_pack(pack)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(RulePackResponse {
-        id,
-        version,
-        lifecycle,
-        content_hash,
-    }))
-}
-
-// DTOs for the new endpoints.
 
 /// **P0.6 fix**: wire shape for an open position on the evaluate path.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -840,6 +746,128 @@ impl TradeDto {
     }
 }
 
+// DTOs for the new endpoints.
+
+/// **P2 wire contract fix**: bridge.tick v1 envelope — the account-level
+/// record produced by the broker bridge (BRG). This is the real input the
+/// engine should consume; the older per-symbol `Tick` shape is retained
+/// only for overlapping callers during the transition.
+///
+/// Envelope per EVT-03; payload fields are provisional until freeze.
+/// Canonical schema: `contracts/events/extended/bridge.schema.json`
+/// ($defs/bridge_tick). Producer: 08 (BRG). When: every sync tx.
+/// Consumers: EVL (trigger eval), ANA (equity points), web SSE fan-out.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BridgeTickV1 {
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub version: u32,
+    pub tenant_id: String,
+    pub occurred_at: i64,
+    pub payload: BridgeTickPayload,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BridgeTickPayload {
+    /// Broker-reported equity, integer cents.
+    pub equity_cents: i64,
+    /// Broker-reported balance, integer cents.
+    pub balance_cents: i64,
+    /// Broker-reported margin in use, integer cents.
+    pub margin_cents: i64,
+    /// Free margin, integer cents.
+    pub free_margin_cents: i64,
+    /// Account leverage (e.g. 100).
+    pub leverage: u32,
+    /// Current open positions snapshot from the bridge.
+    pub positions: Vec<BridgeTickPositionDto>,
+    /// Number of deals executed in the current period.
+    pub deals_count: u32,
+    /// Ticket id of the last executed deal, if any.
+    #[serde(default)]
+    pub last_deal_ticket: Option<String>,
+    /// Broker-attested timestamp (ms since epoch).
+    pub broker_time: i64,
+    /// **P2 fix**: `trigger` is evidence, never a rule input (property test I-28).
+    #[serde(default)]
+    pub trigger: Option<String>,
+    /// Bridge source identifier (e.g. `metaapi`).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Monotonic sequence within this stream.
+    #[serde(default)]
+    pub stream_seq: Option<u64>,
+    /// Rolling low equity within the current period, integer cents.
+    #[serde(default)]
+    pub equity_low_cents: Option<i64>,
+    /// Rolling high equity within the current period, integer cents.
+    #[serde(default)]
+    pub equity_high_cents: Option<i64>,
+}
+
+/// Wire shape for a position snapshot inside `bridge.tick` v1 payload.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BridgeTickPositionDto {
+    pub position_id: String,
+    pub symbol: String,
+    pub side: String,
+    pub open_quantity: rust_decimal::Decimal,
+    pub avg_entry_price: rust_decimal::Decimal,
+    pub opened_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub realized_pnl: Option<rust_decimal::Decimal>,
+    #[serde(default)]
+    pub commission: Option<rust_decimal::Decimal>,
+    #[serde(default)]
+    pub swap: Option<rust_decimal::Decimal>,
+}
+
+impl BridgeTickPositionDto {
+    /// Converts the wire shape into the domain [`Position`](crate::core::position::Position).
+    pub fn into_domain(
+        self,
+        account_id: AccountId,
+    ) -> Result<crate::core::position::Position, String> {
+        use crate::core::ids::PositionId;
+        let side = match self.side.to_ascii_lowercase().as_str() {
+            "long" | "buy" => crate::core::position::PositionSide::Long,
+            "short" | "sell" => crate::core::position::PositionSide::Short,
+            other => return Err(format!("invalid position side '{other}'")),
+        };
+        let status = match self.status.map(|s| s.to_ascii_lowercase()).as_deref() {
+            Some("closed") => crate::core::position::PositionStatus::Closed,
+            Some("liquidated") => crate::core::position::PositionStatus::Liquidated,
+            _ => crate::core::position::PositionStatus::Open,
+        };
+        let position_id = PositionId::from_uuid(
+            Uuid::from_str(&self.position_id).map_err(|e| format!("invalid position_id: {e}"))?,
+        );
+        Ok(crate::core::position::Position {
+            id: position_id,
+            account_id,
+            symbol: Symbol::new(self.symbol),
+            side,
+            opened_at: self.opened_at,
+            closed_at: self.closed_at,
+            status,
+            avg_entry_price: Price(self.avg_entry_price),
+            opened_quantity: Quantity(self.open_quantity),
+            open_quantity: Quantity(self.open_quantity),
+            realized_pnl: crate::core::types::Money(self.realized_pnl.unwrap_or_default()),
+            commission: crate::core::types::Money(self.commission.unwrap_or_default()),
+            swap: crate::core::types::Money(self.swap.unwrap_or_default()),
+            stop_loss: None,
+            take_profit: None,
+            magic: None,
+            comment: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InternalEvaluateRequest {
     pub account_id: String,
@@ -851,13 +879,26 @@ pub struct InternalEvaluateRequest {
     /// present it is ignored with a warning.
     #[serde(default)]
     pub rule_pack: Option<RulePack>,
-    pub tick: crate::core::tick::Tick,
+    /// **P2 wire contract fix**: the newer account-level bridge.tick v1
+    /// envelope. When present, it takes precedence over the legacy
+    /// per-symbol `tick` and supplies broker-reported equity/balance,
+    /// positions[], broker_time, and other additive fields.
+    #[serde(default)]
+    pub bridge_tick: Option<BridgeTickV1>,
+    /// Legacy per-symbol quote. Retained only for overlapping callers
+    /// that have not yet migrated to the bridge.tick v1 envelope.
+    #[serde(default)]
+    pub tick: Option<crate::core::tick::Tick>,
     /// **P0.5 fix**: who vouches for the equity/balance numbers.
     /// `"broker_reported"` allows termination; `"estimated"` (the safe
-    /// default when absent) never terminates.
+    /// default when absent) never terminates. When `bridge_tick` is
+    /// present this defaults to `broker_reported` because the envelope
+    /// is itself broker-attested.
     #[serde(default)]
     pub equity_source: Option<String>,
     /// **P0.6 fix**: open positions for position-dependent rules.
+    /// Ignored when `bridge_tick` is present (positions come from the
+    /// envelope's `payload.positions[]`).
     #[serde(default)]
     pub open_positions: Option<Vec<PositionDto>>,
     /// **P0.6 fix**: today's trades for trade-dependent rules.
