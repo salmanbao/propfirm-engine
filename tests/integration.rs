@@ -482,7 +482,7 @@ async fn test_event_store_replay() {
     let account = Account::new(AccountId::new(), plan.clone());
     let ev1 = DomainEvent::new(
         account.id,
-        DomainEventKind::AccountStarted,
+        DomainEventKind::AccountStarted { plan: plan.clone() },
         chrono::Utc::now(),
     );
     store.append(ev1).await.unwrap();
@@ -504,7 +504,7 @@ async fn test_event_store_replay() {
         chrono::Utc::now(),
     );
     store.append(ev2).await.unwrap();
-    let replayed = store.replay(account.id, account.clone()).await.unwrap();
+    let replayed = store.replay(account.id).await.unwrap();
     assert_eq!(replayed.status, AccountStatus::Active);
 }
 
@@ -1391,4 +1391,125 @@ async fn p1_1_daily_dd_balance_basis_does_not_terminate() {
          got {:?}",
         decision.kind
     );
+}
+
+#[tokio::test]
+async fn test_replay_reconstructs_non_default_plan() {
+    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    use propfirm::events::store::{EventStore, InMemoryEventStore};
+    let store = InMemoryEventStore::in_memory();
+    let plan = ftmo_phase2();
+    let account = Account::new(AccountId::new(), plan.clone());
+    let ev1 = DomainEvent::new(
+        account.id,
+        DomainEventKind::AccountStarted { plan: plan.clone() },
+        chrono::Utc::now(),
+    );
+    store.append(ev1).await.unwrap();
+    let replayed = store.replay(account.id).await.unwrap();
+    assert_eq!(replayed.plan.id, plan.id);
+    assert_eq!(replayed.account_type, AccountType::Phase2);
+}
+
+#[tokio::test]
+async fn test_replay_reconstructs_open_positions() {
+    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    use propfirm::events::store::{EventStore, InMemoryEventStore};
+    let store = InMemoryEventStore::in_memory();
+    let plan = ftmo_phase1();
+    let account = Account::new(AccountId::new(), plan);
+    let position_id = propfirm::core::ids::PositionId::new();
+    let ev1 = DomainEvent::new(
+        account.id,
+        DomainEventKind::AccountStarted {
+            plan: ftmo_phase1(),
+        },
+        chrono::Utc::now(),
+    );
+    let ev2 = DomainEvent::new(
+        account.id,
+        DomainEventKind::PositionOpened {
+            position_id,
+            symbol: Symbol::new("EURUSD"),
+            side: PositionSide::Long,
+            qty: Quantity(dec!(1)),
+        },
+        chrono::Utc::now(),
+    );
+    store.append(ev1).await.unwrap();
+    store.append(ev2).await.unwrap();
+    let replayed = store.replay(account.id).await.unwrap();
+    assert_eq!(replayed.open_positions.len(), 1);
+    assert_eq!(replayed.open_positions[0].id, position_id);
+}
+
+#[tokio::test]
+async fn test_replay_reconstructs_plan_upgrade() {
+    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    use propfirm::events::store::{EventStore, InMemoryEventStore};
+    let store = InMemoryEventStore::in_memory();
+    let plan = ftmo_phase1();
+    let account = Account::new(AccountId::new(), plan.clone());
+    let ev1 = DomainEvent::new(
+        account.id,
+        DomainEventKind::AccountStarted { plan: plan.clone() },
+        chrono::Utc::now(),
+    );
+    let ev2 = DomainEvent::new(
+        account.id,
+        DomainEventKind::PlanUpgraded {
+            from_phase: propfirm::config::plan::ChallengePhase::Phase1,
+            to_phase: propfirm::config::plan::ChallengePhase::Funded,
+        },
+        chrono::Utc::now(),
+    );
+    store.append(ev1).await.unwrap();
+    store.append(ev2).await.unwrap();
+    let replayed = store.replay(account.id).await.unwrap();
+    assert_eq!(replayed.account_type, AccountType::Funded);
+}
+
+#[tokio::test]
+async fn test_replay_reconstructs_override_and_breach() {
+    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    use propfirm::events::store::{EventStore, InMemoryEventStore};
+    let store = InMemoryEventStore::in_memory();
+    let plan = ftmo_phase1();
+    let account = Account::new(AccountId::new(), plan.clone());
+    let violation_id = propfirm::core::ids::ViolationId::new();
+    let ev1 = DomainEvent::new(
+        account.id,
+        DomainEventKind::AccountStarted { plan: plan.clone() },
+        chrono::Utc::now(),
+    );
+    let ev2 = DomainEvent::new(
+        account.id,
+        DomainEventKind::RuleViolated {
+            violation: propfirm::core::violation::Violation::new(
+                account.id,
+                propfirm::core::ids::RuleId::named("max_drawdown"),
+                "max_drawdown",
+                propfirm::core::violation::ViolationKind::MaxDrawdown,
+                propfirm::core::violation::ViolationSeverity::Hard,
+                "drawdown breached",
+                chrono::Utc::now(),
+            ),
+        },
+        chrono::Utc::now(),
+    );
+    let ev3 = DomainEvent::new(
+        account.id,
+        DomainEventKind::OverrideCleared {
+            clears_violation_id: violation_id,
+            reason: "ops override".into(),
+            actor_id: "ops".into(),
+            at: chrono::Utc::now(),
+        },
+        chrono::Utc::now(),
+    );
+    store.append(ev1).await.unwrap();
+    store.append(ev2).await.unwrap();
+    store.append(ev3).await.unwrap();
+    let replayed = store.replay(account.id).await.unwrap();
+    assert_eq!(replayed.status, AccountStatus::Active);
 }

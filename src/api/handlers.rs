@@ -385,10 +385,7 @@ pub async fn override_breach(
     );
     let acc = s
         .event_store
-        .replay(
-            account_id,
-            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
-        )
+        .replay(account_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _ = pipeline
@@ -419,11 +416,13 @@ pub async fn manual_run(
     );
     let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
+    let acc = s
+        .event_store
+        .replay(account_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let result = pipeline
-        .process(
-            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
-            PipelineEvent::OnDemand,
-        )
+        .process(acc, PipelineEvent::OnDemand)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ManualRunResponse {
@@ -453,9 +452,14 @@ pub async fn emergency_stop(
     let at = chrono::Utc::now();
     let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
+    let acc = s
+        .event_store
+        .replay(account_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let result = pipeline
         .process(
-            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
+            acc,
             PipelineEvent::EmergencyStop {
                 reason: req.reason,
                 actor_id: req.actor_id,
@@ -486,10 +490,7 @@ pub async fn breach_report(
     let s = state.read().await.clone();
     let acc = s
         .event_store
-        .replay(
-            account_id,
-            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
-        )
+        .replay(account_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Pull all violations from the event log for this account.

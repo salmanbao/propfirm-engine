@@ -82,9 +82,18 @@ async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Ac
         .start(chrono::Utc::now())
         .unwrap();
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        plan,
+        plan.clone(),
         test_auth_config(),
     )));
+    let event_store = state.read().await.event_store.clone();
+    event_store
+        .append(propfirm::core::events::DomainEvent::new(
+            account.id,
+            propfirm::core::events::DomainEventKind::AccountStarted { plan: plan.clone() },
+            chrono::Utc::now(),
+        ))
+        .await
+        .unwrap();
     (state, account)
 }
 
@@ -301,13 +310,13 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let state = ServerState::new(plan, test_auth_config());
+    let state = ServerState::new(plan.clone(), test_auth_config());
     use propfirm::core::events::{DomainEvent, DomainEventKind};
     state
         .event_store
         .append(DomainEvent::new(
             account.id,
-            DomainEventKind::AccountStarted,
+            DomainEventKind::AccountStarted { plan: plan.clone() },
             chrono::Utc::now(),
         ))
         .await

@@ -20,7 +20,9 @@ use crate::core::violation::Violation;
 )]
 pub enum DomainEventKind {
     /// Account opened / started.
-    AccountStarted,
+    AccountStarted {
+        plan: crate::config::plan::ChallengePlan,
+    },
     /// Account status changed.
     AccountStatusChanged {
         from: AccountStatus,

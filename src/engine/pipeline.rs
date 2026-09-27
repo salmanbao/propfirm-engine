@@ -425,7 +425,9 @@ where
                 let new_acc = state.account.clone().start(*at)?;
                 events.push(DomainEvent::new(
                     new_acc.id,
-                    DomainEventKind::AccountStarted,
+                    DomainEventKind::AccountStarted {
+                        plan: state.account.plan.clone(),
+                    },
                     *at,
                 ));
                 state.account = new_acc;

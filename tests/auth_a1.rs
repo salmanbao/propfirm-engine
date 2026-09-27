@@ -63,13 +63,29 @@ fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
     s
 }
 
-async fn make_state() -> Arc<tokio::sync::RwLock<ServerState>> {
+async fn make_state() -> (Arc<tokio::sync::RwLock<ServerState>>, AccountId) {
     let plan = ftmo_phase1();
     let auth = auth_config_with_services(&[
         (service_web(), Some("web-previous")),
         (service_relay(), None),
     ]);
-    Arc::new(tokio::sync::RwLock::new(ServerState::new(plan, auth)))
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
+        plan.clone(),
+        auth,
+    )));
+    let account_id = AccountId::new();
+    state
+        .read()
+        .await
+        .event_store
+        .append(propfirm::core::events::DomainEvent::new(
+            account_id,
+            propfirm::core::events::DomainEventKind::AccountStarted { plan },
+            chrono::Utc::now(),
+        ))
+        .await
+        .unwrap();
+    (state, account_id)
 }
 
 /// Sends a request with full control over auth/tenant headers.
@@ -112,11 +128,12 @@ async fn send_raw(
 
 #[tokio::test]
 async fn a1_missing_credentials_rejected_401() {
-    let app = router(make_state().await).await;
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
     let (status, _, _) = send_raw(
         app,
         Method::GET,
-        &format!("/internal/v1/breach-report/{}", AccountId::new()),
+        &format!("/internal/v1/breach-report/{account_id}"),
         None,
         None,
         Some(&tenant().to_string()),
@@ -127,11 +144,12 @@ async fn a1_missing_credentials_rejected_401() {
 
 #[tokio::test]
 async fn a1_wrong_token_rejected_401() {
-    let app = router(make_state().await).await;
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
     let (status, _, _) = send_raw(
         app,
         Method::GET,
-        &format!("/internal/v1/breach-report/{}", AccountId::new()),
+        &format!("/internal/v1/breach-report/{account_id}"),
         None,
         Some("Bearer no-such-token"),
         Some(&tenant().to_string()),
@@ -142,8 +160,8 @@ async fn a1_wrong_token_rejected_401() {
 
 #[tokio::test]
 async fn a1_valid_service_bearer_accepted() {
-    let app = router(make_state().await).await;
-    let account_id = AccountId::new();
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
     let (status, body, correlation_id) = send_raw(
         app,
         Method::GET,
@@ -167,8 +185,8 @@ async fn a1_valid_service_bearer_accepted() {
 
 #[tokio::test]
 async fn a1_tenant_header_trusted_after_service_auth() {
-    let app = router(make_state().await).await;
-    let account_id = AccountId::new();
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
     let (status, _, _) = send_raw(
         app,
         Method::GET,
@@ -183,7 +201,8 @@ async fn a1_tenant_header_trusted_after_service_auth() {
 
 #[tokio::test]
 async fn a1_health_reachable_without_credentials() {
-    let app = router(make_state().await).await;
+    let (state, _) = make_state().await;
+    let app = router(state).await;
     let (status, body, _) = send_raw(app, Method::GET, "/health", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "health must be exempt from auth");
     assert_eq!(body, "ok");
@@ -191,7 +210,8 @@ async fn a1_health_reachable_without_credentials() {
 
 #[tokio::test]
 async fn a1_ready_reachable_without_credentials() {
-    let app = router(make_state().await).await;
+    let (state, _) = make_state().await;
+    let app = router(state).await;
     let (status, body, _) = send_raw(app, Method::GET, "/ready", None, None, None).await;
     assert_eq!(status, StatusCode::OK, "ready must be exempt from auth");
     assert_eq!(body, "ready");
@@ -199,8 +219,9 @@ async fn a1_ready_reachable_without_credentials() {
 
 #[tokio::test]
 async fn a1_internal_accepts_active_service_token() {
-    let app = router(make_state().await).await;
-    let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
+    let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
         Method::POST,
@@ -219,8 +240,9 @@ async fn a1_internal_accepts_active_service_token() {
 
 #[tokio::test]
 async fn a1_internal_accepts_previous_token_during_rotation() {
-    let app = router(make_state().await).await;
-    let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
+    let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
         Method::POST,
@@ -239,8 +261,9 @@ async fn a1_internal_accepts_previous_token_during_rotation() {
 
 #[tokio::test]
 async fn a1_internal_rejects_unknown_bearer() {
-    let app = router(make_state().await).await;
-    let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
+    let (state, account_id) = make_state().await;
+    let app = router(state).await;
+    let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
         Method::POST,
