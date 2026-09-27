@@ -161,7 +161,7 @@ fn main() -> anyhow::Result<()> {
 
 Account persistence lives with the caller (ADR-11): `/internal/v1/evaluate` receives `account_state` and returns the updated state; storing it between calls is your responsibility. What the engine keeps:
 
-- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`) with an in-memory implementation in `propfirm::persistence::memory`. This is the read-side seam behind breach-report and override replay.
+- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`) with an in-memory implementation in `events::store::InMemoryEventStore`. This is the read-side seam behind breach-report and override replay.
 - **Idempotency store** — in-memory `IdempotencyStore` in `propfirm::api::idempotency`, behind the `Idempotency-Key` header on `POST /internal/v1/evaluate`.
 
 There is no `postgres` feature, no `AccountStore`, and no `put_with_version`. For your own optimistic-concurrency layer, carry `Account.version` inside `account_state`: it is hashed into every verdict's `input_hash`, so replaying a stale state is detectable (`Error::StateConflict` is retained as the typed error for that purpose).
