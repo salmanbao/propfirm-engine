@@ -394,7 +394,7 @@ mod tests {
         assert!(AuthConfig::is_exempt("/health"));
         assert!(AuthConfig::is_exempt("/ready"));
         assert!(!AuthConfig::is_exempt("/internal/v1/evaluate"));
-        assert!(!AuthConfig::is_exempt("/v1/accounts/1"));
+        assert!(!AuthConfig::is_exempt("/v1/evaluate-order"));
     }
 
     #[test]

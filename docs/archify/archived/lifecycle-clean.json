@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Prop Firm Evaluation Lifecycle",
+    "output": "lifecycle-prop-firm-engine.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "main", "label": "Main Flow" }
+  ],
+  "states": [
+    { "id": "pending", "label": "Pending", "type": "waiting", "lane": "main", "col": 0 },
+    { "id": "active", "label": "Active", "type": "active", "lane": "main", "col": 1 },
+    { "id": "target_hit_pending", "label": "Target Hit Pending", "type": "waiting", "lane": "main", "col": 2 },
+    { "id": "passed", "label": "Passed", "type": "success", "lane": "main", "col": 3 },
+    { "id": "failed", "label": "Failed", "type": "failure", "lane": "main", "col": 4 },
+    { "id": "closed", "label": "Closed", "type": "neutral", "lane": "main", "col": 4, "yOffset": 100 }
+  ],
+  "transitions": [
+    { "id": "start", "from": "pending", "to": "active", "label": "start", "labelAt": [ 220, 170 ] },
+    { "id": "evaluate", "from": "active", "to": "target_hit_pending", "label": "evaluation complete", "labelAt": [ 325, 220 ] },
+    { "id": "target_hit", "from": "target_hit_pending", "to": "passed", "label": "target hit", "labelAt": [ 479, 220 ] },
+    { "id": "fail", "from": "active", "to": "failed", "label": "fail", "route": "left-channel", "channelX": 100, "labelAt": [ 100, 400 ] },
+    { "id": "close_passed", "from": "passed", "to": "closed", "label": "close", "fromSide": "bottom", "toSide": "top", "via": [ [ 556, 250 ], [ 556, 520 ], [ 720, 520 ], [ 720, 460 ] ], "labelAt": [ 633, 390 ] },
+    { "id": "close_failed", "from": "failed", "to": "closed", "label": "close", "fromSide": "right", "toSide": "left", "via": [ [ 420, 420 ], [ 580, 420 ] ], "labelAt": [ 500, 400 ] }
+  ]
+}

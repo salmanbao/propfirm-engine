@@ -78,8 +78,8 @@ Each `RuleEntry` in a pack can override:
 
 - **Broker-is-truth equity** — the engine never recomputes equity from positions + quote. `EquityInput::BrokerReported` vs `EquityInput::Estimated` is a type-level distinction; breach-capable rules refuse to terminate on an estimate.
 - **Stateless pure evaluate** — `pure::evaluate(state, pack, tick) -> PureVerdict` produces an `input_hash` (sha256) so any past verdict can be recomputed byte-for-byte from its recorded inputs.
-- **Optimistic concurrency control** — `AccountStore::put_with_version(expected)` returns `Error::StateConflict` on mismatch. No silent last-write-wins clobbering.
-- **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack`. `AccountStore::get_for_tenant(tenant_id, account_id)` filters at the storage layer.
+- **Caller-owned concurrency** — the server keeps no account state (ADR-11). Callers carry `Account.version` in the request's `account_state`; it is hashed into `input_hash` so a stale replay is detectable. `Error::StateConflict` remains the typed error for caller-side optimistic concurrency.
+- **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack` and enforced at the HTTP auth layer: a token bound to tenant A requesting tenant B's resource gets 403 (`tests/auth_a1.rs`). Cross-tenant reads are never a storage concern.
 - **Stale & out-of-order tick guard** — ticks older than 10 minutes (configurable) or older than the last-evaluated tick are rejected with `Error::TickRejected` before evaluation runs.
 - **Decimal precision** — all monetary values use `rust_decimal::Decimal`; no floating-point drift on money.
 - **Panic safety** — the registry wraps each rule evaluation in `catch_unwind`. A panicking rule degrades to a `Warn` verdict; the process stays alive.
@@ -89,7 +89,7 @@ Each `RuleEntry` in a pack can override:
 - **Manual override** — `Override` record (`clears_violation_id`, `reason`, `actor_id`, `at`) clears a false-positive breach without deleting the original verdict. State machine: `Failed` / `EmergencyStopped` → `Active`.
 - **Emergency stop** — `PipelineEvent::EmergencyStop { reason, actor_id, at }` short-circuits normal rule evaluation and forces `DecisionKind::Emergency`. Beats every other verdict, including `Liquidate`.
 - **Early-warning threshold** — first-class `RuleVerdict::EarlyWarning` (ops-paged) distinct from trader-facing `Warn`. Emitted at 80% of breach threshold on every breach-capable rule.
-- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are persisted to the event log alongside the original verdict.
+- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are emitted as domain events alongside the original verdict, returned to the caller on `PipelineResult.events` for persistence.
 - **Idempotency** — all mutating HTTP endpoints accept an `Idempotency-Key` header. The server tracks the last N keys per endpoint to deduplicate retries.
 
 ## Risk analytics
@@ -109,16 +109,17 @@ The engine includes a risk module that computes quantitative metrics from accoun
 - Expected Shortfall
 - Exposure analytics (gross/net/long/short, per-symbol concentration)
 
-## Persistence backends
+## Persistence
 
-| Backend | Feature flag | Description |
-|---------|-------------|-------------|
-| In-memory | `in-memory-store` | Default. Fast, non-persistent. Used for tests and benchmarks. |
-| Postgres | `postgres` | Production implementation. Enforces tenant isolation at the SQL layer. Supports optimistic concurrency. |
+Account persistence was removed by ADR-11: `/internal/v1/evaluate` receives `account_state` in the request and returns the updated state in the response; persisting it is the caller's responsibility. What remains:
+
+- **Event store** — domain events emitted during evaluation come back on `PipelineResult.events`. The `events::store::EventStore` trait (in-memory implementation provided) is the read-side seam used by breach-report and override replay, ready to be backed by durable storage.
+- **Idempotency** — an `Idempotency-Key` on `POST /internal/v1/evaluate` deduplicates retries via the in-memory `IdempotencyStore`.
+- The `in-memory-store` cargo feature is vestigial (kept so existing build commands keep working); there is no `postgres` feature and no account database.
 
 ## HTTP API
 
-Optional `axum`-based server exposing REST endpoints for account evaluation, rule pack management, and breach reporting. See the [integration guide](integration.md) for endpoint details.
+Optional `axum`-based server exposing REST endpoints for account evaluation, rule pack validation, and breach reporting. See the [integration guide](integration.md) for endpoint details.
 
 ## Performance
 
@@ -137,17 +138,18 @@ Benchmarks are in `benches/engine.rs` and run via `cargo bench --features serial
 
 ## Testing
 
-136+ tests across unit, integration, property, spec edge case, API, auth, and batch suites. All passing with `cargo test --all-features`.
+166 tests + 1 doctest across unit, integration, property, spec edge case, API, auth, and batch suites. All passing with `cargo test --all-features`.
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Unit tests (`src/`) | 16 | Core logic: auth, instrument registry, payout engine, doctests. |
-| Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
+| Unit tests (`src/`) | 17 | Core logic: auth (8), instrument registry (5), payout engine (4). |
+| Integration tests (`tests/integration.rs`) | 37 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, pure-evaluate determinism. |
 | P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
 | P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
-| Property tests (`tests/property_tests.rs`) | 12 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering, CI guard for rule-level verdict producers, GapFlagged production proof. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 18 | Named, permanent regression tests pinning edge semantics. |
-| API integration tests (`tests/api_integration.rs`) | 9 | Binding spec HTTP endpoints: evaluate, override, manual-run, breach-report, evaluate-order. |
-| API P0 fixes (`tests/api_p0_fixes.rs`) | 10 | Contract enforcement: idempotency, error-shape, overrides, etc. |
+| Property tests (`tests/property_tests.rs`) | 12 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering, replay determinism, disabled rules contribute nothing, money fields non-negative, lots/units no cross-type comparison, rule-level verdict variants have a producer, gap flagged on unstarted account. |
+| Spec edge cases (`tests/spec_edge_cases.rs`) | 22 | Named, permanent regression tests pinning edge semantics (spec §3.4, P1.1 rollover/DST, D.3 phase progression, D.4 liquidation, gap-flag surfacing). |
+| Doctests | 2 | `src/lib.rs` example compiles (1 passed); `src/equity_input.rs` example (1 ignored). README example is not doctested. |
+| API integration tests (`tests/api_integration.rs`) | 7 | Binding spec HTTP endpoints: health, evaluate-order, manual-run, breach-report, override 404, input_hash sha256, ServerState clone. |
+| API P0 fixes (`tests/api_p0_fixes.rs`) | 12 | Contract enforcement: equity source defaults, overnight position, idempotency replay/conflict/no-double-apply, bridge tick v1, concurrency no-deadlock, two-call trailing chain, gap-flagged distinct. |
 | Auth A.1 tests (`tests/auth_a1.rs`) | 10 | HTTP authentication: missing/wrong credentials ⇒ 401, valid key ⇒ 200, tenant mismatch ⇒ 403, `/health` & `/ready` exempt, `/internal/*` service-token-only, env fail-closed. |
 | Batch tests (`tests/ab_batch.rs`, `tests/c_batch.rs`, `tests/d1_martingale.rs`) | 25 | Cross-account copy-trading detection, pack-driven thresholds, instrument spec units→lots conversion, margin/max_total_lots/trading_hours rules, martingale/grid detection. |

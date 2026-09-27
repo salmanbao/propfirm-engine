@@ -7,6 +7,8 @@
 
 use crate::config::plan::ChallengePlan;
 use crate::core::ids::{AccountId, ChallengeId};
+use crate::core::position::Position;
+use crate::core::trade::Trade;
 use crate::core::types::{dec, Money, Pct, Timestamp};
 use crate::core::{invalid_state, Error};
 
@@ -102,7 +104,7 @@ impl AccountStatus {
 }
 
 /// The account aggregate root.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Account {
     pub id: AccountId,
     pub account_type: AccountType,
@@ -188,10 +190,10 @@ pub struct Account {
     /// `target_hit_pending` → `passed` state transition.
     pub target_reached_on_day: Option<u32>,
 
-    /// Optimistic-concurrency version (P1-8 fix). Bumped on every
-    /// successful write. The store rejects `put_with_version(v)` calls
-    /// where `v` does not match the persisted value, returning a
-    /// [`crate::core::Error::StateConflict`].
+    /// Optimistic-concurrency version (P1-8 fix). A caller-owned token
+    /// serialized with `account_state` and hashed into `input_hash`, so
+    /// any change is visible in the verdict fingerprint. Server-side
+    /// version checking was removed with ADR-11's account persistence.
     pub version: u64,
 
     /// Last-evaluated tick timestamp (P1-14 fix). Used by the
@@ -219,6 +221,22 @@ pub struct Account {
     /// consumed (paid out once alongside the first payout when the plan
     /// is refundable).
     pub refund_used: bool,
+
+    /// **ADR-11 statelessness**: currently-open positions carried on the
+    /// account aggregate itself, so a stateless `POST /internal/v1/evaluate`
+    /// call can round-trip position state through `account_state` without a
+    /// server-side position store. Maintained by the pipeline on every
+    /// `TradeFilled` event (entry → push, exit → close in place).
+    #[serde(default)]
+    pub open_positions: Vec<Position>,
+
+    /// **ADR-11 statelessness**: fills executed on the *current* server
+    /// trading day, carried on the account aggregate for the same reason as
+    /// [`Self::open_positions`] — feeds `today_trades` into the rule context
+    /// (daily-trade-count / cooldown rules) without a server-side store.
+    /// Cleared at day rollover; pruned to the current day window on ingest.
+    #[serde(default)]
+    pub today_trades: Vec<Trade>,
 }
 
 impl Account {
@@ -268,6 +286,8 @@ impl Account {
             balance_at_last_payout: initial,
             last_payout_at: None,
             refund_used: false,
+            open_positions: Vec::new(),
+            today_trades: Vec::new(),
         }
     }
 

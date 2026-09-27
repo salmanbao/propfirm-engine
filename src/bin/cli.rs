@@ -7,8 +7,6 @@ use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
 use propfirm::notifications::log::LogNotifier;
-use propfirm::persistence::memory::InMemoryStore;
-use propfirm::persistence::traits::AccountStore;
 use propfirm::prelude::*;
 
 #[tokio::main]
@@ -18,7 +16,6 @@ async fn main() -> anyhow::Result<()> {
     // 1. Build the challenge plan and account.
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
-    let tenant_id = account.tenant_id;
     println!(
         "Account: id={} type={} phase={} initial={}",
         account.id, account.account_type, plan.phase, account.initial_balance
@@ -34,21 +31,13 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Build the pipeline.
     let evaluator = Evaluator::new(&plan);
-    let store = InMemoryStore::new();
-    store
-        .put_with_version(account.clone(), account.version)
-        .await?;
     let notifier = LogNotifier::new();
-    let mut pipeline = Pipeline::new(evaluator, store, notifier);
+    let mut pipeline = Pipeline::new(evaluator, notifier);
 
     // 3. Start the account.
     let now = chrono::Utc::now();
     let result = pipeline
-        .process_for_tenant(
-            tenant_id,
-            account.id,
-            PipelineEvent::AccountStarted { at: now },
-        )
+        .process(account.clone(), PipelineEvent::AccountStarted { at: now })
         .await?;
     println!(
         "\n[Started] decision={:?} events={}",
@@ -75,11 +64,7 @@ async fn main() -> anyhow::Result<()> {
         avg_fill_price: None,
     };
     let result = pipeline
-        .process_for_tenant(
-            tenant_id,
-            account.id,
-            PipelineEvent::OrderSubmitted { order },
-        )
+        .process(account.clone(), PipelineEvent::OrderSubmitted { order })
         .await?;
     println!(
         "[Order] decision={:?} passed={} violations={}",
@@ -103,9 +88,8 @@ async fn main() -> anyhow::Result<()> {
     let broker_equity = Money(dec!(10_200));
     let broker_balance = Money(dec!(10_000));
     let result = pipeline
-        .process_for_tenant(
-            tenant_id,
-            account.id,
+        .process(
+            account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity,

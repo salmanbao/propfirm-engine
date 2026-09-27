@@ -14,7 +14,7 @@ use propfirm::core::order::{Order, OrderKind, OrderSide, OrderStatus, OrderType,
 use propfirm::core::tick::{Quote, Tick};
 use propfirm::core::trade::{Trade, TradeSide};
 use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
-use propfirm::persistence::traits::AccountStore;
+
 use propfirm::rulepack::{RuleBasis, RuleEntry, RuleUnit};
 use propfirm::rules::context::{RuleContext, RuleContextKind};
 use propfirm::rules::evaluators::copy_trading::CopyTradingRule;
@@ -389,18 +389,14 @@ async fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
     use propfirm::engine::evaluator::Evaluator;
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
 
     let plan = ftmo_phase1();
-    let store = InMemoryStore::new();
-    let mut pipeline = Pipeline::new(Evaluator::new(&plan), store.clone(), LogNotifier::new());
+    let mut pipeline = Pipeline::new(Evaluator::new(&plan), LogNotifier::new());
     let mut acc = Account::new(AccountId::new(), plan)
         .start(chrono::Utc::now())
         .unwrap();
-    acc.tenant_id = propfirm::tenant::TenantId::named("t");
     acc.balance = Money(dec!(100_000));
     acc.equity = Money(dec!(100_000));
-    store.put(acc.clone()).await.unwrap();
 
     // Open position on GBPUSD; tick arrives on EURUSD.
     let position = propfirm::core::position::Position::open(
@@ -416,7 +412,7 @@ async fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
         None,
         None,
     );
-    store.add_position(position).await.unwrap();
+    acc.open_positions.push(position);
 
     let tick = Tick::new(
         Symbol::new("EURUSD"),
@@ -427,7 +423,7 @@ async fn a2_tick_estimated_values_book_with_ticked_symbol_quote_only() {
         },
     );
     let result = pipeline
-        .process_for_tenant(acc.tenant_id, acc.id, PipelineEvent::TickEstimated { tick })
+        .process(acc.clone(), PipelineEvent::TickEstimated { tick })
         .await
         .unwrap();
     // With contract_size 1 and the EURUSD quote applied to a GBPUSD

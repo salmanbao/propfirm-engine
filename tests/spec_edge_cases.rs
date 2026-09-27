@@ -293,22 +293,18 @@ async fn spec_3_4_edge_11_override_clears_breach_state() {
 
 #[tokio::test]
 async fn spec_3_4_edge_12_emergency_stop_short_circuits() {
-    use propfirm::persistence::traits::AccountStore;
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
-        store.clone(),
         propfirm::notifications::log::LogNotifier::new(),
     );
     let result = pipeline
         .process(
-            account.id,
+            account.clone(),
             propfirm::engine::pipeline::PipelineEvent::EmergencyStop {
                 reason: "Broker feed corrupted".into(),
                 actor_id: "ops-bob".into(),
@@ -379,19 +375,15 @@ async fn p1_1_auto_rollover_on_future_tick() {
     use propfirm::engine::evaluator::Evaluator;
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
-    let store = InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
-    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
 
-    pipeline
+    let started = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::AccountStarted {
                 at: chrono::Utc::now(),
             },
@@ -399,7 +391,7 @@ async fn p1_1_auto_rollover_on_future_tick() {
         .await
         .unwrap();
 
-    let pre = pipeline.store.get(account.id).await.unwrap().unwrap();
+    let pre = started.account;
     assert_eq!(pre.trading_day_index, 0, "start at day 0");
 
     let tomorrow = chrono::Utc::now() + chrono::Duration::days(1);
@@ -413,7 +405,7 @@ async fn p1_1_auto_rollover_on_future_tick() {
     );
     let result = pipeline
         .process(
-            account.id,
+            pre.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: account.equity,
@@ -423,7 +415,7 @@ async fn p1_1_auto_rollover_on_future_tick() {
         .await
         .unwrap();
 
-    let post = pipeline.store.get(account.id).await.unwrap().unwrap();
+    let post = result.account.clone();
     assert!(
         post.trading_day_index >= 1,
         "auto-rollover must have fired: trading_day_index={}, events={:?}",
@@ -450,19 +442,15 @@ async fn p1_1_auto_rollover_not_triggered_for_current_day() {
     use propfirm::engine::evaluator::Evaluator;
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone());
-    let store = InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
-    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
 
-    pipeline
+    let started = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::AccountStarted {
                 at: chrono::Utc::now(),
             },
@@ -480,7 +468,7 @@ async fn p1_1_auto_rollover_not_triggered_for_current_day() {
     );
     let result = pipeline
         .process(
-            account.id,
+            started.account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: account.equity,
@@ -490,7 +478,7 @@ async fn p1_1_auto_rollover_not_triggered_for_current_day() {
         .await
         .unwrap();
 
-    let post = pipeline.store.get(account.id).await.unwrap().unwrap();
+    let post = result.account.clone();
     assert_eq!(
         post.trading_day_index, 0,
         "same-day tick must NOT trigger auto-rollover"
@@ -655,19 +643,15 @@ async fn spec_d3_phase_progression_emits_plan_upgraded() {
     use propfirm::core::events::DomainEventKind;
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
     let plan = ftmo_phase1().with_min_days(1); // meet min days quickly
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(propfirm::tenant::TenantId::named("phase-test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let store = InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let notifier = LogNotifier::new();
     let evaluator = propfirm::engine::evaluator::Evaluator::new(&plan);
-    let mut pipeline = Pipeline::new(evaluator, store.clone(), notifier);
+    let mut pipeline = Pipeline::new(evaluator, notifier);
 
     // Account is already started (status=Active from Account::start()).
     // Submit an order and fill it to get a trade.
@@ -680,8 +664,8 @@ async fn spec_d3_phase_progression_emits_plan_upgraded() {
         Some(Price(dec!(1.10))),
         chrono::Utc::now(),
     );
-    pipeline
-        .process(account.id, PipelineEvent::OrderSubmitted { order })
+    let submitted = pipeline
+        .process(account.clone(), PipelineEvent::OrderSubmitted { order })
         .await
         .unwrap();
 
@@ -706,8 +690,11 @@ async fn spec_d3_phase_progression_emits_plan_upgraded() {
         }),
         comment: Some(String::new()),
     };
-    pipeline
-        .process(account.id, PipelineEvent::TradeFilled { trade })
+    let filled = pipeline
+        .process(
+            submitted.account.clone(),
+            PipelineEvent::TradeFilled { trade },
+        )
         .await
         .unwrap();
 
@@ -724,7 +711,7 @@ async fn spec_d3_phase_progression_emits_plan_upgraded() {
     );
     let result = pipeline
         .process(
-            account.id,
+            filled.account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: Money(dec!(15000)),
@@ -745,7 +732,7 @@ async fn spec_d3_phase_progression_emits_plan_upgraded() {
     );
 
     // Verify the account is now in Phase2.
-    let stored = store.get(account.id).await.unwrap().unwrap();
+    let stored = result.account;
     assert_eq!(
         stored.plan.phase,
         propfirm::config::plan::ChallengePhase::Phase2,
@@ -764,8 +751,6 @@ async fn spec_d4_liquidation_requested_lists_correct_positions() {
     use propfirm::core::types::{dec, Money, Price, Quantity, Symbol};
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
     let plan = ftmo_phase1();
     let mut account = Account::new(AccountId::new(), plan)
@@ -776,13 +761,10 @@ async fn spec_d4_liquidation_requested_lists_correct_positions() {
     account.equity = Money(dec!(8_900));
     account.balance = Money(dec!(8_900));
 
-    let store = InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
-
     let evaluator = Evaluator::new(&account.plan);
-    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
 
-    // Seed two open positions in the store so the pipeline can build the
+    // Seed two open positions on the account so the pipeline can build the
     // liquidation instruction from `open_positions`.
     let p1 = Position::open(
         account.id,
@@ -810,8 +792,8 @@ async fn spec_d4_liquidation_requested_lists_correct_positions() {
         None,
         None,
     );
-    pipeline.store.add_position(p1.clone()).await.unwrap();
-    pipeline.store.add_position(p2.clone()).await.unwrap();
+    account.open_positions.push(p1.clone());
+    account.open_positions.push(p2.clone());
 
     let tick = Tick::new(
         Symbol::new("EURUSD"),
@@ -824,7 +806,7 @@ async fn spec_d4_liquidation_requested_lists_correct_positions() {
 
     let result = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: Money(dec!(8_900)),
@@ -960,8 +942,6 @@ async fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
     use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
     use propfirm::engine::state::AccountState;
     use propfirm::notifications::log::LogNotifier;
-    use propfirm::persistence::memory::InMemoryStore;
-    use propfirm::persistence::traits::AccountStore;
 
     let plan = ChallengePlan {
         timezone: Some(chrono_tz::America::New_York),
@@ -984,15 +964,13 @@ async fn p1_1_auto_rollover_catches_up_multiple_missed_days() {
         .with_timezone(&chrono::Utc);
     state.account.current_trading_day_start = Some(two_days_ago);
 
-    let store = InMemoryStore::new();
-    store.put(state.account.clone()).await.unwrap(); // Store the modified account
-    let mut pipeline = Pipeline::new(Evaluator::new(&plan), store, LogNotifier::new());
+    let mut pipeline = Pipeline::new(Evaluator::new(&plan), LogNotifier::new());
 
     // Event arrives two trading days later.
     let event_ts = chrono::Utc::now();
     let result = pipeline
         .process(
-            account.id,
+            state.account.clone(),
             PipelineEvent::Tick {
                 tick: Tick::new(
                     Symbol::new("EURUSD"),

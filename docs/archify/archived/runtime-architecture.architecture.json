@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "propfirm-engine Runtime Architecture",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "request-path",
+        "label": "Primary evaluate path",
+        "focus": ["caller", "router", "auth", "handler", "pipeline", "evaluator"],
+        "note": "One request from the caller to a rule verdict, with no account store in between."
+      }
+    ]
+  },
+  "components": [
+    { "id": "caller", "type": "external", "label": "Prop-Firm Platform", "sublabel": "LCC / bridge caller", "pos": [40, 300], "size": [150, 64] },
+    { "id": "router", "type": "backend", "label": "Axum Router", "sublabel": "api/routes.rs", "pos": [250, 300], "size": [150, 64] },
+    { "id": "auth", "type": "security", "label": "Auth Layer", "sublabel": "service token / tenant key", "tag": "fail-closed 401/403", "pos": [460, 300], "size": [150, 64] },
+    { "id": "handler", "type": "backend", "label": "Evaluate Handler", "sublabel": "api/handlers.rs", "pos": [670, 300], "size": [150, 64] },
+    { "id": "idempotency", "type": "database", "label": "Idempotency Store", "sublabel": "in-memory", "pos": [670, 460], "size": [150, 56] },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "engine/pipeline.rs", "tag": "stateless (ADR-11)", "pos": [880, 300], "size": [150, 64] },
+    { "id": "evaluator", "type": "backend", "label": "Rule Evaluator", "sublabel": "22 built-in rules", "pos": [1090, 300], "size": [150, 64] },
+    { "id": "registry", "type": "backend", "label": "Rule Registry", "sublabel": "RuleRegistry", "pos": [1090, 150], "size": [150, 56] },
+    { "id": "packs", "type": "database", "label": "Rule Packs", "sublabel": "rule pack JSON", "pos": [860, 150], "size": [150, 56] },
+    { "id": "events", "type": "database", "label": "Event Store", "sublabel": "EventStore seam", "pos": [860, 460], "size": [150, 56] },
+    { "id": "notifier", "type": "messagebus", "label": "Notifier", "sublabel": "Notifier trait", "pos": [1070, 460], "size": [150, 56] }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "propfirm-engine process (stateless, ADR-11)",
+      "wraps": ["router", "auth", "handler", "idempotency", "pipeline", "evaluator", "registry", "packs", "events", "notifier"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Authenticated zone — verified service token / tenant key",
+      "wraps": ["handler", "idempotency", "pipeline", "evaluator", "registry", "events", "notifier"]
+    }
+  ],
+  "connections": [
+    { "id": "req-entry", "from": "caller", "to": "router", "label": "POST /internal/v1/evaluate", "variant": "emphasis", "labelDy": 56 },
+    { "id": "route-guard", "from": "router", "to": "auth", "label": "auth_layer middleware", "labelDy": 56 },
+    { "id": "auth-gate", "from": "auth", "to": "handler", "label": "verified identity", "labelDy": 56 },
+    { "id": "handler-dispatch", "from": "handler", "to": "pipeline", "label": "account + event", "labelDy": 63 },
+    { "id": "rule-eval", "from": "pipeline", "to": "evaluator", "label": "rule evaluation", "labelDy": -26 },
+    { "id": "idem-check", "from": "handler", "to": "idempotency", "label": "Idempotency-Key dedupe", "labelDy": 60 },
+    { "id": "audit-append", "from": "pipeline", "to": "events", "label": "append audit events", "fromSide": "bottom", "toSide": "top" },
+    { "id": "notify", "from": "pipeline", "to": "notifier", "label": "notify violations" },
+    { "id": "rule-lookup", "from": "evaluator", "to": "registry", "label": "rule lookup" },
+    { "id": "pack-load", "from": "packs", "to": "registry", "label": "startup load" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Primary path",
+      "items": [
+        "Response carries account_state, input_hash, and events for the caller to persist",
+        "Overrides and emergency-stop emit events on PipelineResult.events",
+        "GET /health and GET /ready are the only unauthenticated routes"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Stateless core (ADR-11)",
+      "items": [
+        "No account database: the caller sends account_state with every request",
+        "input_hash commits to account_state, rule pack, and inputs so verdicts are replay-auditable",
+        "Rule packs are JSON data, validated at /v1/rule-packs/validate"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust boundaries",
+      "items": [
+        "auth_layer fails closed: 401 without credentials, 403 on tenant mismatch",
+        "Service tokens gate /internal/* routes; tenant keys gate /v1/* routes",
+        "EventStore and Notifier are pluggable seams; LogNotifier is the default sink"
+      ]
+    }
+  ]
+}

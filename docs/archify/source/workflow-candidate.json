@@ -1,0 +1,277 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Prop Firm Engine Evaluation Flow",
+    "animation": "none",
+    "visual_preset": "classic",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-path",
+        "label": "Main evaluation path",
+        "focus": [
+          "external_caller",
+          "api_router",
+          "auth_layer",
+          "pipeline_start",
+          "build_context",
+          "evaluate_rules",
+          "decision_kind",
+          "emit_decision",
+          "notify_violations",
+          "update_state",
+          "external_notifier"
+        ],
+        "note": "Left-to-right evaluation flow"
+      }
+    ],
+    "output": "workflow-prop-firm-engine.html"
+  },
+  "lanes": [
+    {
+      "id": "external",
+      "label": "External Systems"
+    },
+    {
+      "id": "api",
+      "label": "API Layer"
+    },
+    {
+      "id": "pipeline",
+      "label": "Pipeline Orchestrator"
+    },
+    {
+      "id": "evaluator",
+      "label": "Rule Evaluation"
+    },
+    {
+      "id": "notifier",
+      "label": "Notifications"
+    }
+  ],
+  "phases": [
+    {
+      "id": "intake",
+      "label": "Event Intake",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "evaluation",
+      "label": "Rule Evaluation",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "response",
+      "label": "Response & State Update",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "external_caller",
+    "api_router",
+    "auth_layer",
+    "pipeline_start",
+    "build_context",
+    "evaluate_rules",
+    "decision_kind",
+    "emit_decision",
+    "notify_violations",
+    "update_state",
+    "external_notifier"
+  ],
+  "nodes": [
+    {
+      "id": "external_caller",
+      "lane": "external",
+      "col": 0,
+      "type": "external",
+      "label": "External Caller",
+      "width": 140
+    },
+    {
+      "id": "api_router",
+      "lane": "api",
+      "col": 0,
+      "type": "frontend",
+      "label": "API Router",
+      "width": 140
+    },
+    {
+      "id": "auth_layer",
+      "lane": "api",
+      "col": 1,
+      "type": "security",
+      "label": "Auth Layer",
+      "width": 140
+    },
+    {
+      "id": "pipeline_start",
+      "lane": "pipeline",
+      "col": 1,
+      "type": "backend",
+      "label": "Pipeline Start",
+      "width": 140
+    },
+    {
+      "id": "build_context",
+      "lane": "pipeline",
+      "col": 2,
+      "type": "backend",
+      "label": "Build Context",
+      "width": 140
+    },
+    {
+      "id": "evaluate_rules",
+      "lane": "evaluator",
+      "col": 2,
+      "type": "backend",
+      "label": "Evaluate Rules",
+      "width": 140
+    },
+    {
+      "id": "decision_kind",
+      "lane": "evaluator",
+      "col": 3,
+      "type": "backend",
+      "label": "Decision Kind",
+      "width": 120
+    },
+    {
+      "id": "emit_decision",
+      "lane": "pipeline",
+      "col": 3,
+      "type": "backend",
+      "label": "Emit Decision",
+      "width": 140
+    },
+    {
+      "id": "notify_violations",
+      "lane": "pipeline",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Notify Violations",
+      "width": 140
+    },
+    {
+      "id": "update_state",
+      "lane": "pipeline",
+      "col": 5,
+      "type": "backend",
+      "label": "Update State",
+      "width": 140
+    },
+    {
+      "id": "external_notifier",
+      "lane": "external",
+      "col": 5,
+      "type": "external",
+      "label": "External Notifier",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "id": "caller-to-api",
+      "from": "external_caller",
+      "to": "api_router",
+      "label": "HTTP POST",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-auth",
+      "from": "api_router",
+      "to": "auth_layer",
+      "label": "route request",
+      "variant": "default"
+    },
+    {
+      "id": "auth-to-pipeline",
+      "from": "auth_layer",
+      "to": "pipeline_start",
+      "label": "authenticated",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pipeline-to-context",
+      "from": "pipeline_start",
+      "to": "build_context",
+      "label": "extract event",
+      "variant": "default"
+    },
+    {
+      "id": "context-to-eval",
+      "from": "build_context",
+      "to": "evaluate_rules",
+      "label": "RuleContext",
+      "variant": "emphasis"
+    },
+    {
+      "id": "eval-to-decision",
+      "from": "evaluate_rules",
+      "to": "decision_kind",
+      "label": "winning priority",
+      "variant": "emphasis"
+    },
+    {
+      "id": "decision-to-emit",
+      "from": "decision_kind",
+      "to": "emit_decision",
+      "label": "decision ready",
+      "variant": "default"
+    },
+    {
+      "id": "emit-to-notify",
+      "from": "emit_decision",
+      "to": "notify_violations",
+      "label": "violations?",
+      "variant": "security"
+    },
+    {
+      "id": "notify-to-update",
+      "from": "notify_violations",
+      "to": "update_state",
+      "label": "always update",
+      "variant": "dashed"
+    },
+    {
+      "id": "update-to-external",
+      "from": "update_state",
+      "to": "external_notifier",
+      "label": "notify",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Stateless Evaluation (ADR-11)",
+      "items": [
+        "No account state stored server-side",
+        "account_state flows in/out via request/response",
+        "input_hash enables replay"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Broker-is-Truth Equity (P1-5)",
+      "items": [
+        "Breach-capable rules only use broker-reported equity",
+        "Estimated equity downgrades to Warn at most"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Deterministic Breach Arbitration",
+      "items": [
+        "Breach priority() decides winning violation",
+        "Not registration order (P0-4)"
+      ]
+    }
+  ]
+}

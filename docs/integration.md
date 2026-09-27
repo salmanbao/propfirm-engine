@@ -1,11 +1,10 @@
 # Integration guide
 
-This guide shows how to embed the prop firm engine in a Rust service, run evaluations, persist state, and hook into the HTTP API.
+This guide shows how to embed the prop firm engine in a Rust service, run evaluations, carry account state in and out (ADR-11), and hook into the HTTP API.
 
 ## Prerequisites
 
 - Rust 1.70+ (2021 edition)
-- Optional: PostgreSQL 12+ if you use the `postgres` feature
 
 ## Adding the dependency
 
@@ -26,22 +25,21 @@ propfirm-engine = "0.1"
 | Feature | Description |
 |---------|-------------|
 | `default` | Enables `serialization` and `in-memory-store`. |
-| `serialization` | Enables `serde`/`serde_json`/`chrono/serde` for JSON config and persistence. |
-| `in-memory-store` | Enables the in-memory `AccountStore` implementation. |
-| `postgres` | Enables `sqlx`, `sqlx-postgres`, `tokio-postgres`, `deadpool-postgres`. |
+| `serialization` | Enables `serde`/`serde_json`/`chrono/serde` for JSON config and request/response payloads. |
+| `in-memory-store` | Vestigial (kept so existing build commands keep working); gates nothing — there is no account store (ADR-11). |
 | `server` | Enables the `axum` HTTP server and all REST endpoints. |
 | `tracing` | Enables `tracing`/`tracing-subscriber` for structured audit logging. |
 
-For a typical embedded use (no HTTP server, in-memory persistence):
+For a typical embedded use (no HTTP server):
 
 ```toml
-propfirm-engine = { version = "0.1", default-features = false, features = ["serialization", "in-memory-store"] }
+propfirm-engine = { version = "0.1", default-features = false, features = ["serialization"] }
 ```
 
-For production with Postgres:
+For the HTTP server:
 
 ```toml
-propfirm-engine = { version = "0.1", default-features = false, features = ["serialization", "postgres", "tracing"] }
+propfirm-engine = { version = "0.1", default-features = false, features = ["serialization", "server", "tracing"] }
 ```
 
 ## Quick start
@@ -49,56 +47,54 @@ propfirm-engine = { version = "0.1", default-features = false, features = ["seri
 ```rust
 use propfirm::prelude::*;
 use propfirm::config::presets::ftmo_phase1;
-use propfirm::core::ids::AccountId;
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
 use propfirm::notifications::log::LogNotifier;
-use propfirm::persistence::memory::InMemoryStore;
-use propfirm::persistence::traits::AccountStore;
+use propfirm::tenant::TenantId;
 
-fn main() -> anyhow::Result<()> {
-    // 1. Choose a preset plan.
+// Pipeline::process is async; requires a tokio runtime (e.g. #[tokio::main]).
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Choose a preset plan and create an account (ADR-11: state is
+    //    caller-owned; the engine never persists it).
     let plan = ftmo_phase1();
-
-    // 2. Create an account.
-    let mut account = Account::new(AccountId::new(), plan.clone())
+    let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("my-firm"));
-    account.balance = Money(dec!(100_000));
-    account.equity = account.balance;
 
-    // 3. Build the evaluator and pipeline.
+    // 2. Build the evaluator and pipeline (no store — domain events come
+    //    back on PipelineResult.events for you to persist if you wish).
     let evaluator = Evaluator::new(&plan);
-    let store = InMemoryStore::new();
-    store.put(account.clone())?;
-    let notifier = LogNotifier::new();
-    let mut pipeline = Pipeline::new(evaluator, store, notifier);
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
+    let now = chrono::Utc::now();
 
-    // 4. Start the account.
-    pipeline.process(
-        account.id,
-        PipelineEvent::AccountStarted { at: chrono::Utc::now() },
-    )?;
+    // 3. Start the account: Pending → Active.
+    let result = pipeline
+        .process(account.clone(), PipelineEvent::AccountStarted { at: now })
+        .await?;
+    println!("Started: {:?}", result.snapshot.account.status);
 
-    // 5. Evaluate a tick (broker-reported equity).
+    // 4. Evaluate a tick (broker-reported equity).
     let tick = Tick::new(
         Symbol::new("EURUSD"),
         Quote {
             bid: Price(dec!(1.0850)),
             ask: Price(dec!(1.0852)),
-            ts: chrono::Utc::now(),
+            ts: now,
         },
     );
-    let result = pipeline.process(
-        account.id,
-        PipelineEvent::Tick {
-            tick,
-            broker_equity: Money(dec!(102_000)),
-            broker_balance: Money(dec!(100_000)),
-        },
-    )?;
+    let result = pipeline
+        .process(
+            result.account.clone(),
+            PipelineEvent::Tick {
+                tick,
+                broker_equity: Money(dec!(102_000)),
+                broker_balance: Money(dec!(100_000)),
+            },
+        )
+        .await?;
     println!("Tick decision: {:?}", result.snapshot.decision.kind);
 
-    // 6. Evaluate an order (pre-trade).
+    // 5. Evaluate an order (pre-trade, SL/TP set).
     let order = Order::market_open(
         account.id,
         Symbol::new("EURUSD"),
@@ -106,9 +102,11 @@ fn main() -> anyhow::Result<()> {
         Quantity(dec!(1)),
         Some(Price(dec!(1.05))),
         Some(Price(dec!(1.10))),
-        chrono::Utc::now(),
+        now,
     );
-    let result = pipeline.process(account.id, PipelineEvent::OrderSubmitted { order })?;
+    let result = pipeline
+        .process(result.account.clone(), PipelineEvent::OrderSubmitted { order })
+        .await?;
     println!("Order decision: {:?}", result.snapshot.decision.kind);
 
     Ok(())
@@ -117,32 +115,43 @@ fn main() -> anyhow::Result<()> {
 
 ## Stateless evaluate
 
-If you want to evaluate without mutating any state, use `pure::evaluate()`. It takes all inputs as arguments and returns a `PureVerdict` with an `input_hash`.
+If you want to evaluate without mutating any state, use `pure::evaluate()`. It takes all inputs explicitly and returns a `PureVerdict` with an `input_hash`.
 
 ```rust
-use propfirm::pure::evaluate;
+use propfirm::prelude::*;
 use propfirm::config::presets::ftmo_phase1;
-use propfirm::core::ids::AccountId;
+use propfirm::pure::{evaluate, EvaluateInputs};
+use propfirm::rulepack::RulePack;
+use propfirm::rules::context::RuleContextKind;
+use propfirm::rules::registry::RuleRegistry;
 
 fn main() -> anyhow::Result<()> {
     let plan = ftmo_phase1();
-    let account = Account::new(AccountId::new(), plan);
-    let pack = RulePack::default_for_plan(&plan)?;
+    let account = Account::new(AccountId::new(), plan.clone());
+
+    // Rule packs are data: production callers deserialize their stored pack
+    // JSON; here we synthesize one from the plan the account is bound to.
+    let pack = RulePack::synthetic_from_plan(account.id, account.tenant_id.clone(), &plan);
+    let registry = RuleRegistry::with_default_rules();
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote {
+            bid: Price(dec!(1.08)),
+            ask: Price(dec!(1.0802)),
+            ts: chrono::Utc::now(),
+        },
+    );
 
     let verdict = evaluate(
         &account,
         &pack,
-        &tick,
-        &open_positions,
-        &today_trades,
-        pending_order,
-        latest_trade,
-        latest_tick,
-        cross_reference_trades,
-        equity_source,
+        &registry,
+        RuleContextKind::OnTick,
+        propfirm::core::types::ServerTime::now(),
+        EvaluateInputs::for_tick(&[], &[], &tick),
     )?;
 
-    // verdict.input_hash can be persisted and verified on replay.
+    // verdict.input_hash can be persisted by the caller and verified on replay.
     println!("verdict: {:?}, hash: {}", verdict.decision.kind, verdict.input_hash);
     Ok(())
 }
@@ -150,42 +159,12 @@ fn main() -> anyhow::Result<()> {
 
 ## Persistence
 
-### In-memory (testing)
+Account persistence lives with the caller (ADR-11): `/internal/v1/evaluate` receives `account_state` and returns the updated state; storing it between calls is your responsibility. What the engine keeps:
 
-```rust
-use propfirm::persistence::memory::InMemoryStore;
-use propfirm::persistence::traits::AccountStore;
+- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`) with an in-memory implementation in `propfirm::persistence::memory`. This is the read-side seam behind breach-report and override replay.
+- **Idempotency store** — in-memory `IdempotencyStore` in `propfirm::api::idempotency`, behind the `Idempotency-Key` header on `POST /internal/v1/evaluate`.
 
-let store = InMemoryStore::new();
-store.put(account)?;
-let loaded = store.get(account.id)?.expect("account must exist");
-```
-
-### Postgres (production)
-
-Enable the `postgres` feature and use `PostgresStore`:
-
-```rust
-use propfirm::persistence::postgres::PostgresStore;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let store = PostgresStore::connect("postgres://propfirm:password@localhost/propfirm").await?;
-    // store implements AccountStore, PositionStore, TradeStore, RulePackStore, etc.
-    Ok(())
-}
-```
-
-`PostgresStore` enforces tenant isolation at the SQL layer. Use `get_for_tenant(tenant_id, account_id)` instead of `get(account_id)` in multi-tenant deployments.
-
-Optimistic concurrency:
-
-```rust
-use propfirm::persistence::traits::AccountStore;
-
-// Only succeeds if the account version is still 5.
-store.put_with_version(account, 5)?;
-```
+There is no `postgres` feature, no `AccountStore`, and no `put_with_version`. For your own optimistic-concurrency layer, carry `Account.version` inside `account_state`: it is hashed into every verdict's `input_hash`, so replaying a stale state is detectable (`Error::StateConflict` is retained as the typed error for that purpose).
 
 ## HTTP API
 
@@ -216,17 +195,13 @@ If no tokens are configured and `PROPFIRM_ALLOW_INSECURE` is not set, the server
 |--------|------|------|-------------|
 | `GET` | `/health` | none | Liveness probe. |
 | `GET` | `/ready` | none | Readiness probe. |
-| `POST` | `/internal/v1/evaluate` | service | Stateless evaluate contract. |
+| `POST` | `/internal/v1/evaluate` | service | Stateless evaluate contract (`account_state` required; a `rule_pack` field is rejected with 400). |
 | `POST` | `/internal/v1/override` | service | Clear a false-positive breach. |
 | `POST` | `/internal/v1/manual-run` | service | Force re-evaluation of an account. |
+| `POST` | `/internal/v1/emergency-stop` | service | Force `DecisionKind::Emergency`, short-circuiting rule evaluation. |
 | `GET` | `/internal/v1/breach-report/:account_id` | service | Trader-facing "why did I fail" view. |
 | `POST` | `/v1/evaluate-order` | tenant/service | Pre-trade order evaluation. |
-| `GET` | `/v1/accounts/:id` | tenant/service | Account snapshot. |
-| `POST` | `/v1/rule-packs` | tenant/service | Create a draft rule pack. |
-| `GET` | `/v1/rule-packs/:id` | tenant/service | Get a rule pack. |
-| `PATCH` | `/v1/rule-packs/:id` | tenant/service | Update a draft rule pack. |
-| `POST` | `/v1/rule-packs/:id/activate` | tenant/service | Promote draft → active. |
-| `POST` | `/v1/rule-packs/:id/supersede` | tenant/service | Mark active → superseded. |
+| `POST` | `/v1/rule-packs/validate` | tenant/service | Validate a rule pack (stateless — nothing is persisted). |
 
 All mutating endpoints accept an `Idempotency-Key` header.
 
@@ -280,8 +255,9 @@ let evaluator = Evaluator::with_registry(registry);
 Implement the `Notifier` trait to deliver violations:
 
 ```rust
-use propfirm::notifications::Notifier;
-use propfirm::engine::evaluator::EvaluationResult;
+use propfirm::core::violation::Violation;
+use propfirm::core::Error;
+use propfirm::notifications::traits::Notifier;
 
 struct WebhookNotifier {
     client: reqwest::Client,
@@ -289,10 +265,21 @@ struct WebhookNotifier {
 }
 
 impl Notifier for WebhookNotifier {
-    fn notify(&self, result: &EvaluationResult) -> anyhow::Result<()> {
-        for violation in result.violations() {
-            self.client.post(&self.url).json(violation).send()?;
-        }
+    fn notify_violation(&self, v: &Violation) -> Result<(), Error> {
+        self.client
+            .post(&self.url)
+            .json(v)
+            .send()
+            .map_err(|e| Error::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
+    fn notify_account_event(
+        &self,
+        _account_id: propfirm::core::ids::AccountId,
+        _kind: &str,
+        _msg: &str,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -323,8 +310,8 @@ cargo bench --features serialization,in-memory-store
 
 All fallible operations return `propfirm::Result<T>`. The error type is `propfirm::Error`:
 
-- `Error::Persistence(msg)` — storage failure.
-- `Error::StateConflict(id, expected, actual)` — optimistic concurrency violation.
+- `Error::Persistence(msg)` — storage failure (event store, idempotency backend).
+- `Error::StateConflict(id, expected, actual)` — optimistic concurrency violation; retained for caller-side use (ADR-11: the stateless contract never produces it).
 - `Error::TickRejected(reason)` — stale or out-of-order tick.
 - `Error::RuleEval(msg)` — rule evaluation error.
 - `Error::InvalidConfig(msg)` — configuration validation failure.

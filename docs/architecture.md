@@ -60,7 +60,7 @@ Rule verdicts:
 `engine` is the orchestration layer. It turns domain events into account state transitions and decisions.
 
 - `Evaluator` — wraps a `RuleRegistry` and provides convenience methods for each context kind: `evaluate()`, `evaluate_order()`, `evaluate_trade()`, `evaluate_tick()`, `evaluate_tick_estimated()`, `evaluate_day_rollover()`.
-- `Pipeline` — processes `PipelineEvent` values. It loads the account, applies the event to build a `RuleContext`, runs the evaluator, persists the new state, emits domain events, and notifies listeners.
+- `Pipeline` — processes `PipelineEvent` values against the caller-supplied account: applies the event to build a `RuleContext`, runs the evaluator, emits domain events, and notifies listeners. No state is persisted (ADR-11) — the updated account comes back on `PipelineResult`.
 - `PipelineEvent` — the input enum. Variants: `AccountStarted`, `OrderSubmitted`, `TradeFilled`, `Tick`, `TickEstimated`, `DayRollover`, `EndOfDay`, `OnDemand`, `EmergencyStop`, `OverrideBreach`, `PayoutRequest`, `PayoutApprove`.
 - `Decision` — aggregates rule reports into a single outcome using declared rule priorities. `DecisionKind` orders outcomes by severity: `Pass < EarlyWarning < Warn < GapFlagged < TargetHit < Fail < Liquidate < Emergency`.
 - `Snapshot` — point-in-time account state plus the current decision.
@@ -71,16 +71,15 @@ Rule verdicts:
 
 ### Persistence
 
-`persistence` defines the `AccountStore` trait and provides implementations:
+**ADR-11**: account persistence was removed from the engine. What remains:
 
-- `InMemoryStore` — default, used for tests and benchmarks.
-- `PostgresStore` — production implementation backed by PostgreSQL via `sqlx`. It enforces tenant isolation at the storage layer (`get_for_tenant(tenant_id, account_id)` filters by tenant). It also supports optimistic concurrency via `put_with_version(expected_version)`.
-
-Other persistence types: `RulePackStore`, `IdempotencyStore`.
+- `events::store::EventStore` — async trait (`append` / `all` / `recent` / `replay`) with the in-memory implementation in `persistence/memory.rs`. Read-side seam used by breach-report and override replay; ready to be backed by durable storage.
+- `persistence/traits.rs` — sync no-op placeholder documenting why the engine no longer defines account CRUD.
+- `IdempotencyStore` — lives in `api::idempotency` (server feature); backs `Idempotency-Key` on `POST /internal/v1/evaluate`.
 
 ### Events
 
-`events` provides an append-only event store. Every state transition is recorded as a `DomainEvent` with causation IDs linking events to their triggering inputs. This enables full replay of account history for dispute resolution.
+`events` defines the async `EventStore` trait (`append`, `all`, `recent`, `replay`) plus an in-memory implementation. Domain events carry causation IDs linking them to their triggering inputs; the pipeline emits them on `PipelineResult.events` and persisting them is the caller's decision (ADR-11). `replay` is the dispute-resolution seam for rebuilding account state from stored events.
 
 ### Notifications
 
@@ -94,8 +93,8 @@ Other persistence types: `RulePackStore`, `IdempotencyStore`.
 
 `api` is an optional `axum`-based HTTP server. It exposes:
 
-- Internal endpoints (service-token authenticated): `/internal/v1/evaluate`, `/internal/v1/override`, `/internal/v1/manual-run`, `/internal/v1/breach-report/:account_id`
-- Public endpoints (tenant-key or service-token authenticated): `/v1/evaluate-order`, `/v1/accounts/:id`, `/v1/rule-packs`, `/v1/rule-packs/:id`, `/v1/rule-packs/:id/activate`, `/v1/rule-packs/:id/supersede`
+- Internal endpoints (service-token authenticated): `/internal/v1/evaluate`, `/internal/v1/override`, `/internal/v1/manual-run`, `/internal/v1/emergency-stop`, `/internal/v1/breach-report/:account_id`
+- Public endpoints (tenant-key or service-token authenticated): `/v1/evaluate-order`, `/v1/rule-packs/validate`
 - Unauthenticated probes: `/health`, `/ready`
 
 All mutating endpoints accept an `Idempotency-Key` header.
@@ -103,10 +102,7 @@ All mutating endpoints accept an `Idempotency-Key` header.
 ## Evaluation flow
 
 ```
-PipelineEvent
-    │
-    ▼
-load account from store
+PipelineEvent + caller-supplied account
     │
     ▼
 apply event → RuleContext
@@ -130,10 +126,10 @@ Decision::from_reports(&reports)
     │  pick highest-priority verdict
     │
     ▼
-PipelineResult { snapshot, events, result }
+PipelineResult { snapshot, events, result, account }
     │
-    ├── persist account state
-    ├── emit domain events
+    ├── return updated account to caller (caller persists)
+    ├── hand domain events to caller (EventStore audit seam)
     └── notify listeners
 ```
 
@@ -141,8 +137,8 @@ PipelineResult { snapshot, events, result }
 
 - **Broker-is-truth equity**: The engine never recomputes equity from positions + quote. `EquityInput::BrokerReported` vs `EquityInput::Estimated` is a type-level distinction. Breach-capable rules refuse to terminate on an estimate.
 - **Stateless pure evaluate**: `pure::evaluate()` produces an `input_hash` so any past verdict can be recomputed byte-for-byte from its recorded inputs.
-- **Optimistic concurrency**: `AccountStore::put_with_version(expected)` returns `Error::StateConflict` on mismatch. No silent last-write-wins.
-- **Tenant isolation**: `TenantId` is threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack`. `AccountStore::get_for_tenant()` filters at the storage layer.
+- **Caller-owned concurrency**: The server keeps no account state (ADR-11). `Account.version` travels in the request's `account_state` and is hashed into `input_hash`; `Error::StateConflict` remains the typed error for caller-side optimistic concurrency.
+- **Tenant isolation**: `TenantId` is threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack` and enforced at the HTTP auth layer (cross-tenant request ⇒ 403).
 - **Stale tick guard**: Ticks older than 10 minutes (configurable) or older than the last-evaluated tick are rejected before evaluation runs.
 - **Panic safety**: The registry wraps each rule evaluation in `catch_unwind`. A panicking rule degrades to a `Warn` verdict; the process stays alive.
 - **Rule priority over registration order**: Each rule declares a numeric `priority()`. `Decision::from_reports` picks the highest-priority verdict. Reordering rules in a pack does not change outcomes.

@@ -66,8 +66,9 @@ pub trait IdempotencyBackend: Send + Sync {
 
     /// Atomically check for an existing entry and, if absent, remember
     /// the response. Default implementation delegates to [`check`] +
-    /// [`remember`]; Postgres overrides this with a single upsert
-    /// statement to prevent concurrent double-execution.
+    /// [`remember`]; implementations backed by a durable store can
+    /// override this with a single upsert to prevent concurrent
+    /// double-execution.
     async fn check_and_remember(
         &self,
         tenant_id: TenantId,

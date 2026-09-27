@@ -5,10 +5,7 @@
 //! the server tracks the last N idempotency keys per endpoint to
 //! deduplicate retries.
 
-use crate::api::dto::{
-    AccountSnapshotDto, CreateAccountRequest, CreateAccountResponse, EvaluateOrderRequest,
-    EvaluateOrderResponse,
-};
+use crate::api::dto::{EvaluateOrderRequest, EvaluateOrderResponse};
 use crate::core::ids::AccountId;
 use crate::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
 use crate::core::types::{Price, Quantity, Symbol};
@@ -62,10 +59,12 @@ pub async fn ready() -> &'static str {
 }
 
 /// `POST /internal/v1/evaluate` — the stateless evaluate contract.
-/// Takes `{account_id, rule_pack, tick, equity_source, open_positions,
-/// today_trades}` and returns `{verdict, input_hash, metrics}`. This is
-/// what the platform's LCC module calls; it does NOT mutate server-side
-/// state.
+/// Takes `{account_id, account_state, tick, equity_source, open_positions,
+/// today_trades}` and returns `{decision_kind, input_hash, account_state,
+/// ...}`. `account_state` is required (400 without it) and `rule_pack` is
+/// rejected with 400 — the rule set comes from the account's bound plan.
+/// This is what the platform's LCC module calls; it does NOT mutate
+/// server-side state.
 ///
 /// **P0.5 fix — termination requires broker-reported equity.** The
 /// `equity_source` field states who vouches for the account's
@@ -77,9 +76,10 @@ pub async fn ready() -> &'static str {
 ///   are engine estimates; breach-capable rules downgrade to `Warn` and
 ///   never terminate the account.
 ///
-/// This endpoint is unauthenticated and takes account state from the
-/// request body; without the explicit provenance field the P1-5 guard
-/// ("estimates cannot terminate") was bypassable. Now it is not.
+/// The endpoint sits behind the service-token auth layer (§A.1) and
+/// takes account state from the request body; without the explicit
+/// provenance field the P1-5 guard ("estimates cannot terminate") was
+/// bypassable. Now it is not.
 ///
 /// **P0.6 fix**: optional `open_positions` and `today_trades` arrays
 /// are accepted and passed to the evaluation so position-dependent
@@ -102,7 +102,7 @@ pub async fn evaluate_internal(
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let s = state.read().await.clone();
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        let response = evaluate_internal_impl(&state, tenant_id, req).await?;
+        let response = evaluate_internal_impl(tenant_id, req).await?;
         let response_str = serde_json::to_string(&response)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         match s
@@ -136,7 +136,7 @@ pub async fn evaluate_internal(
             crate::api::idempotency::IdempotencyOutcome::Fresh => response,
         }
     } else {
-        evaluate_internal_impl(&state, tenant_id, req).await?
+        evaluate_internal_impl(tenant_id, req).await?
     };
     Ok(Json(response))
 }
@@ -144,7 +144,6 @@ pub async fn evaluate_internal(
 /// The actual evaluation logic, split out so idempotency wrapping stays
 /// readable.
 async fn evaluate_internal_impl(
-    state: &SharedState,
     tenant_id: crate::tenant::TenantId,
     req: InternalEvaluateRequest,
 ) -> Result<InternalEvaluateResponse, (StatusCode, String)> {
@@ -164,16 +163,10 @@ async fn evaluate_internal_impl(
             (src, None)
         }
     };
-    let s = state.read().await.clone();
-    let mut acc = s
-        .store
-        .get_for_tenant(tenant_id, account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((
-            StatusCode::NOT_FOUND,
-            format!("account {account_id} not found"),
-        ))?;
+    let mut acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for stateless evaluation".into(),
+    ))?;
     let pack = if req.rule_pack.is_some() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -315,6 +308,17 @@ async fn evaluate_internal_impl(
         (positions, trades, server_time, Some(tick))
     };
 
+    // P1-5 parity with AccountState::update_equity: broker-reported
+    // equity/balance raise the drawdown baselines; estimates must not.
+    if matches!(equity_source, crate::pure::EquitySource::BrokerReported) {
+        if acc.equity.0 > acc.peak_equity.0 {
+            acc.peak_equity = acc.equity;
+        }
+        if acc.balance.0 > acc.peak_balance.0 {
+            acc.peak_balance = acc.balance;
+        }
+    }
+
     // Pure evaluate (P1-7) — no storage mutation. P0-C: server_time is
     // explicit so the verdict is reproducible from recorded inputs.
     let inputs = if let Some(ref tick) = latest_tick {
@@ -351,6 +355,7 @@ async fn evaluate_internal_impl(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
+        account_state: acc,
     })
 }
 
@@ -361,7 +366,7 @@ pub async fn override_breach(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -378,10 +383,17 @@ pub async fn override_breach(
         req.actor_id,
         chrono::Utc::now(),
     );
-    let _ = pipeline
-        .process_for_tenant(
-            tenant_id,
+    let acc = s
+        .event_store
+        .replay(
             account_id,
+            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = pipeline
+        .process(
+            acc.clone(),
             PipelineEvent::OverrideBreach {
                 override_record: override_record.clone(),
             },
@@ -401,14 +413,17 @@ pub async fn manual_run(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
     let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
-        .process_for_tenant(tenant_id, account_id, PipelineEvent::OnDemand)
+        .process(
+            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
+            PipelineEvent::OnDemand,
+        )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ManualRunResponse {
@@ -431,7 +446,7 @@ pub async fn emergency_stop(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -439,9 +454,8 @@ pub async fn emergency_stop(
     let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
-        .process_for_tenant(
-            tenant_id,
-            account_id,
+        .process(
+            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
             PipelineEvent::EmergencyStop {
                 reason: req.reason,
                 actor_id: req.actor_id,
@@ -465,17 +479,19 @@ pub async fn breach_report(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Path(account_id_str): Path<String>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&account_id_str).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
     let s = state.read().await.clone();
     let acc = s
-        .store
-        .get_for_tenant(tenant_id, account_id)
+        .event_store
+        .replay(
+            account_id,
+            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
+        )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Pull all violations from the event log for this account.
     let events = s
         .event_store
@@ -510,7 +526,7 @@ pub async fn evaluate_order(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -546,9 +562,8 @@ pub async fn evaluate_order(
     let s = state.read().await.clone();
     let mut pipeline = s.pipeline();
     let result = pipeline
-        .process_for_tenant(
-            tenant_id,
-            account_id,
+        .process(
+            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
             PipelineEvent::OrderSubmitted {
                 order: order.clone(),
             },
@@ -566,67 +581,6 @@ pub async fn evaluate_order(
         passed: result.passed(),
         violations,
     }))
-}
-
-pub async fn get_account(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(id): Path<String>,
-) -> Result<Json<AccountSnapshotDto>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
-    let uuid = Uuid::from_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let account_id = AccountId::from_uuid(uuid);
-    let s = state.read().await.clone();
-    let acc = s
-        .store
-        .get_for_tenant(tenant_id, account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "account not found".to_string()))?;
-    let snap: crate::core::account::AccountSnapshot = (&acc).into();
-    Ok(Json(AccountSnapshotDto::from(&snap)))
-}
-
-/// `POST /v1/accounts` — register a new account for a tenant.
-///
-/// The engine is the system of record for accounts. This endpoint creates
-/// the account aggregate in `AccountStore` so subsequent evaluate/manual-run
-/// calls can load it by `account_id`.
-pub async fn create_account(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Json(req): Json<CreateAccountRequest>,
-) -> Result<(StatusCode, Json<CreateAccountResponse>), (StatusCode, String)> {
-    let _tenant_id = extract_tenant_id(&identity.0, &headers)?;
-    let account_id = AccountId::from_uuid(
-        Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
-    );
-    let tenant_id = crate::tenant::TenantId::from_str(&req.tenant_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let plan_id = crate::core::ids::ChallengeId::from_str(&req.plan_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let mut plan = crate::config::presets::ftmo_phase1();
-    plan.id = plan_id;
-    if let Some(initial_balance) = req.initial_balance {
-        plan.initial_balance_money = initial_balance;
-    }
-    let mut account = crate::core::account::Account::new(account_id, plan);
-    account = account.with_tenant(tenant_id);
-    let s = state.read().await.clone();
-    s.store
-        .put(account.clone())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok((
-        StatusCode::CREATED,
-        Json(CreateAccountResponse {
-            account_id: account.id.to_string(),
-            tenant_id: account.tenant_id.to_string(),
-            status: format!("{:?}", account.status),
-        }),
-    ))
 }
 
 // DTOs for the new endpoints.
@@ -915,12 +869,15 @@ impl BridgeTickPositionDto {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InternalEvaluateRequest {
     pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
     /// **P1-6 fix**: the caller-supplied rule pack is deprecated. The
-    /// stateless evaluate endpoint now derives the rule set from the
+    /// stateless evaluate endpoint derives the rule set from the
     /// account's bound plan, so an arbitrary caller-supplied pack can no
     /// longer silently override the account's policy. The field is kept
     /// optional for backward compatibility with existing callers; if
-    /// present it is ignored with a warning.
+    /// present the request is rejected with 400 ("rule_pack is no longer
+    /// accepted; evaluation uses the account's bound plan").
     #[serde(default)]
     pub rule_pack: Option<RulePack>,
     /// **P2 wire contract fix**: the newer account-level bridge.tick v1
@@ -963,6 +920,7 @@ pub struct InternalEvaluateResponse {
     pub pack_version: u32,
     pub pack_id: String,
     pub violations: Vec<String>,
+    pub account_state: crate::core::account::Account,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -19,9 +19,8 @@ use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
-use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
-use propfirm::persistence::traits::AccountStore;
+
 use propfirm::tenant::TenantId;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -66,24 +65,11 @@ fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
 
 async fn make_state() -> Arc<tokio::sync::RwLock<ServerState>> {
     let plan = ftmo_phase1();
-    let mut account = Account::new(AccountId::new(), plan.clone())
-        .with_tenant(tenant())
-        .start(chrono::Utc::now())
-        .unwrap();
-    account.balance = propfirm::core::types::Money(propfirm::core::types::dec!(10_000));
-    account.equity = account.balance;
     let auth = auth_config_with_services(&[
         (service_web(), Some("web-previous")),
         (service_relay(), None),
     ]);
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(plan, auth)));
-    {
-        let s = state.read().await;
-        propfirm::persistence::traits::AccountStore::put(&s.store, account.clone())
-            .await
-            .unwrap();
-    }
-    state
+    Arc::new(tokio::sync::RwLock::new(ServerState::new(plan, auth)))
 }
 
 /// Sends a request with full control over auth/tenant headers.
@@ -130,7 +116,7 @@ async fn a1_missing_credentials_rejected_401() {
     let (status, _, _) = send_raw(
         app,
         Method::GET,
-        &format!("/v1/accounts/{}", AccountId::new()),
+        &format!("/internal/v1/breach-report/{}", AccountId::new()),
         None,
         None,
         Some(&tenant().to_string()),
@@ -145,7 +131,7 @@ async fn a1_wrong_token_rejected_401() {
     let (status, _, _) = send_raw(
         app,
         Method::GET,
-        &format!("/v1/accounts/{}", AccountId::new()),
+        &format!("/internal/v1/breach-report/{}", AccountId::new()),
         None,
         Some("Bearer no-such-token"),
         Some(&tenant().to_string()),
@@ -156,21 +142,12 @@ async fn a1_wrong_token_rejected_401() {
 
 #[tokio::test]
 async fn a1_valid_service_bearer_accepted() {
-    let state = make_state().await;
-    let app = router(state.clone()).await;
-    let account_id;
-    {
-        let acc = Account::new(AccountId::new(), ftmo_phase1())
-            .with_tenant(tenant())
-            .start(chrono::Utc::now())
-            .unwrap();
-        account_id = acc.id;
-        state.read().await.store.put(acc).await.unwrap();
-    }
+    let app = router(make_state().await).await;
+    let account_id = AccountId::new();
     let (status, body, correlation_id) = send_raw(
         app,
         Method::GET,
-        &format!("/v1/accounts/{account_id}"),
+        &format!("/internal/v1/breach-report/{account_id}"),
         None,
         Some("Bearer web"),
         Some(&tenant().to_string()),
@@ -190,21 +167,12 @@ async fn a1_valid_service_bearer_accepted() {
 
 #[tokio::test]
 async fn a1_tenant_header_trusted_after_service_auth() {
-    let state = make_state().await;
-    let app = router(state.clone()).await;
-    let account_id;
-    {
-        let acc = Account::new(AccountId::new(), ftmo_phase1())
-            .with_tenant(tenant())
-            .start(chrono::Utc::now())
-            .unwrap();
-        account_id = acc.id;
-        state.read().await.store.put(acc).await.unwrap();
-    }
+    let app = router(make_state().await).await;
+    let account_id = AccountId::new();
     let (status, _, _) = send_raw(
         app,
         Method::GET,
-        &format!("/v1/accounts/{account_id}"),
+        &format!("/internal/v1/breach-report/{account_id}"),
         None,
         Some("Bearer relay"),
         Some(&tenant().to_string()),
@@ -231,18 +199,8 @@ async fn a1_ready_reachable_without_credentials() {
 
 #[tokio::test]
 async fn a1_internal_accepts_active_service_token() {
-    let state = make_state().await;
-    let app = router(state.clone()).await;
-    let account_id;
-    {
-        let acc = Account::new(AccountId::new(), ftmo_phase1())
-            .with_tenant(tenant())
-            .start(chrono::Utc::now())
-            .unwrap();
-        account_id = acc.id;
-        state.read().await.store.put(acc).await.unwrap();
-    }
-    let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
+    let app = router(make_state().await).await;
+    let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
         Method::POST,
@@ -261,18 +219,8 @@ async fn a1_internal_accepts_active_service_token() {
 
 #[tokio::test]
 async fn a1_internal_accepts_previous_token_during_rotation() {
-    let state = make_state().await;
-    let app = router(state.clone()).await;
-    let account_id;
-    {
-        let acc = Account::new(AccountId::new(), ftmo_phase1())
-            .with_tenant(tenant())
-            .start(chrono::Utc::now())
-            .unwrap();
-        account_id = acc.id;
-        state.read().await.store.put(acc).await.unwrap();
-    }
-    let body = serde_json::json!({ "account_id": account_id.to_string() }).to_string();
+    let app = router(make_state().await).await;
+    let body = serde_json::json!({ "account_id": AccountId::new().to_string() }).to_string();
     let (status, _, _) = send_raw(
         app,
         Method::POST,

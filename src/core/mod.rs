@@ -53,11 +53,11 @@ pub enum Error {
     #[error("rule evaluation error: {0}")]
     RuleEval(String),
 
-    /// **P1-8 fix**: optimistic-concurrency conflict. Returned by
-    /// `AccountStore::put_with_version` when the expected version does
-    /// not match the persisted version — i.e. another evaluation wrote
-    /// to this account between our read and our write. The caller must
-    /// re-read, re-evaluate, and retry.
+    /// **P1-8 fix**: optimistic-concurrency conflict (expected version
+    /// does not match the current one). Originally returned by
+    /// server-side account writes; ADR-11 removed those writes, so the
+    /// variant is retained for API compatibility but no longer produced
+    /// by the stateless contract.
     #[error("state conflict on {0}: expected version {1}, found {2}")]
     StateConflict(String, u64, u64),
 

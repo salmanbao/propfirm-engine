@@ -18,7 +18,6 @@ use crate::engine::snapshot::Snapshot;
 use crate::engine::state::{equity_after_tick, AccountState};
 use crate::equity_input::EquityInput;
 use crate::notifications::traits::Notifier;
-use crate::persistence::traits::AccountStore;
 use std::sync::Arc;
 
 /// **P1-14 fix**: a tick older than this many minutes from wall-clock "now"
@@ -33,13 +32,13 @@ pub struct AppliedEvent {
     pub state: AccountState,
     /// Which rule-context kind this event maps to.
     pub ctx_kind: crate::rules::context::RuleContextKind,
-    /// Open positions fetched from the store before evaluation.
+    /// Open positions carried on the account state (pre-fill snapshot).
     pub open_positions: Vec<Position>,
-    /// Today's trades fetched from the store before evaluation.
+    /// Today's trades carried on the account state (pre-fill snapshot).
     pub today_trades: Vec<Trade>,
     /// Recent domain events fetched from the event store.
     pub recent_events: Vec<DomainEvent>,
-    /// Trade fill data for atomic ingestion (only Some for TradeFilled events)
+    /// Fill carried for post-evaluation state consumption (Some only for TradeFilled).
     pub trade_fill: Option<(Trade, Position)>,
 }
 
@@ -136,6 +135,8 @@ pub struct PipelineResult {
     pub events: Vec<DomainEvent>,
     /// The evaluation result from the engine.
     pub result: crate::engine::evaluator::EvaluationResult,
+    /// The full account aggregate after applying the event (state out).
+    pub account: Account,
 }
 
 impl PipelineResult {
@@ -151,78 +152,37 @@ impl PipelineResult {
     }
 }
 
-/// The pipeline. Holds an evaluator and references to backing stores.
-pub struct Pipeline<S, N>
+pub struct Pipeline<N>
 where
-    S: AccountStore,
     N: Notifier,
 {
     pub evaluator: Evaluator,
-    pub store: S,
     pub notifier: N,
     pub event_store: Arc<dyn crate::events::store::EventStore>,
 }
 
-impl<S, N> Pipeline<S, N>
+impl<N> Pipeline<N>
 where
-    S: AccountStore,
     N: Notifier,
 {
-    pub fn new(evaluator: Evaluator, store: S, notifier: N) -> Self {
+    pub fn new(evaluator: Evaluator, notifier: N) -> Self {
         Pipeline {
             evaluator,
-            store,
             notifier,
             event_store: Arc::new(crate::events::store::InMemoryEventStore::new()),
         }
     }
 
-    /// Processes a single pipeline event.
-    ///
-    /// **Deprecated/internal**: reads the account without tenant scoping.
-    /// Production code should use [`process_for_tenant`](Self::process_for_tenant)
-    /// for strict tenant isolation.
     pub async fn process(
         &mut self,
-        account_id: crate::core::ids::AccountId,
+        account: Account,
         ev: PipelineEvent,
     ) -> crate::Result<PipelineResult> {
-        let account = self
-            .store
-            .get(account_id)
-            .await?
-            .ok_or_else(|| crate::Error::NotFound(format!("account {account_id}")))?;
         let tenant_id = account.tenant_id;
         self.process_with_loaded_account(account, tenant_id, ev)
             .await
     }
 
-    /// **P0-E fix**: tenant-scoped process. Reads via `get_for_tenant` so
-    /// cross-tenant data leakage is impossible at the storage layer.
-    /// Writes via `put_with_version(expected_version)` so a concurrent
-    /// writer between our read and write produces `Error::StateConflict`,
-    /// which the caller must retry.
-    pub async fn process_for_tenant(
-        &mut self,
-        tenant_id: crate::tenant::TenantId,
-        account_id: crate::core::ids::AccountId,
-        ev: PipelineEvent,
-    ) -> crate::Result<PipelineResult> {
-        let account = self
-            .store
-            .get_for_tenant(tenant_id, account_id)
-            .await?
-            .ok_or_else(|| {
-                crate::Error::NotFound(format!(
-                    "account {account_id} not found for tenant {tenant_id}"
-                ))
-            })?;
-        self.process_with_loaded_account(account, tenant_id, ev)
-            .await
-    }
-
-    /// Common path for `process` and `process_for_tenant` once the
-    /// account is loaded. Owns the OCC write.
     /// Returns the next phase for a successful phase completion.
     fn next_phase_for(
         phase: &crate::config::plan::ChallengePhase,
@@ -242,7 +202,6 @@ where
         ev: PipelineEvent,
     ) -> crate::Result<PipelineResult> {
         let account_id = account.id;
-        let expected_version = account.version;
         let mut state = AccountState::new(account);
         let mut events: Vec<DomainEvent> = Vec::new();
 
@@ -308,6 +267,19 @@ where
         );
         let result = self.evaluator.evaluate(&ctx)?;
         let mut final_state = new_state;
+        // Consume the fill after evaluation: the rule context must see the
+        // pre-fill snapshot (AppliedEvent docs), while the outgoing state
+        // carries the post-fill position/trade lists (ADR-11).
+        if let Some((trade, position)) = trade_fill {
+            final_state
+                .account
+                .open_positions
+                .retain(|p| p.id != position.id);
+            if position.is_open() {
+                final_state.account.open_positions.push(position);
+            }
+            final_state.account.today_trades.push(trade);
+        }
         if result.decision.is_target_hit() {
             final_state = final_state.mark_target_reached(ctx.server_time.ts());
             events.push(DomainEvent::new(
@@ -419,21 +391,6 @@ where
                 ctx.server_time.ts(),
             ));
         }
-        if let Some((trade, position)) = trade_fill {
-            self.store
-                .ingest_trade_fill(
-                    trade,
-                    position,
-                    final_state.account.clone(),
-                    expected_version,
-                    &events,
-                )
-                .await?;
-        } else {
-            self.store
-                .put_with_version_and_events(final_state.account.clone(), expected_version, &events)
-                .await?;
-        }
         for v in result.violations() {
             self.notifier.notify_violation(v)?;
         }
@@ -441,6 +398,7 @@ where
             snapshot: snap,
             events,
             result,
+            account: final_state.account,
         })
     }
 
@@ -453,14 +411,15 @@ where
         use crate::rules::context::RuleContextKind::{
             OnDayRollover, OnDemand, OnEndOfDay, OnOrderSubmit, OnTick, OnTradeFill,
         };
-        let open_positions = self.store.open_positions(state.account.id).await?;
         let event_ts = ev.event_timestamp();
         let day_start = state.account.plan.trading_day_start(event_ts);
-        let today_trades = self
-            .store
-            .today_trades_since(state.account.id, day_start)
-            .await?;
         let recent_events = self.event_store.recent(state.account.id, 50).await?;
+        state
+            .account
+            .today_trades
+            .retain(|t| t.executed_at >= day_start);
+        let open_positions = state.account.open_positions.clone();
+        let today_trades = state.account.today_trades.clone();
         match ev {
             PipelineEvent::AccountStarted { at } => {
                 let new_acc = state.account.clone().start(*at)?;
@@ -497,9 +456,10 @@ where
                     .apply_realized_pnl(pnl, commission, swap, trade.executed_at)
                     .mark_active_trading_day();
 
-                // Broker fill ingestion data - will be persisted atomically
-                // via ingest_trade_fill in process_with_loaded_account after rule evaluation.
-                // This avoids persisting the fill before we know the evaluation result.
+                // Position bookkeeping for consumption in
+                // process_with_loaded_account after rule evaluation — the
+                // rule context sees pre-fill lists, the outgoing state
+                // gets the fill.
                 let position = match trade.trade_side {
                     crate::core::trade::TradeSide::Entry => Position::open(
                         trade.account_id,

@@ -18,11 +18,12 @@ use http_body_util::BodyExt;
 use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
+use propfirm::config::plan::LossReference;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
-use propfirm::core::types::Money;
-use propfirm::persistence::traits::AccountStore;
+use propfirm::core::types::{dec, Money, Pct};
+
 use propfirm::tenant::TenantId;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -59,7 +60,10 @@ fn test_auth_config() -> AuthConfig {
     }
 }
 
-/// Builds a `ServerState` with one seeded account at the given equity.
+/// Builds a `ServerState` plus an `Account` at the given equity.
+///
+/// ADR-11: the server holds no account state — the account is returned
+/// for the caller to serialize into `account_state`.
 async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1(); // 10k static max loss: breach below 9k equity
     let mut account = Account::new(AccountId::new(), plan.clone())
@@ -72,7 +76,6 @@ async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, A
         plan,
         test_auth_config(),
     )));
-    state.read().await.store.put(account.clone()).await.unwrap();
     (state, account)
 }
 
@@ -115,8 +118,8 @@ async fn send(
     send_with_headers(app, method, uri, body, &[]).await
 }
 
-/// Builds the evaluate request JSON for the seeded account.
-fn evaluate_body(account_id: &AccountId, equity_source: Option<&str>) -> String {
+/// Builds the evaluate request JSON, including the required `account_state`.
+fn evaluate_body(account: &Account, equity_source: Option<&str>) -> String {
     let tick_json = serde_json::json!({
         "symbol": "EURUSD",
         "quote": {
@@ -126,7 +129,8 @@ fn evaluate_body(account_id: &AccountId, equity_source: Option<&str>) -> String 
         }
     });
     let mut body = serde_json::json!({
-        "account_id": account_id.to_string(),
+        "account_id": account.id.to_string(),
+        "account_state": account,
         "tick": tick_json
     });
     if let Some(src) = equity_source {
@@ -150,7 +154,7 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
         app,
         Method::POST,
         "/internal/v1/evaluate",
-        Some(evaluate_body(&account.id, Some("estimated"))),
+        Some(evaluate_body(&account, Some("estimated"))),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -169,7 +173,7 @@ async fn p0_5_missing_equity_source_defaults_to_estimated() {
         app,
         Method::POST,
         "/internal/v1/evaluate",
-        Some(evaluate_body(&account.id, None)),
+        Some(evaluate_body(&account, None)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -187,7 +191,7 @@ async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
         app,
         Method::POST,
         "/internal/v1/evaluate",
-        Some(evaluate_body(&account.id, Some("broker_reported"))),
+        Some(evaluate_body(&account, Some("broker_reported"))),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -218,6 +222,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
     });
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "tick": tick_json,
         "equity_source": "broker_reported",
         "open_positions": [{
@@ -250,7 +255,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
 async fn p0_8_same_key_same_body_replays_first_response() {
     let (state, account) = make_state_at(9500).await;
     let app = router(state).await;
-    let body = evaluate_body(&account.id, Some("broker_reported"));
+    let body = evaluate_body(&account, Some("broker_reported"));
     let headers = [("Idempotency-Key", "eval-key-1")];
     let (s1, b1) = send_with_headers(
         app.clone(),
@@ -281,8 +286,8 @@ async fn p0_8_same_key_conflicting_body_returns_409() {
     let (state, account) = make_state_at(9500).await;
     let app = router(state).await;
     let headers = [("Idempotency-Key", "eval-key-2")];
-    let body_a = evaluate_body(&account.id, Some("broker_reported"));
-    let body_b = evaluate_body(&account.id, Some("estimated")); // conflicting
+    let body_a = evaluate_body(&account, Some("broker_reported"));
+    let body_b = evaluate_body(&account, Some("estimated")); // conflicting
     let (s1, _) = send_with_headers(
         app.clone(),
         Method::POST,
@@ -363,6 +368,7 @@ async fn p2_bridge_tick_v1_broker_reported_equity_can_terminate() {
     let broker_time = chrono::Utc::now().timestamp_millis();
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "bridge_tick": {
             "type": "bridge.tick",
             "version": 1,
@@ -406,6 +412,7 @@ async fn p2_bridge_tick_v1_positions_flow_through() {
     let broker_time = saturday.timestamp_millis();
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "bridge_tick": {
             "type": "bridge.tick",
             "version": 1,
@@ -456,6 +463,7 @@ async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
 
     let evaluate_body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "tick": {
             "symbol": "EURUSD",
             "quote": {
@@ -517,49 +525,96 @@ async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
 }
 
 // ---------------------------------------------------------------------------
-// P2 — account ownership / system of record
+// ADR-11 — stateless two-call contract (replaces p2_create_account_*)
 // ---------------------------------------------------------------------------
 
+/// ADR-11: the server holds no account state, so the *caller* threads it.
+/// Call 1 observes a new peak; call 2 must receive that peak via the
+/// response's `account_state` and breach on a trailing drawdown measured
+/// from it. This is the regression test for the whole state-in/state-out
+/// contract.
 #[tokio::test]
-async fn p2_create_account_returns_201_and_account_is_lookupable() {
-    let plan = ftmo_phase1();
+async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
+    let plan = ftmo_phase1()
+        .with_loss_reference(LossReference::Trailing)
+        .with_total_dd(Pct(dec!(0.05)));
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
         plan.clone(),
         test_auth_config(),
     )));
     let app = router(state).await;
 
-    let account_id = AccountId::new().to_string();
+    let mut account = Account::new(AccountId::new(), plan)
+        .with_tenant(test_tenant_id())
+        .start(chrono::Utc::now())
+        .unwrap();
+    // Well below the old peak so only call 1's observation can raise it.
+    account.equity = Money::new(dec!(10_000));
+    account.balance = Money::new(dec!(10_000));
+    account.peak_equity = Money::new(dec!(10_000));
+    account.peak_balance = Money::new(dec!(10_000));
+
+    // Call 1: broker-reported equity to 11k must observe peak_equity=11k
+    // and hand the updated state back to the caller.
+    account.equity = Money::new(dec!(11_000));
+    account.balance = Money::new(dec!(11_000));
     let body = serde_json::json!({
-        "account_id": account_id,
-        "tenant_id": test_tenant_id_str(),
-        "plan_id": plan.id.to_string(),
-        "initial_balance": Money::new(rust_decimal::Decimal::new(10_000, 0)).to_string()
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
     })
     .to_string();
-
-    let (status, resp) =
-        send_with_headers(app.clone(), Method::POST, "/v1/accounts", Some(body), &[]).await;
-
-    assert_eq!(status, StatusCode::CREATED, "create account failed: {resp}");
-    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
-    assert_eq!(parsed["account_id"], account_id);
-    assert_eq!(parsed["tenant_id"], test_tenant_id_str());
-    assert_eq!(parsed["status"], "Pending");
-
-    // The created account must be lookupable via GET /v1/accounts/:id.
-    let (get_status, get_body) = send_with_headers(
-        app,
-        Method::GET,
-        &format!("/v1/accounts/{account_id}"),
-        None,
-        &[],
+    let (status, resp) = send(
+        app.clone(),
+        Method::POST,
+        "/internal/v1/evaluate",
+        Some(body),
     )
     .await;
-    assert_eq!(get_status, StatusCode::OK, "get account failed: {get_body}");
+    assert_eq!(status, StatusCode::OK, "call 1 failed: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let state2: Account =
+        serde_json::from_value(parsed["account_state"].clone()).expect("account_state in response");
+    assert_eq!(
+        state2.peak_equity.0,
+        dec!(11_000),
+        "call 1 must observe the 11k peak in the returned account_state"
+    );
+
+    // Call 2: feed the returned state back with equity at 10.4k — below
+    // the 5% trailing floor from the 11k peak (10.45k), but ABOVE any
+    // floor measured from the un-chained 10k peak (9.5k). The breach can
+    // only fire if the peak actually chained through call 1.
+    let mut next = state2;
+    next.equity = Money::new(dec!(10_400));
+    next.balance = Money::new(dec!(10_400));
+    let body = serde_json::json!({
+        "account_id": next.id.to_string(),
+        "account_state": next,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "call 2 failed: {resp}");
     assert!(
-        get_body.contains("balance"),
-        "account snapshot missing balance: {get_body}"
+        resp.contains("\"Liquidate\"") || resp.contains("\"Fail\""),
+        "chained 11k peak must make 10.4k equity breach the 5% trailing floor; got: {resp}"
     );
 }
 
@@ -574,6 +629,7 @@ async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
 
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "equity_source": "broker_reported",
         "tick": {
             "symbol": "EURUSD",

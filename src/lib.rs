@@ -33,8 +33,8 @@
 //!    ratio, Calmar ratio, profit factor, max drawdown, equity curve
 //!    analytics, exposure, and parametric Value-at-Risk.
 //!
-//! 6. **Persistence** ([`persistence`]) – a storage trait with an in-memory
-//!    implementation and extension points for SQL / KV stores.
+//! 6. **Persistence** ([`persistence`]) – event-store traits with an
+//!    in-memory implementation (account persistence removed by ADR-11).
 //!
 //! 7. **Events** ([`events`]) – an append-only audit log / event sourcing
 //!    primitives for full replay of account history.

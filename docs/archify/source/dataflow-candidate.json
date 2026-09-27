@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Prop Firm Engine Data Flow",
+    "output": "dataflow-prop-firm-engine.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Input" },
+    { "label": "Processing" },
+    { "label": "Output" }
+  ],
+  "nodes": [
+    { "id": "external_caller", "type": "external", "label": "External Caller", "stage": 0, "row": 0 },
+    { "id": "api_router", "type": "frontend", "label": "API Router", "stage": 0, "row": 1 },
+    { "id": "auth_layer", "type": "security", "label": "Auth Layer", "stage": 0, "row": 2 },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline", "stage": 1, "row": 1 },
+    { "id": "evaluator", "type": "backend", "label": "Evaluator", "stage": 1, "row": 2 },
+    { "id": "output_bus", "type": "messagebus", "label": "Output Bus", "stage": 2, "row": 1 }
+  ],
+  "flows": [
+    { "id": "call-request", "from": "external_caller", "to": "api_router", "label": "HTTP POST", "variant": "emphasis", "labelAt": [100, 200] },
+    { "id": "route-auth", "from": "api_router", "to": "auth_layer", "label": "route", "variant": "default", "labelAt": [120, 314] },
+    { "id": "auth-ok", "from": "auth_layer", "to": "pipeline", "label": "authenticated", "variant": "security", "labelAt": [160, 350], "labelDx": 40 },
+    { "id": "to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis", "labelAt": [260, 340] },
+    { "id": "decision-back", "from": "evaluator", "to": "pipeline", "label": "PureVerdict", "variant": "default", "labelAt": [370, 238] },
+    { "id": "to-output", "from": "pipeline", "to": "output_bus", "label": "events/state/alerts", "variant": "default", "labelAt": [446, 314] }
+  ]
+}

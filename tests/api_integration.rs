@@ -11,11 +11,14 @@
 //! to exercise each endpoint against the same `ServerState` instance,
 //! proving:
 //! - `/health` works
-//! - `GET /v1/accounts/:id` returns the account we seeded (not 404)
 //! - `POST /v1/evaluate-order` returns a verdict (not "account not found")
 //! - `POST /internal/v1/evaluate` returns a stateless verdict with input_hash
 //! - `POST /internal/v1/manual-run` returns a decision
 //! - `GET /internal/v1/breach-report/:account_id` returns the breach log
+//!
+//! ADR-11 removed account CRUD (`GET/POST /v1/accounts`) and `AccountStore`:
+//! the server holds no account state, so there is no seeded-account
+//! lookup to test here.
 
 #![cfg(feature = "server")]
 
@@ -28,7 +31,7 @@ use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
-use propfirm::persistence::traits::AccountStore;
+
 use propfirm::tenant::TenantId;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -68,7 +71,10 @@ fn test_auth_config() -> AuthConfig {
 
 const SERVICE_KEY: &str = "service-secret";
 
-/// Builds a `ServerState` with one seeded account.
+/// Builds a `ServerState` plus a matching in-memory `Account`.
+///
+/// The account is returned so tests can serialize it into
+/// `account_state` — ADR-11: the server itself holds no account state.
 async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
@@ -79,7 +85,6 @@ async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Ac
         plan,
         test_auth_config(),
     )));
-    state.read().await.store.put(account.clone()).await.unwrap();
     (state, account)
 }
 
@@ -120,37 +125,10 @@ async fn p0_a_health_works() {
     assert_eq!(body, "ok");
 }
 
-#[tokio::test]
-async fn p0_a_get_account_returns_seeded_account_not_404() {
-    // Before P0-A: this returned 404 because state.read().clone()
-    // created a brand-new empty InMemoryStore.
-    let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
-    let uri = format!("/v1/accounts/{}", account.id);
-    let tid = test_tenant_id_str();
-    let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "GET account should return 200; body: {body}"
-    );
-    // Body should contain the account's balance (10_000).
-    assert!(
-        body.contains("10000"),
-        "body should contain account balance; got: {body}"
-    );
-}
-
-#[tokio::test]
-async fn p0_a_get_account_for_unknown_id_returns_404() {
-    let (state, _) = make_state_with_account().await;
-    let app = router(state).await;
-    let random_id = AccountId::new();
-    let uri = format!("/v1/accounts/{random_id}");
-    let tid = test_tenant_id_str();
-    let (status, _body) = send(app, Method::GET, &uri, None, &tid).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-}
+// p0_a_get_account_returns_seeded_account_not_404 and
+// p0_a_get_account_for_unknown_id_returns_404 removed: ADR-11 deleted the
+// `GET /v1/accounts/:id` endpoint and `AccountStore` entirely — these
+// tested deliberately removed functionality (see module docs).
 
 #[tokio::test]
 async fn p0_a_evaluate_order_returns_verdict() {
@@ -283,6 +261,7 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
     });
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "tick": tick_json
     })
     .to_string();
@@ -316,22 +295,35 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
 #[tokio::test]
 async fn p0_a_server_state_clone_shares_underlying_store() {
     // Direct test of the P0-A fix: cloning ServerState must share the
-    // underlying InMemoryStore (not re-instantiate an empty one).
-    use propfirm::persistence::traits::AccountStore;
+    // underlying Arc'ed stores (ADR-11: event_store, not AccountStore).
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
     let state = ServerState::new(plan, test_auth_config());
-    state.store.put(account.clone()).await.unwrap();
-    // Clone the state — this used to discard the seeded account.
+    use propfirm::core::events::{DomainEvent, DomainEventKind};
+    state
+        .event_store
+        .append(DomainEvent::new(
+            account.id,
+            DomainEventKind::AccountStarted,
+            chrono::Utc::now(),
+        ))
+        .await
+        .unwrap();
+    // Clone the state — this used to discard every Arc'ed store.
     let cloned = state.clone();
-    // The cloned state should still see the account.
-    let retrieved = cloned.store.get(account.id).await.unwrap();
-    assert!(
-        retrieved.is_some(),
-        "P0-A: ServerState::clone must share the underlying store; got None"
+    // The cloned state must still see the event appended via the original.
+    let events = cloned.event_store.all(account.id).await.unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "P0-A: ServerState::clone must share the underlying event store; got {} events",
+        events.len()
     );
-    assert_eq!(retrieved.unwrap().id, account.id);
+    assert!(std::sync::Arc::ptr_eq(
+        &state.idempotency,
+        &cloned.idempotency
+    ));
 }

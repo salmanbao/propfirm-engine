@@ -14,14 +14,11 @@ use crate::api::idempotency::{IdempotencyBackend, IdempotencyStore};
 use crate::config::plan::ChallengePlan;
 use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
-use crate::persistence::memory::InMemoryStore;
-use crate::persistence::traits::AccountStore;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub struct ServerState {
     pub evaluator: Evaluator,
-    pub store: Arc<dyn AccountStore>,
     pub notifier: LogNotifier,
     pub event_store: Arc<dyn crate::events::store::EventStore>,
     pub idempotency: Arc<dyn IdempotencyBackend>,
@@ -37,13 +34,9 @@ impl Clone for ServerState {
     /// `state.read().clone()` in a handler discarded all in-memory state,
     /// making every endpoint other than `/health` return 404.
     ///
-    /// `InMemoryStore`, `LogNotifier`, `EventStore`,
-    /// and `IdempotencyStore` are all `Arc`-backed, so cloning them is cheap
-    /// (bumps a refcount) and shares the underlying state.
     fn clone(&self) -> Self {
         ServerState {
             evaluator: self.evaluator.clone(),
-            store: self.store.clone(),
             notifier: self.notifier.clone(),
             event_store: self.event_store.clone(),
             idempotency: self.idempotency.clone(),
@@ -57,7 +50,6 @@ impl ServerState {
     pub fn new(plan: ChallengePlan, auth: AuthConfig) -> Self {
         ServerState {
             evaluator: Evaluator::new(&plan),
-            store: Arc::new(InMemoryStore::new()),
             notifier: LogNotifier::new(),
             event_store: Arc::new(crate::events::store::InMemoryEventStore::new()),
             idempotency: Arc::new(IdempotencyStore::with_defaults()),
@@ -68,12 +60,9 @@ impl ServerState {
     #[must_use]
     pub fn pipeline(
         &self,
-    ) -> crate::engine::pipeline::Pipeline<Arc<dyn AccountStore>, LogNotifier> {
-        let mut p = crate::engine::pipeline::Pipeline::new(
-            self.evaluator.clone(),
-            self.store.clone(),
-            self.notifier.clone(),
-        );
+    ) -> crate::engine::pipeline::Pipeline<crate::notifications::log::LogNotifier> {
+        let mut p =
+            crate::engine::pipeline::Pipeline::new(self.evaluator.clone(), self.notifier.clone());
         // Replace the pipeline's default event store with our shared one.
         p.event_store = self.event_store.clone();
         p

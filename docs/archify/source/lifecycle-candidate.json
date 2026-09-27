@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Prop Firm Evaluation Lifecycle",
+    "output": "lifecycle-prop-firm-engine.html",
+    "quality_profile": "standard",
+    "viewBox": [
+      1100,
+      800
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Account progression"
+    },
+    {
+      "id": "failure",
+      "label": "Rule breaches"
+    },
+    {
+      "id": "ops",
+      "label": "Ops halt"
+    },
+    {
+      "id": "terminal",
+      "label": "Account closure"
+    }
+  ],
+  "states": [
+    {
+      "id": "pending",
+      "type": "start",
+      "label": "Pending",
+      "sublabel": "account created",
+      "lane": "main",
+      "col": 0
+    },
+    {
+      "id": "active",
+      "type": "active",
+      "label": "Active",
+      "sublabel": "evaluating",
+      "lane": "main",
+      "col": 1
+    },
+    {
+      "id": "target_hit_pending",
+      "type": "waiting",
+      "label": "Target Hit Pending",
+      "sublabel": "min days check",
+      "lane": "main",
+      "col": 2
+    },
+    {
+      "id": "passed",
+      "type": "success",
+      "label": "Passed",
+      "sublabel": "challenge complete",
+      "lane": "main",
+      "col": 3
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "Failed",
+      "sublabel": "rule breach",
+      "lane": "failure",
+      "col": 1,
+      "yOffset": 100
+    },
+    {
+      "id": "emergency_stopped",
+      "type": "failure",
+      "label": "Emergency Stopped",
+      "sublabel": "ops halt",
+      "lane": "ops",
+      "col": 0,
+      "yOffset": 100
+    },
+    {
+      "id": "closed",
+      "type": "neutral",
+      "label": "Closed",
+      "sublabel": "account closed",
+      "lane": "terminal",
+      "col": 2,
+      "yOffset": 100
+    }
+  ],
+  "transitions": [
+    {
+      "id": "start",
+      "from": "pending",
+      "to": "active",
+      "label": "start",
+      "labelAt": [
+        170,
+        202
+      ]
+    },
+    {
+      "id": "evaluate",
+      "from": "active",
+      "to": "target_hit_pending",
+      "label": "evaluate",
+      "labelAt": [
+        325,
+        202
+      ]
+    },
+    {
+      "id": "target_hit",
+      "from": "target_hit_pending",
+      "to": "passed",
+      "label": "target hit",
+      "labelAt": [
+        479,
+        202
+      ]
+    },
+    {
+      "id": "fail",
+      "from": "active",
+      "to": "failed",
+      "label": "fail",
+      "labelAt": [
+        260,
+        240
+      ],
+      "via": [
+        [
+          260,
+          240
+        ],
+        [
+          450,
+          240
+        ],
+        [
+          450,
+          320
+        ]
+      ]
+    },
+    {
+      "id": "emergency",
+      "from": "active",
+      "to": "emergency_stopped",
+      "label": "emergency",
+      "labelAt": [
+        120,
+        240
+      ],
+      "via": [
+        [
+          120,
+          240
+        ],
+        [
+          200,
+          240
+        ]
+      ]
+    },
+    {
+      "id": "close_passed",
+      "from": "passed",
+      "to": "closed",
+      "label": "close",
+      "labelAt": [
+        633,
+        560
+      ],
+      "via": [
+        [
+          700,
+          240
+        ],
+        [
+          700,
+          560
+        ]
+      ]
+    },
+    {
+      "id": "close_failed",
+      "from": "failed",
+      "to": "closed",
+      "label": "close",
+      "labelAt": [
+        540,
+        560
+      ],
+      "via": [
+        [
+          540,
+          240
+        ],
+        [
+          540,
+          560
+        ]
+      ]
+    },
+    {
+      "id": "close_emergency",
+      "from": "emergency_stopped",
+      "to": "closed",
+      "label": "close",
+      "labelAt": [
+        465,
+        560
+      ],
+      "via": [
+        [
+          465,
+          240
+        ],
+        [
+          465,
+          560
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Main Path",
+      "items": [
+        "Pending -> Active on account start",
+        "Active -> Target Hit Pending when profit target is reached",
+        "Target Hit Pending -> Passed after minimum trading days"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Failure Paths",
+      "items": [
+        "Active -> Failed on rule breach with broker-reported equity",
+        "Active -> Emergency Stopped on ops emergency halt",
+        "Both failure paths converge to Closed"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Recovery",
+      "items": [
+        "Override can revert Failed or Emergency Stopped -> Active",
+        "Closed is the final state with no return path"
+      ]
+    }
+  ]
+}

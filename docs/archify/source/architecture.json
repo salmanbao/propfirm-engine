@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Prop Firm Risk & Rule Evaluation Engine",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "request-path", "label": "Trading Request Path", "focus": ["frontend", "auth", "api", "db"], "note": "Follow trading rules evaluation from user to state" },
+      { "id": "risk-computation", "label": "Risk Computation Path", "focus": ["db", "cache"], "note": "See risk metrics calculation and persistence" },
+      { "id": "async-services", "label": "Async Services", "focus": ["queue", "worker", "cdn"], "note": "Isolate background processing from request path" }
+    ],
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "security": { "label": "Compliance & Audit", "visible": true },
+        "cloud": { "label": "Cloud Services", "visible": true }
+      }
+    }
+  },
+  "components": [
+    { "id": "frontend", "type": "frontend", "label": "Web UI", "sublabel": "Rule Builder", "pos": [40, 300], "size": [140, 70] },
+    { "id": "auth", "type": "security", "label": "Auth Service", "sublabel": "OAuth 2.0 / JWT", "pos": [40, 110], "size": [140, 64], "tag": "Compliance" },
+    { "id": "cdn", "type": "cloud", "label": "CDN", "sublabel": "Static Assets", "pos": [250, 320], "size": [130, 60] },
+    { "id": "lb", "type": "cloud", "label": "Load Balancer", "sublabel": "HTTPS / TCP", "pos": [460, 320], "size": [130, 60] },
+    { "id": "api", "type": "backend", "label": "API Gateway", "sublabel": "FastAPI / REST", "pos": [670, 320], "size": [140, 70] },
+    { "id": "cache", "type": "database", "label": "Redis Cache", "sublabel": "Read-through Cache", "pos": [670, 180], "size": [140, 70] },
+    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "Primary DB", "pos": [900, 320], "size": [140, 70] },
+    { "id": "s3", "type": "cloud", "label": "S3 Storage", "sublabel": "Rule Packs & Assets", "pos": [250, 460], "size": [140, 70] },
+    { "id": "queue", "type": "messagebus", "label": "Message Queue", "sublabel": "Async Processing Queue", "pos": [670, 460], "size": [140, 70] },
+    { "id": "worker", "type": "backend", "label": "Worker Service", "sublabel": "Async Rule Processing", "pos": [900, 460], "size": [140, 70] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "AWS Region: us-east-1", "wraps": ["cdn", "lb", "api", "cache", "db", "s3", "queue", "worker"], "pad": 20 },
+    { "kind": "security-group", "label": "sg-api :443/:8000", "wraps": ["lb", "api"], "pad": 10 }
+  ],
+  "connections": [
+    { "id": "users-to-frontend", "from": "frontend", "to": "cdn", "label": "HTTPS", "variant": "emphasis", "fromSide": "left", "toSide": "top" },
+    { "id": "auth-jwt", "from": "auth", "to": "api", "label": "verify JWT", "variant": "security", "labelAt": [646, 264] },
+    { "id": "cdn-to-lb", "from": "cdn", "to": "lb" },
+    { "id": "static-to-s3", "from": "cdn", "to": "s3", "label": "static", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 40 },
+    { "id": "lb-to-api", "from": "lb", "to": "api" },
+    { "id": "api-cache", "from": "api", "to": "cache", "label": "read-through", "fromSide": "top", "toSide": "bottom", "labelAt": [754, 164] },
+    { "id": "api-db", "from": "api", "to": "db", "label": "SQL" },
+    { "id": "api-to-queue", "from": "api", "to": "queue", "label": "enqueue", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 40 },
+    { "id": "queue-to-worker", "from": "queue", "to": "worker" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Core Services", "items": ["API Gateway handles all trading rule evaluation", "Redis cache provides sub-10ms reads for frequent access", "PostgreSQL ensures strong consistency and tenant isolation"] },
+    { "dot": "emerald", "title": "Processing Pipeline", "items": ["Async workers handle background tasks and batch processing", "CDN delivers static assets efficiently", "Message queue ensures exactly-once processing semantics"] },
+    { "dot": "rose", "title": "Security & Compliance", "items": ["JWT-based authentication with OAuth 2.0 support", "All access controlled by security groups in AWS", "Full audit trail for regulatory compliance"] }
+  ]
+}

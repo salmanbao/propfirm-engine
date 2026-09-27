@@ -2,7 +2,7 @@
 
 An enterprise-grade, fully-typed Rust library for evaluating proprietary trading firm rules, monitoring account risk, and producing audit-grade decisions in real time.
 
-Built to satisfy the binding spec for a proprietary-trading-firm-as-a-service (PFaaS) platform — every architectural decision is traceable to a specific spec requirement (ADR-11 statelessness, broker-is-truth equity, tenant isolation, optimistic concurrency, etc.).
+Built to satisfy the binding spec for a proprietary-trading-firm-as-a-service (PFaaS) platform — every architectural decision is traceable to a specific spec requirement (ADR-11 statelessness, broker-is-truth equity, tenant isolation, caller-owned concurrency state, etc.).
 
 ---
 
@@ -50,8 +50,8 @@ Sharpe · Sortino · Calmar · Max drawdown · Profit factor · Expectancy · Wi
 
 - **Broker-is-truth equity** — the engine never recomputes equity from positions + quote. `EquityInput::BrokerReported` vs `EquityInput::Estimated` is a type-level distinction; breach-capable rules refuse to terminate on an estimate (P1-5 fix).
 - **Stateless pure evaluate** — `pure::evaluate(state, pack, tick) -> PureVerdict` produces an `input_hash` (sha256) so any past verdict can be recomputed byte-for-byte from its recorded inputs (P1-7 fix; ADR-11).
-- **Optimistic concurrency control** — `AccountStore::put_with_version(expected)` returns `Error::StateConflict` on mismatch. No silent last-write-wins clobbering (P1-8 fix).
-- **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack`. `AccountStore::get_for_tenant(tenant_id, account_id)` filters at the storage layer (P1-9 fix).
+- **Caller-owned concurrency** — the server keeps no account state (ADR-11). Callers carry `Account.version` in the request's `account_state`; it is hashed into `input_hash` so a stale replay is detectable. `Error::StateConflict` remains the typed error for caller-side optimistic concurrency (P1-8 fix).
+- **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack` and enforced at the HTTP auth layer: a token bound to tenant A requesting tenant B's resource gets 403 (`tests/auth_a1.rs`). Cross-tenant reads are never a storage concern (P1-9 fix).
 - **Stale & out-of-order tick guard** — ticks older than 10 minutes (configurable) or older than the last-evaluated tick are rejected with `Error::TickRejected` before evaluation runs (P1-14 fix).
 - **Decimal precision** — all monetary values use `rust_decimal::Decimal`; no floating-point drift on money.
 
@@ -60,7 +60,7 @@ Sharpe · Sortino · Calmar · Max drawdown · Profit factor · Expectancy · Wi
 - **Manual override** — `Override` record (`clears_violation_id`, `reason`, `actor_id`, `at`) clears a false-positive breach without deleting the original verdict. State machine: `Failed` / `EmergencyStopped` → `Active` (P1-11 fix).
 - **Emergency stop** — `PipelineEvent::EmergencyStop { reason, actor_id, at }` short-circuits normal rule evaluation and forces `DecisionKind::Emergency`. Beats every other verdict, including `Liquidate` (P1-12 fix).
 - **Early-warning threshold** — first-class `RuleVerdict::EarlyWarning` (ops-paged) distinct from trader-facing `Warn`. Emitted at 80% of breach threshold on every breach-capable rule (P1-13 fix).
-- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are persisted to the event log alongside the original verdict.
+- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are emitted as domain events alongside the original verdict, returned to the caller on `PipelineResult.events` for persistence.
 
 ---
 
@@ -123,7 +123,7 @@ realistic_load/1000      time:   [4.7542 ms  4.8719 ms  4.9978 ms]
 - **Zero allocation in the hot path** — `RuleContext` is built once per evaluation; rules read `&RuleContext` and don't clone.
 - **`Decimal` arithmetic is fast enough** — `rust_decimal`'s fixed-point math fits in 12 bytes and uses integer ops; the engine doesn't pay for arbitrary precision.
 - **`Arc<dyn Rule>` registry** — one indirect call per rule, branchlessly dispatched. The 19-rule registry is small enough to fit in L1.
-- **No storage in pure path** — `pure::evaluate` takes everything as input; the storage-mutating pipeline is layered on top but isn't on the critical path for stateless calls.
+- **No storage in pure path** — `pure::evaluate` takes everything as input; the stateful pipeline is layered on top but isn't on the critical path for stateless calls.
 
 ---
 
@@ -153,41 +153,56 @@ cargo bench --features serialization,in-memory-store
 ```rust
 use propfirm::prelude::*;
 use propfirm::config::presets::ftmo_phase1;
-use propfirm::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
-use propfirm::core::tick::{Quote, Tick};
-use propfirm::core::types::{Price, Quantity, Symbol, dec};
 use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
 use propfirm::notifications::log::LogNotifier;
-use propfirm::persistence::memory::InMemoryStore;
-use propfirm::persistence::traits::AccountStore;
+use propfirm::tenant::TenantId;
 
-fn main() -> anyhow::Result<()> {
+// Pipeline::process is async; requires a tokio runtime (e.g. #[tokio::main]).
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Choose a preset plan and create an account (state is caller-owned,
+    //    ADR-11: the engine never persists it).
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
-        .with_tenant(propfirm::tenant::TenantId::named("my-firm"));
-    let evaluator = Evaluator::new(plan);
-    let store = InMemoryStore::new();
-    store.put(account.clone())?;
-    let mut pipeline = Pipeline::new(evaluator, store, LogNotifier::new());
+        .with_tenant(TenantId::named("my-firm"));
 
-    pipeline.process(account.id, PipelineEvent::AccountStarted { at: chrono::Utc::now() })?;
+    // 2. Build the evaluator and pipeline (no store — events come back in
+    //    PipelineResult.events for the caller to persist if desired).
+    let evaluator = Evaluator::new(&plan);
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
+    let now = chrono::Utc::now();
 
+    // 3. Start the account: Pending → Active.
+    let result = pipeline
+        .process(account.clone(), PipelineEvent::AccountStarted { at: now })
+        .await?;
+    println!("Started: {:?}", result.snapshot.account.status);
+
+    // 4. Pre-trade order evaluation (SL/TP set).
     let order = Order::market_open(
         account.id, Symbol::new("EURUSD"), OrderSide::Buy,
         Quantity(dec!(1)),
         Some(Price(dec!(1.05))), Some(Price(dec!(1.10))),
-        chrono::Utc::now(),
+        now,
     );
-    let result = pipeline.process(account.id, PipelineEvent::OrderSubmitted { order })?;
+    let result = pipeline
+        .process(result.account.clone(), PipelineEvent::OrderSubmitted { order })
+        .await?;
     println!("Order decision: {:?} (passed={})", result.snapshot.decision.kind, result.passed());
 
-    // P1-5: broker-is-truth tick — equity comes from the broker, not recomputed.
-    let tick = Tick::new(Symbol::new("EURUSD"),
-        Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: chrono::Utc::now() });
-    let result = pipeline.process(account.id, PipelineEvent::Tick {
-        tick, broker_equity: dec!(10_200).into(), broker_balance: dec!(10_000).into(),
-    })?;
+    // 5. P1-5: broker-is-truth tick — equity comes from the broker, not recomputed.
+    let tick = Tick::new(
+        Symbol::new("EURUSD"),
+        Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: now },
+    );
+    let result = pipeline
+        .process(result.account.clone(), PipelineEvent::Tick {
+            tick,
+            broker_equity: Money(dec!(10_200)),
+            broker_balance: Money(dec!(10_000)),
+        })
+        .await?;
     println!("Tick decision: {:?}", result.snapshot.decision.kind);
     Ok(())
 }
@@ -200,20 +215,21 @@ fn main() -> anyhow::Result<()> {
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                       HTTP API (axum)                            │
-│  /internal/v1/evaluate  /override  /manual-run  /breach-report  │
-│  /v1/evaluate-order  /v1/accounts/:id  /v1/rule-packs{,/:id}    │
+│  /internal/v1/evaluate  /override  /manual-run  /emergency-stop  │
+│  /internal/v1/breach-report/:account_id  /v1/evaluate-order      │
+│  /v1/rule-packs/validate  /health  /ready                        │
 └────────────────────────┬─────────────────────────────────────────┘
                          │
                          ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Pipeline                                │
-│  apply_event → build_context → evaluate → persist →             │
-│  emit_decision_event → notify                                   │
+│  apply_event → build_context → evaluate → emit_decision_event  │
+│  → notify  (account_state + events returned to the caller)      │
 │                                                                 │
 │  Guards:                                                        │
-│   • P1-5  equity_input (BrokerReported | Estimated)            │
-│   • P1-14 stale-tick (>10min) + out-of-order rejection         │
-│   • P1-8  optimistic concurrency (version on every write)     │
+│   • P1-5  equity_input (BrokerReported | Estimated)             │
+│   • P1-14 stale-tick (>10min) + out-of-order rejection          │
+│   • ADR-11 stateless: no account store — state travels in/out   │
 └───────┬────────────┬──────────────┬─────────────────────────────┘
         │            │              │
         ▼            ▼              ▼
@@ -246,7 +262,9 @@ fn main() -> anyhow::Result<()> {
 
 ### Persistence
 
-- **Postgres is the source of truth** for all persisted state — accounts, events, overrides, rule packs — and is the only backend where `AccountStore::get_for_tenant()` enforces row-level tenant isolation. The in-memory and serialization backends are for testing/benchmarks only.
+- **No account database (ADR-11)** — the engine keeps no account state. `/internal/v1/evaluate` receives `account_state` in the request and returns the updated state in the response; persisting it is the caller's responsibility.
+- **Event store** — domain events emitted during evaluation come back on `PipelineResult.events`. The `events::store::EventStore` trait (in-memory implementation provided) is the read-side seam used by breach-report and override replay, ready to be backed by durable storage.
+- **Idempotency** — an `Idempotency-Key` on `POST /internal/v1/evaluate` deduplicates retries via the in-memory `IdempotencyStore`.
 
 ---
 
@@ -258,9 +276,10 @@ The binding spec's engine contract is fully exposed:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/internal/v1/evaluate` | Stateless evaluate contract. Takes `{account_id, rule_pack, tick}`, returns `{verdict, state_after, input_hash}`. Calls `pure::evaluate` — no storage mutation. |
+| `POST` | `/internal/v1/evaluate` | Stateless evaluate contract. Takes `{account_id, account_state, bridge_tick?|tick?, equity_source?, ...}` and returns `{decision_kind, winning_priority, input_hash, pack_version, pack_id, violations, account_state}`. `account_state` is required; a `rule_pack` field is rejected with 400 (evaluation uses the account's bound plan). |
 | `POST` | `/internal/v1/override` | Clear a false-positive breach. Creates an `Override` record + reverts `Failed`/`EmergencyStopped` → `Active`. |
 | `POST` | `/internal/v1/manual-run` | Force re-evaluation of an account (on-demand). |
+| `POST` | `/internal/v1/emergency-stop` | Force `DecisionKind::Emergency`, short-circuiting normal rule evaluation (P1-12). |
 | `GET` | `/internal/v1/breach-report/:account_id` | Trader-facing "why did I fail" view (TD-25). Returns all violations from the event log with full audit trail. |
 
 ### Public API (tenant-facing)
@@ -268,13 +287,9 @@ The binding spec's engine contract is fully exposed:
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/v1/evaluate-order` | Pre-trade order evaluation. |
-| `GET` | `/v1/accounts/:id` | Account snapshot. |
-| `POST` | `/v1/rule-packs` | Create a new rule pack (draft). |
-| `GET` | `/v1/rule-packs/:id` | Get a rule pack by id. |
-| `PATCH` | `/v1/rule-packs/:id` | Update a draft rule pack. |
-| `POST` | `/v1/rule-packs/:id/activate` | Promote draft → active. |
-| `POST` | `/v1/rule-packs/:id/supersede` | Mark active → superseded. |
-| `GET` | `/health` | Health check. |
+| `POST` | `/v1/rule-packs/validate` | Validate a rule pack (stateless — nothing is persisted). |
+| `GET` | `/health` | Liveness probe (no auth). |
+| `GET` | `/ready` | Readiness probe (no auth). |
 
 All mutating endpoints accept an `Idempotency-Key` header.
 
@@ -335,19 +350,19 @@ Rule packs are versioned JSON data, not compiled Rust. This is the binding spec'
 
 ## Testing
 
-**136 tests + 1 doctest, all passing:**
+**166 tests + 1 doctest, all passing:**
 
 | Suite | Tests | Purpose |
 |-------|-------|---------|
-| Unit tests (`src/`) | 16 | Core logic: auth (7), instrument registry (4), payout engine (4), plus doctests. |
-| Integration tests (`tests/integration.rs`) | 39 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, optimistic concurrency, tenant isolation, pure-evaluate determinism. |
+| Unit tests (`src/`) | 17 | Core logic: auth (8), instrument registry (5), payout engine (4). |
+| Integration tests (`tests/integration.rs`) | 37 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, pure-evaluate determinism. |
 | P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
 | P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
-| Property tests (`tests/property_tests.rs`) | 6 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 16 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent, phase-progression-emits-plan-upgraded. |
-| Doctests | 1 | README example compiles (1 ignored). |
-| API integration tests (`tests/api_integration.rs`) | 9 | Binding spec HTTP endpoints: evaluate, override, manual-run, breach-report, evaluate-order. |
-| API P0 fixes (`tests/api_p0_fixes.rs`) | 10 | Contract enforcement: idempotency, error-shape, overrides, etc. |
+| Property tests (`tests/property_tests.rs`) | 12 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering, replay determinism, disabled rules contribute nothing, money fields non-negative, lots/units no cross-type comparison, rule-level verdict variants have a producer, gap flagged on unstarted account. |
+| Spec edge cases (`tests/spec_edge_cases.rs`) | 22 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent, phase-progression-emits-plan-upgraded, d4-liquidation-lists-positions, gap-flag-surfaces-in-decision, rollover-advances-day-boundary-by-exactly-one-day, rollover-catches-up-missed-days, rollover-respects-calendar-day-across-DST, debug-multi-day-rollover. |
+| Doctests | 2 | `src/lib.rs` crate example compiles (1 passed); `src/equity_input.rs` example (1 ignored). README example is not doctested. |
+| API integration tests (`tests/api_integration.rs`) | 7 | Binding spec HTTP endpoints: health, evaluate-order, manual-run, breach-report, override 404, input_hash sha256, ServerState clone. |
+| API P0 fixes (`tests/api_p0_fixes.rs`) | 12 | Contract enforcement: equity source defaults, overnight position, idempotency replay/conflict/no-double-apply, bridge tick v1, concurrency no-deadlock, two-call trailing chain, gap-flagged distinct. |
 | Auth A.1 tests (`tests/auth_a1.rs`) | 10 | HTTP authentication: missing/wrong credentials ⇒ 401, valid key ⇒ 200, tenant mismatch ⇒ 403, /health & /ready exempt, /internal/* service-token-only, env fail-closed. |
 | Batch A.2/C.1/C.2 tests (`tests/ab_batch.rs`, `tests/c_batch.rs`) | 18 | Cross-account copy-trading detection (3), pack-driven time_limit/grid/copy Trading thresholds (3), instrument spec units→lots conversion (3), margin/max_total_lots/trading_hours rules (9). |
 | D.1 martingale/grid tests (`tests/d1_martingale.rs`) | 7 | Lot-escalation-on-loss detection (3), grid spacing regularity (2), severity/configurable knobs (2). |
@@ -369,9 +384,9 @@ cargo test --features serialization,in-memory-store --test spec_edge_cases
 
 Every verdict is reproducible from its recorded inputs:
 
-- **`input_hash`** (sha256) is computed from `(account_state, rule_pack, tick, open_positions, today_trades, pending_order, latest_trade, latest_tick)` and persisted alongside the verdict. Any past decision can be recomputed byte-for-byte — the binding spec's dispute-resolution mechanism.
-- **Append-only event log** records every state transition (`AccountStarted`, `TradeFilled`, `TickEvaluated`, `DayRollover`, `RuleViolated`, `AccountStatusChanged`) with causation ids linking events to their triggering input.
-- **Override records** never delete the original violation — they're persisted alongside it as the rebuttal, with `actor_id` + `reason` + `at` for full audit trail.
+- **`input_hash`** (sha256) is computed from `(account_state, rule_pack, tick, open_positions, today_trades, pending_order, latest_trade, latest_tick)` and returned with every verdict for the caller to persist. Any past decision can be recomputed byte-for-byte — the binding spec's dispute-resolution mechanism.
+- **Domain event log** — every state transition (`AccountStarted`, `TradeFilled`, `TickEvaluated`, `DayRollover`, `RuleViolated`, `AccountStatusChanged`) is emitted with causation ids linking events to their triggering input and returned on `PipelineResult.events`; the `events::store::EventStore` trait (in-memory implementation included) is the append-only seam for callers that durably store them.
+- **Override records** never delete the original violation — they're emitted alongside it as the rebuttal, with `actor_id` + `reason` + `at` for full audit trail.
 - **Emergency stops** carry `actor_id` + `reason` + `at` and short-circuit all other rules with the highest possible priority (10,000).
 
 ---

@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Evaluate Order Sequence",
+    "output": "sequence-evaluate-order.html",
+    "viewBox": [
+      1320,
+      620
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "request-and-auth",
+        "label": "Request and identity",
+        "focus": [
+          "external_caller",
+          "api_router",
+          "auth_layer",
+          "pipeline"
+        ],
+        "note": "Follow the order evaluation request through authentication."
+      },
+      {
+        "id": "evaluation-and-response",
+        "label": "Evaluation and response",
+        "focus": [
+          "pipeline",
+          "evaluator",
+          "notifier",
+          "external_caller"
+        ],
+        "note": "See rule evaluation, decision emission, and response."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "external_caller",
+      "type": "external",
+      "label": "External Caller"
+    },
+    {
+      "id": "api_router",
+      "type": "frontend",
+      "label": "API Router"
+    },
+    {
+      "id": "auth_layer",
+      "type": "security",
+      "label": "Auth Layer"
+    },
+    {
+      "id": "pipeline",
+      "type": "backend",
+      "label": "Pipeline"
+    },
+    {
+      "id": "evaluator",
+      "type": "backend",
+      "label": "Evaluator"
+    },
+    {
+      "id": "notifier",
+      "type": "messagebus",
+      "label": "Notifier"
+    }
+  ],
+  "segments": [
+    {
+      "from": 120,
+      "to": 240,
+      "label": "Request"
+    },
+    {
+      "from": 250,
+      "to": 390,
+      "label": "Evaluation"
+    },
+    {
+      "from": 400,
+      "to": 560,
+      "label": "Response"
+    }
+  ],
+  "messages": [
+    {
+      "id": "eval-order-request",
+      "from": "external_caller",
+      "to": "api_router",
+      "y": 160,
+      "label": "POST /v1/evaluate-order",
+      "variant": "emphasis"
+    },
+    {
+      "id": "route-to-auth",
+      "from": "api_router",
+      "to": "auth_layer",
+      "y": 190,
+      "label": "validate key + tenant",
+      "variant": "security"
+    },
+    {
+      "id": "auth-ok",
+      "from": "auth_layer",
+      "to": "api_router",
+      "y": 220,
+      "label": "200 OK",
+      "variant": "return"
+    },
+    {
+      "id": "forward-to-pipeline",
+      "from": "api_router",
+      "to": "pipeline",
+      "y": 265,
+      "label": "OrderSubmitted",
+      "variant": "default"
+    },
+    {
+      "id": "build-context",
+      "from": "pipeline",
+      "to": "evaluator",
+      "y": 290,
+      "label": "RuleContext",
+      "variant": "emphasis"
+    },
+    {
+      "id": "evaluate-rules",
+      "from": "evaluator",
+      "to": "pipeline",
+      "y": 330,
+      "label": "PureVerdict + input_hash",
+      "variant": "return"
+    },
+    {
+      "id": "emit-decision",
+      "from": "pipeline",
+      "to": "notifier",
+      "y": 370,
+      "label": "violations?",
+      "variant": "security"
+    },
+    {
+      "id": "notify-return",
+      "from": "notifier",
+      "to": "pipeline",
+      "y": 415,
+      "label": "alerts sent",
+      "variant": "return"
+    },
+    {
+      "id": "pipeline-response",
+      "from": "pipeline",
+      "to": "api_router",
+      "y": 435,
+      "label": "PipelineResult",
+      "variant": "default"
+    },
+    {
+      "id": "final-response",
+      "from": "api_router",
+      "to": "external_caller",
+      "y": 465,
+      "label": "200 JSON",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "api_router",
+      "from": 165,
+      "to": 455,
+      "type": "frontend"
+    },
+    {
+      "participant": "auth_layer",
+      "from": 185,
+      "to": 228,
+      "type": "security"
+    },
+    {
+      "participant": "pipeline",
+      "from": 260,
+      "to": 442,
+      "type": "backend"
+    },
+    {
+      "participant": "evaluator",
+      "from": 290,
+      "to": 338,
+      "type": "backend"
+    },
+    {
+      "participant": "notifier",
+      "from": 370,
+      "to": 408,
+      "type": "messagebus"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Happy Path",
+      "items": [
+        "Order request flows through API router to pipeline",
+        "Evaluator returns PureVerdict deterministically",
+        "Response includes decision, violations, and input_hash"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Auth + Isolation",
+      "items": [
+        "Service/tenant key validated before evaluation",
+        "Cross-tenant requests rejected with 403",
+        "Stateless: no server-side account store"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Observability",
+      "items": [
+        "Violations trigger async notifications",
+        "Events returned in PipelineResult for caller persistence",
+        "input_hash enables byte-for-byte replay"
+      ]
+    }
+  ]
+}

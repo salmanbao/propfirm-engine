@@ -16,8 +16,7 @@ use propfirm::engine::evaluator::Evaluator;
 use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
 use propfirm::engine::state::AccountState;
 use propfirm::notifications::log::LogNotifier;
-use propfirm::persistence::memory::InMemoryStore;
-use propfirm::persistence::traits::AccountStore;
+
 use propfirm::prelude::*;
 
 #[tokio::test]
@@ -332,14 +331,12 @@ async fn test_pipeline_end_to_end() {
     plan.overnight_holding_allowed = true;
     plan.news_trading_allowed = true;
     let account = Account::new(AccountId::new(), plan.clone());
-    let store = InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let notifier = LogNotifier::new();
     let evaluator = Evaluator::new(&plan);
-    let mut pipeline = Pipeline::new(evaluator, store, notifier);
+    let mut pipeline = Pipeline::new(evaluator, notifier);
     let now = chrono::Utc::now();
     let result = pipeline
-        .process(account.id, PipelineEvent::AccountStarted { at: now })
+        .process(account.clone(), PipelineEvent::AccountStarted { at: now })
         .await
         .unwrap();
     assert_eq!(result.snapshot.account.status, AccountStatus::Active);
@@ -362,7 +359,10 @@ async fn test_pipeline_end_to_end() {
         avg_fill_price: None,
     };
     let result = pipeline
-        .process(account.id, PipelineEvent::OrderSubmitted { order })
+        .process(
+            result.account.clone(),
+            PipelineEvent::OrderSubmitted { order },
+        )
         .await
         .unwrap();
     assert!(
@@ -387,7 +387,7 @@ async fn test_pipeline_end_to_end() {
     );
     let result = pipeline
         .process(
-            account.id,
+            result.account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: account.equity,
@@ -1000,13 +1000,9 @@ async fn p1_14_stale_tick_is_rejected_by_pipeline() {
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    use propfirm::persistence::traits::AccountStore;
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
-        store,
         propfirm::notifications::log::LogNotifier::new(),
     );
     // A stale tick from 30 minutes ago.
@@ -1021,7 +1017,7 @@ async fn p1_14_stale_tick_is_rejected_by_pipeline() {
     );
     let result = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::Tick {
                 tick,
                 broker_equity: account.equity,
@@ -1047,13 +1043,9 @@ async fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    use propfirm::persistence::traits::AccountStore;
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
-        store,
         propfirm::notifications::log::LogNotifier::new(),
     );
     // First tick at T=now.
@@ -1066,9 +1058,9 @@ async fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
             ts: t1,
         },
     );
-    let _ = pipeline
+    let first = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::Tick {
                 tick: tick1,
                 broker_equity: account.equity,
@@ -1089,7 +1081,7 @@ async fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     );
     let result = pipeline
         .process(
-            account.id,
+            first.account.clone(),
             PipelineEvent::Tick {
                 tick: tick2,
                 broker_equity: account.equity,
@@ -1104,58 +1096,10 @@ async fn p1_14_out_of_order_tick_is_rejected_by_pipeline() {
     );
 }
 
-#[tokio::test]
-async fn p1_8_optimistic_concurrency_rejects_stale_write() {
-    // Two concurrent writers: writer A reads at v=0, writer B writes
-    // (bumping to v=1), then writer A tries to write expecting v=0 →
-    // must get StateConflict.
-    use propfirm::persistence::traits::AccountStore;
-    let plan = ftmo_phase1();
-    let account = Account::new(AccountId::new(), plan)
-        .start(chrono::Utc::now())
-        .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
-    // Writer B writes (bumps version to 1).
-    let mut b_account = account.clone();
-    b_account.balance = Money(dec!(10_500));
-    store.put(b_account).await.unwrap();
-    // Writer A tries to write expecting v=0 — must fail.
-    let mut a_account = account.clone();
-    a_account.balance = Money(dec!(9_900));
-    let result = store.put_with_version(a_account, 0).await;
-    assert!(
-        matches!(result, Err(propfirm::Error::StateConflict(_, _, _))),
-        "stale write must be rejected with StateConflict; got {:?}",
-        result
-    );
-}
-
-#[tokio::test]
-async fn p1_9_tenant_isolation_filter() {
-    // An account belonging to tenant A must NOT be visible to tenant B
-    // via get_for_tenant.
-    use propfirm::persistence::traits::AccountStore;
-    let plan = ftmo_phase1();
-    let tenant_a = propfirm::tenant::TenantId::named("tenant-a");
-    let tenant_b = propfirm::tenant::TenantId::named("tenant-b");
-    let acc_a = Account::new(AccountId::new(), plan.clone())
-        .with_tenant(tenant_a)
-        .start(chrono::Utc::now())
-        .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(acc_a.clone()).await.unwrap();
-    // Tenant B tries to read A's account — must get None.
-    let result = store.get_for_tenant(tenant_b, acc_a.id).await.unwrap();
-    assert!(
-        result.is_none(),
-        "P1-9: tenant B must not see tenant A's account; got {:?}",
-        result
-    );
-    // Tenant A reads own account — must succeed.
-    let result = store.get_for_tenant(tenant_a, acc_a.id).await.unwrap();
-    assert!(result.is_some(), "tenant A must see own account");
-}
+// p1_8_optimistic_concurrency_rejects_stale_write and p1_9_tenant_isolation_filter
+// were removed with the AccountStore (ADR-11 statelessness). OCC was a property of
+// server-side account writes; the stateless contract has no server writes to guard.
+// Tenant isolation is enforced at the HTTP auth layer — covered by tests/auth_a1.rs.
 
 #[tokio::test]
 async fn p1_11_override_clears_breach_state() {
@@ -1198,7 +1142,7 @@ async fn p1_11_override_clears_breach_state() {
 #[tokio::test]
 async fn p1_12_emergency_stop_short_circuits() {
     // An EmergencyStop event forces EmergencyStopped status on the account.
-    use propfirm::persistence::traits::AccountStore;
+
     let mut plan = ftmo_phase1();
     plan.weekend_holding_allowed = true;
     plan.overnight_holding_allowed = true;
@@ -1206,17 +1150,14 @@ async fn p1_12_emergency_stop_short_circuits() {
     let account = Account::new(AccountId::new(), plan.clone())
         .start(chrono::Utc::now())
         .unwrap();
-    let store = propfirm::persistence::memory::InMemoryStore::new();
-    store.put(account.clone()).await.unwrap();
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = propfirm::engine::pipeline::Pipeline::new(
         evaluator,
-        store.clone(),
         propfirm::notifications::log::LogNotifier::new(),
     );
     let result = pipeline
         .process(
-            account.id,
+            account.clone(),
             PipelineEvent::EmergencyStop {
                 reason: "Broker feed corrupted — freezing all accounts".into(),
                 actor_id: "ops-bob".into(),

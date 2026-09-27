@@ -126,6 +126,7 @@ impl AccountState {
         self.account.day_start_balance = self.account.balance;
         self.account.day_start_equity = self.account.equity;
         self.account.today_realized_pnl = Money::ZERO;
+        self.account.today_trades.clear();
         // A.6 fix: reset the idempotency flag for the new day.
         self.account.day_counted_today = false;
         self.account.current_trading_day_start = Some(match target_ts {
