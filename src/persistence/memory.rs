@@ -99,7 +99,7 @@ impl crate::events::store::EventStore for InMemoryEventStore {
                     acc.target_reached_at = snapshot.target_reached_at;
                     acc.version = snapshot.version;
                 }
-                crate::core::events::DomainEventKind::OrderEvent { new_status: _, .. } => {}
+                crate::core::events::DomainEventKind::OrderEvent { .. } => {}
                 crate::core::events::DomainEventKind::PositionOpened {
                     position_id,
                     symbol,

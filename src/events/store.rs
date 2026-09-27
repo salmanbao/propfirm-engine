@@ -121,7 +121,7 @@ impl EventStore for InMemoryEventStore {
                     acc.target_reached_at = snapshot.target_reached_at;
                     acc.version = snapshot.version;
                 }
-                K::OrderEvent { new_status: _, .. } => {}
+                K::OrderEvent { .. } => {}
                 K::PositionOpened {
                     position_id,
                     symbol,
