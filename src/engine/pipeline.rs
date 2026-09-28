@@ -161,6 +161,109 @@ where
     pub event_store: Arc<dyn crate::events::store::EventStore>,
 }
 
+pub fn apply_decision(
+    mut state: AccountState,
+    decision: &crate::engine::decision::Decision,
+    server_time: crate::core::types::Timestamp,
+    actor_id: &str,
+) -> crate::Result<(AccountState, Vec<crate::core::events::DomainEvent>)> {
+    let mut events: Vec<crate::core::events::DomainEvent> = Vec::new();
+    let account_id = state.account.id;
+
+    if decision.is_target_hit() {
+        state = state.mark_target_reached(server_time);
+        events.push(crate::core::events::DomainEvent::new(
+            account_id,
+            crate::core::events::DomainEventKind::AccountStatusChanged {
+                from: crate::core::account::AccountStatus::Active,
+                to: crate::core::account::AccountStatus::TargetHitPending,
+            },
+            server_time,
+        ));
+    }
+    if state.account.target_reached_at.is_some()
+        && state.account.status == crate::core::account::AccountStatus::TargetHitPending
+        && state.account.active_trading_days >= state.account.plan.min_trading_days
+    {
+        let from = state.account.status;
+        state.account.status = crate::core::account::AccountStatus::Passed;
+        events.push(crate::core::events::DomainEvent::new(
+            account_id,
+            crate::core::events::DomainEventKind::AccountStatusChanged {
+                from,
+                to: crate::core::account::AccountStatus::Passed,
+            },
+            server_time,
+        ));
+        let from_phase = state.account.plan.phase;
+        let to_phase =
+            Pipeline::<crate::notifications::log::LogNotifier>::next_phase_for(&from_phase);
+        if let Ok(upped) = state.clone().upgrade_phase(to_phase) {
+            state = upped;
+            events.push(crate::core::events::DomainEvent::new(
+                account_id,
+                crate::core::events::DomainEventKind::PlanUpgraded {
+                    from_phase,
+                    to_phase,
+                },
+                server_time,
+            ));
+        }
+    }
+    if let Some(target_status) = decision.account_status_target() {
+        let from = state.account.status;
+        state.account.status = target_status;
+        events.push(crate::core::events::DomainEvent::new(
+            account_id,
+            crate::core::events::DomainEventKind::AccountStatusChanged {
+                from,
+                to: target_status,
+            },
+            server_time,
+        ));
+        if matches!(
+            decision.kind,
+            crate::engine::decision::DecisionKind::Liquidate
+                | crate::engine::decision::DecisionKind::Emergency
+        ) {
+            let reason = match decision.kind {
+                crate::engine::decision::DecisionKind::Liquidate => {
+                    let violation = decision
+                        .all_violations
+                        .iter()
+                        .find(|v| {
+                            v.severity >= crate::core::violation::ViolationSeverity::Liquidate
+                        })
+                        .or_else(|| decision.all_violations.first());
+                    let kind =
+                        violation.map_or(crate::core::violation::ViolationKind::Custom, |v| v.kind);
+                    crate::liquidation::LiquidationReason::RuleBreach(kind)
+                }
+                crate::engine::decision::DecisionKind::Emergency => {
+                    crate::liquidation::LiquidationReason::EmergencyStop
+                }
+                _ => crate::liquidation::LiquidationReason::Manual,
+            };
+            let triggered_by = decision.all_violations.first().map(|v| v.id);
+            let instruction = crate::liquidation::LiquidationInstruction::new(
+                account_id,
+                state.account.tenant_id,
+                &state.account.open_positions,
+                reason,
+                triggered_by,
+                actor_id,
+                server_time,
+            );
+            events.push(crate::core::events::DomainEvent::new(
+                account_id,
+                crate::core::events::DomainEventKind::LiquidationRequested { instruction },
+                server_time,
+            ));
+        }
+    }
+    Ok((state, events))
+}
+
 impl<N> Pipeline<N>
 where
     N: Notifier,
@@ -280,100 +383,17 @@ where
             }
             final_state.account.today_trades.push(trade);
         }
-        if result.decision.is_target_hit() {
-            final_state = final_state.mark_target_reached(ctx.server_time.ts());
-            events.push(DomainEvent::new(
-                account_id,
-                DomainEventKind::AccountStatusChanged {
-                    from: crate::core::account::AccountStatus::Active,
-                    to: crate::core::account::AccountStatus::TargetHitPending,
-                },
-                ctx.server_time.ts(),
-            ));
-        }
-        if final_state.account.target_reached_at.is_some()
-            && final_state.account.status == crate::core::account::AccountStatus::TargetHitPending
-            && final_state.account.active_trading_days >= final_state.account.plan.min_trading_days
-        {
-            final_state.account.status = crate::core::account::AccountStatus::Passed;
-            events.push(DomainEvent::new(
-                account_id,
-                DomainEventKind::AccountStatusChanged {
-                    from: crate::core::account::AccountStatus::TargetHitPending,
-                    to: crate::core::account::AccountStatus::Passed,
-                },
-                ctx.server_time.ts(),
-            ));
-            let from_phase = final_state.account.plan.phase;
-            let to_phase = Self::next_phase_for(&from_phase);
-            if let Ok(upped) = final_state.clone().upgrade_phase(to_phase) {
-                final_state = upped;
-                events.push(DomainEvent::new(
-                    account_id,
-                    DomainEventKind::PlanUpgraded {
-                        from_phase,
-                        to_phase,
-                    },
-                    ctx.server_time.ts(),
-                ));
-            }
-        }
-        if let Some(target_status) = result.decision.account_status_target() {
-            let from = final_state.account.status;
-            final_state.account.status = target_status;
-            events.push(DomainEvent::new(
-                account_id,
-                DomainEventKind::AccountStatusChanged {
-                    from,
-                    to: target_status,
-                },
-                ctx.server_time.ts(),
-            ));
-            if matches!(
-                result.decision.kind,
-                crate::engine::decision::DecisionKind::Liquidate
-                    | crate::engine::decision::DecisionKind::Emergency
-            ) {
-                let reason = match result.decision.kind {
-                    crate::engine::decision::DecisionKind::Liquidate => {
-                        let violation = result
-                            .decision
-                            .all_violations
-                            .iter()
-                            .find(|v| {
-                                v.severity >= crate::core::violation::ViolationSeverity::Liquidate
-                            })
-                            .or_else(|| result.decision.all_violations.first());
-                        let kind = violation
-                            .map_or(crate::core::violation::ViolationKind::Custom, |v| v.kind);
-                        crate::liquidation::LiquidationReason::RuleBreach(kind)
-                    }
-                    crate::engine::decision::DecisionKind::Emergency => {
-                        crate::liquidation::LiquidationReason::EmergencyStop
-                    }
-                    _ => crate::liquidation::LiquidationReason::Manual,
-                };
-                let triggered_by = result.decision.all_violations.first().map(|v| v.id);
-                let actor_id = match &ev {
-                    PipelineEvent::EmergencyStop { actor_id, .. } => actor_id.clone(),
-                    _ => "rule_engine".to_string(),
-                };
-                let instruction = crate::liquidation::LiquidationInstruction::new(
-                    account_id,
-                    final_state.account.tenant_id,
-                    &open_positions,
-                    reason,
-                    triggered_by,
-                    actor_id,
-                    ctx.server_time.ts(),
-                );
-                events.push(DomainEvent::new(
-                    account_id,
-                    DomainEventKind::LiquidationRequested { instruction },
-                    ctx.server_time.ts(),
-                ));
-            }
-        }
+        let actor_id = match &ev {
+            PipelineEvent::EmergencyStop { actor_id, .. } => actor_id.clone(),
+            _ => "rule_engine".to_string(),
+        };
+        let (mut final_state, decision_events) = apply_decision(
+            final_state,
+            &result.decision,
+            ctx.server_time.ts(),
+            &actor_id,
+        )?;
+        events.extend(decision_events);
         match &ev {
             PipelineEvent::Tick { tick, .. } | PipelineEvent::TickEstimated { tick } => {
                 final_state.account.last_tick_ts = Some(tick.quote.ts);

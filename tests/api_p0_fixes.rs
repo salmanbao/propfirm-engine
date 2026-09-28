@@ -826,3 +826,148 @@ async fn evaluate_order_same_server_different_plans_produce_different_verdicts()
         "different plans must produce different verdicts; hedging={h_body}, allowed={a_body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Stateless contract gap regressions A–E
+// ---------------------------------------------------------------------------
+
+/// **Gap A**: `evaluate_internal_impl` must apply post-verdict state transitions
+/// (target-hit pending, failed, emergency-stopped) so the returned
+/// `account_state` carries what the next call needs.
+#[tokio::test]
+async fn evaluate_internal_applies_target_hit_transition() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = propfirm::core::account::AccountStatus::Active;
+    account.equity = Money::new(dec!(11_000));
+    account.balance = Money::new(dec!(11_000));
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let returned: propfirm::core::account::Account =
+        serde_json::from_value(parsed["account_state"].clone()).expect("account_state in response");
+    assert_eq!(
+        returned.status,
+        propfirm::core::account::AccountStatus::TargetHitPending,
+        "evaluate must apply target-hit transition in returned account_state; got {:?}",
+        returned.status
+    );
+}
+
+/// **Gap B**: `evaluate_order` and `manual_run` must reject terminal accounts
+/// instead of silently evaluating them.
+#[tokio::test]
+async fn evaluate_order_rejects_terminal_account() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = propfirm::core::account::AccountStatus::Failed;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "evaluate-order must reject terminal account"
+    );
+}
+
+/// **Gap C**: `evaluate_internal_impl` must reject cross-tenant requests.
+#[tokio::test]
+async fn evaluate_internal_rejects_cross_tenant_request() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let wrong_tenant = uuid::Uuid::new_v4().to_string();
+    let req = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/internal/v1/evaluate")
+        .header("X-Tenant-Id", wrong_tenant)
+        .header("Authorization", format!("Bearer {SERVICE_KEY}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+    let status = response.status();
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "cross-tenant evaluate must be rejected"
+    );
+}
+
+/// **Gap D**: `override_breach` must reject clearing a non-terminal account.
+#[tokio::test]
+async fn override_breach_rejects_active_account() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": propfirm::core::ids::ViolationId::new().to_string(),
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "override must reject active account"
+    );
+}
+
+/// **Gap E**: `breach_report` must return real violations, not an empty array.
+#[tokio::test]
+async fn breach_report_returns_violations_from_state() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    // Seed a decision on the account so the handler has something to return.
+    account.status = propfirm::core::account::AccountStatus::Failed;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/breach-report", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let violations = parsed["violations"].as_array().expect("violations array");
+    assert!(
+        !violations.is_empty(),
+        "breach-report must return violations for a failed account; got: {resp}"
+    );
+}

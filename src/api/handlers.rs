@@ -173,6 +173,15 @@ async fn evaluate_internal_impl(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless evaluation".into(),
     ))?;
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
     let pack = if req.rule_pack.is_some() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -349,6 +358,20 @@ async fn evaluate_internal_impl(
         inputs,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let account_state = if verdict.decision.is_terminating() || verdict.decision.is_target_hit() {
+        let state = crate::engine::state::AccountState::new(acc.clone());
+        let actor_id = "evaluate_internal";
+        let (new_state, _events) = crate::engine::pipeline::apply_decision(
+            state,
+            &verdict.decision,
+            server_time.0,
+            actor_id,
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        new_state.account
+    } else {
+        acc.clone()
+    };
     Ok(InternalEvaluateResponse {
         decision_kind: format!("{:?}", verdict.decision.kind),
         winning_priority: verdict.decision.winning_priority,
@@ -361,7 +384,7 @@ async fn evaluate_internal_impl(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
-        account_state: acc,
+        account_state,
     })
 }
 
@@ -403,6 +426,15 @@ pub async fn override_breach(
             format!(
                 "account_state.tenant_id {} does not match authenticated tenant {}",
                 acc.tenant_id, tenant_id
+            ),
+        ));
+    }
+    if !acc.status.is_breach_terminal() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account {} is in status {:?}; override is only valid from Failed/EmergencyStopped",
+                acc.id, acc.status
             ),
         ));
     }
@@ -468,6 +500,15 @@ pub async fn manual_run(
             format!(
                 "account_state.tenant_id {} does not match authenticated tenant {}",
                 acc.tenant_id, tenant_id
+            ),
+        ));
+    }
+    if acc.status.is_terminal() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account {} is in terminal status {:?} and cannot be re-evaluated",
+                acc.id, acc.status
             ),
         ));
     }
@@ -585,10 +626,31 @@ pub async fn breach_report(
             ),
         ));
     }
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let evaluator =
+        crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
+    let notifier = crate::notifications::log::LogNotifier::new();
+    let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
+    let result = pipeline
+        .process(acc.clone(), PipelineEvent::OnDemand)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let violations: Vec<ViolationSummary> = result
+        .result
+        .violations()
+        .iter()
+        .map(|v| ViolationSummary {
+            rule_name: v.rule_name.clone(),
+            kind: format!("{:?}", v.kind),
+            severity: format!("{:?}", v.severity),
+            message: v.message.clone(),
+            occurred_at: v.occurred_at.to_rfc3339(),
+        })
+        .collect();
     Ok(Json(BreachReportResponse {
         account_id: req.account_id,
-        account_status: format!("{:?}", acc.status),
-        violations: Vec::new(),
+        account_status: format!("{:?}", result.account.status),
+        violations,
     }))
 }
 
@@ -621,6 +683,15 @@ pub async fn evaluate_order(
             format!(
                 "account_state.tenant_id {} does not match authenticated tenant {}",
                 acc.tenant_id, tenant_id
+            ),
+        ));
+    }
+    if acc.status.is_terminal() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account {} is in terminal status {:?} and cannot be evaluated",
+                acc.id, acc.status
             ),
         ));
     }
