@@ -14,16 +14,15 @@
           "external_caller",
           "api_router",
           "auth_layer",
-          "pipeline_start",
+          "pipeline_process",
           "build_context",
           "evaluate_rules",
           "decision_kind",
-          "emit_decision",
+          "emit_events",
           "notify_violations",
-          "update_state",
-          "external_notifier"
+          "response"
         ],
-        "note": "Left-to-right evaluation flow"
+        "note": "Request to response evaluation flow"
       }
     ],
     "output": "workflow-prop-firm-engine.html"
@@ -76,14 +75,13 @@
     "external_caller",
     "api_router",
     "auth_layer",
-    "pipeline_start",
+    "pipeline_process",
     "build_context",
     "evaluate_rules",
     "decision_kind",
-    "emit_decision",
+    "emit_events",
     "notify_violations",
-    "update_state",
-    "external_notifier"
+    "response"
   ],
   "nodes": [
     {
@@ -111,11 +109,11 @@
       "width": 140
     },
     {
-      "id": "pipeline_start",
+      "id": "pipeline_process",
       "lane": "pipeline",
       "col": 1,
       "type": "backend",
-      "label": "Pipeline Start",
+      "label": "Pipeline Process",
       "width": 140
     },
     {
@@ -143,35 +141,27 @@
       "width": 120
     },
     {
-      "id": "emit_decision",
+      "id": "emit_events",
       "lane": "pipeline",
       "col": 3,
       "type": "backend",
-      "label": "Emit Decision",
+      "label": "Emit Events",
       "width": 140
     },
     {
       "id": "notify_violations",
-      "lane": "pipeline",
+      "lane": "notifier",
       "col": 4,
       "type": "messagebus",
       "label": "Notify Violations",
       "width": 140
     },
     {
-      "id": "update_state",
-      "lane": "pipeline",
+      "id": "response",
+      "lane": "api",
       "col": 5,
-      "type": "backend",
-      "label": "Update State",
-      "width": 140
-    },
-    {
-      "id": "external_notifier",
-      "lane": "external",
-      "col": 5,
-      "type": "external",
-      "label": "External Notifier",
+      "type": "frontend",
+      "label": "JSON Response",
       "width": 140
     }
   ],
@@ -193,13 +183,13 @@
     {
       "id": "auth-to-pipeline",
       "from": "auth_layer",
-      "to": "pipeline_start",
+      "to": "pipeline_process",
       "label": "authenticated",
       "variant": "emphasis"
     },
     {
       "id": "pipeline-to-context",
-      "from": "pipeline_start",
+      "from": "pipeline_process",
       "to": "build_context",
       "label": "extract event",
       "variant": "default"
@@ -221,30 +211,23 @@
     {
       "id": "decision-to-emit",
       "from": "decision_kind",
-      "to": "emit_decision",
+      "to": "emit_events",
       "label": "decision ready",
       "variant": "default"
     },
     {
       "id": "emit-to-notify",
-      "from": "emit_decision",
+      "from": "emit_events",
       "to": "notify_violations",
       "label": "violations?",
       "variant": "security"
     },
     {
-      "id": "notify-to-update",
+      "id": "notify-to-response",
       "from": "notify_violations",
-      "to": "update_state",
-      "label": "always update",
-      "variant": "dashed"
-    },
-    {
-      "id": "update-to-external",
-      "from": "update_state",
-      "to": "external_notifier",
-      "label": "notify",
-      "variant": "emphasis"
+      "to": "response",
+      "label": "return result",
+      "variant": "default"
     }
   ],
   "cards": [

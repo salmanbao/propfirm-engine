@@ -5,48 +5,46 @@
     "title": "Prop Firm Risk & Rule Evaluation Engine",
     "quality_profile": "showcase",
     "views": [
-      { "id": "request-path", "label": "Trading Request Path", "focus": ["frontend", "auth", "api", "db"], "note": "Follow trading rules evaluation from user to state" },
-      { "id": "risk-computation", "label": "Risk Computation Path", "focus": ["db", "cache"], "note": "See risk metrics calculation and persistence" },
-      { "id": "async-services", "label": "Async Services", "focus": ["queue", "worker", "cdn"], "note": "Isolate background processing from request path" }
+      { "id": "runtime-path", "label": "Runtime Path", "focus": ["external", "api", "pipeline", "evaluator", "event_store"], "note": "Request to evaluation to persistence" },
+      { "id": "stateless-contract", "label": "Stateless Contract", "focus": ["api", "pure", "rulepack"], "note": "No server-side account persistence" }
     ],
     "legend": {
       "mode": "auto",
       "entries": {
-        "security": { "label": "Compliance & Audit", "visible": true },
-        "cloud": { "label": "Cloud Services", "visible": true }
+        "security": { "label": "Auth & Isolation", "visible": true },
+        "database": { "label": "State & Audit", "visible": true }
       }
     }
   },
   "components": [
-    { "id": "frontend", "type": "frontend", "label": "Web UI", "sublabel": "Rule Builder", "pos": [40, 300], "size": [140, 70] },
-    { "id": "auth", "type": "security", "label": "Auth Service", "sublabel": "OAuth 2.0 / JWT", "pos": [40, 110], "size": [140, 64], "tag": "Compliance" },
-    { "id": "cdn", "type": "cloud", "label": "CDN", "sublabel": "Static Assets", "pos": [250, 320], "size": [130, 60] },
-    { "id": "lb", "type": "cloud", "label": "Load Balancer", "sublabel": "HTTPS / TCP", "pos": [460, 320], "size": [130, 60] },
-    { "id": "api", "type": "backend", "label": "API Gateway", "sublabel": "FastAPI / REST", "pos": [670, 320], "size": [140, 70] },
-    { "id": "cache", "type": "database", "label": "Redis Cache", "sublabel": "Read-through Cache", "pos": [670, 180], "size": [140, 70] },
-    { "id": "db", "type": "database", "label": "PostgreSQL", "sublabel": "Primary DB", "pos": [900, 320], "size": [140, 70] },
-    { "id": "s3", "type": "cloud", "label": "S3 Storage", "sublabel": "Rule Packs & Assets", "pos": [250, 460], "size": [140, 70] },
-    { "id": "queue", "type": "messagebus", "label": "Message Queue", "sublabel": "Async Processing Queue", "pos": [670, 460], "size": [140, 70] },
-    { "id": "worker", "type": "backend", "label": "Worker Service", "sublabel": "Async Rule Processing", "pos": [900, 460], "size": [140, 70] }
+    { "id": "external", "type": "external", "label": "Platform Bridge", "sublabel": "LCC / trading gateway", "pos": [20, 200], "size": [150, 60] },
+    { "id": "api", "type": "frontend", "label": "API Server", "sublabel": "axum HTTP", "pos": [220, 200], "size": [130, 60] },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "event orchestrator", "pos": [400, 200], "size": [130, 60] },
+    { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only replay", "pos": [580, 200], "size": [130, 60] },
+    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "service bearer + tenant", "pos": [220, 60], "size": [130, 56], "tag": "Compliance" },
+    { "id": "evaluator", "type": "backend", "label": "Evaluator", "sublabel": "pure rule execution", "pos": [400, 60], "size": [130, 56] },
+    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "pack-driven rules", "pos": [580, 60], "size": [130, 56] },
+    { "id": "pure", "type": "backend", "label": "Pure Evaluate", "sublabel": "stateless input_hash", "pos": [400, 340], "size": [130, 56] },
+    { "id": "rulepack", "type": "backend", "label": "RulePack", "sublabel": "versioned JSON rules", "pos": [580, 340], "size": [130, 56] },
+    { "id": "notifications", "type": "messagebus", "label": "Notifier", "sublabel": "webhook / log", "pos": [760, 340], "size": [130, 56] }
   ],
   "boundaries": [
-    { "kind": "region", "label": "AWS Region: us-east-1", "wraps": ["cdn", "lb", "api", "cache", "db", "s3", "queue", "worker"], "pad": 20 },
-    { "kind": "security-group", "label": "sg-api :443/:8000", "wraps": ["lb", "api"], "pad": 10 }
+    { "kind": "region", "label": "Engine crate", "wraps": ["api", "auth", "pipeline", "evaluator", "rules", "event_store", "pure", "rulepack", "notifications"], "pad": 16 }
   ],
   "connections": [
-    { "id": "users-to-frontend", "from": "frontend", "to": "cdn", "label": "HTTPS", "variant": "emphasis", "fromSide": "left", "toSide": "top" },
-    { "id": "auth-jwt", "from": "auth", "to": "api", "label": "verify JWT", "variant": "security", "labelAt": [646, 264] },
-    { "id": "cdn-to-lb", "from": "cdn", "to": "lb" },
-    { "id": "static-to-s3", "from": "cdn", "to": "s3", "label": "static", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 40 },
-    { "id": "lb-to-api", "from": "lb", "to": "api" },
-    { "id": "api-cache", "from": "api", "to": "cache", "label": "read-through", "fromSide": "top", "toSide": "bottom", "labelAt": [754, 164] },
-    { "id": "api-db", "from": "api", "to": "db", "label": "SQL" },
-    { "id": "api-to-queue", "from": "api", "to": "queue", "label": "enqueue", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 40 },
-    { "id": "queue-to-worker", "from": "queue", "to": "worker" }
+    { "id": "caller-to-api", "from": "external", "to": "api", "label": "HTTP", "variant": "emphasis", "labelAt": [110, 274] },
+    { "id": "auth-gate", "from": "auth", "to": "api", "label": "verify bearer + tenant", "variant": "security", "labelAt": [285, 150] },
+    { "id": "api-to-pipeline", "from": "api", "to": "pipeline", "label": "PipelineEvent", "variant": "default", "labelAt": [310, 274] },
+    { "id": "pipeline-to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis" },
+    { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate registry", "variant": "default", "labelAt": [555, 130] },
+    { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 274] },
+    { "id": "api-to-pure", "from": "api", "to": "pure", "label": "stateless evaluate", "variant": "emphasis", "via": [[220, 280], [400, 280]], "labelAt": [310, 300] },
+    { "id": "pure-to-rulepack", "from": "pure", "to": "rulepack", "label": "synthetic pack", "variant": "default", "labelAt": [555, 410] },
+    { "id": "pipeline-to-notifier", "from": "pipeline", "to": "notifications", "label": "violations?", "variant": "security", "via": [[400, 280], [760, 280]], "labelAt": [580, 300] }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Core Services", "items": ["API Gateway handles all trading rule evaluation", "Redis cache provides sub-10ms reads for frequent access", "PostgreSQL ensures strong consistency and tenant isolation"] },
-    { "dot": "emerald", "title": "Processing Pipeline", "items": ["Async workers handle background tasks and batch processing", "CDN delivers static assets efficiently", "Message queue ensures exactly-once processing semantics"] },
-    { "dot": "rose", "title": "Security & Compliance", "items": ["JWT-based authentication with OAuth 2.0 support", "All access controlled by security groups in AWS", "Full audit trail for regulatory compliance"] }
+    { "dot": "cyan", "title": "Core Modules", "items": ["core: Account, Position, Trade, Tick, Violation", "config: ChallengePlan and presets", "rules: Rule trait, registry, 22 evaluators"] },
+    { "dot": "emerald", "title": "Evaluation Path", "items": ["Pipeline applies events and builds RuleContext", "Evaluator runs pure rule evaluation", "input_hash enables byte-for-byte replay"] },
+    { "dot": "rose", "title": "Statelessness", "items": ["No server-side account store (ADR-11)", "account_state in/out via request/response", "EventStore is audit/replay only"] }
   ]
 }

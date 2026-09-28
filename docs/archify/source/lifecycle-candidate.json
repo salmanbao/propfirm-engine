@@ -2,12 +2,12 @@
   "schema_version": 1,
   "diagram_type": "lifecycle",
   "meta": {
-    "title": "Prop Firm Evaluation Lifecycle",
-    "output": "lifecycle-prop-firm-engine.html",
+    "title": "Account Lifecycle",
+    "output": "lifecycle-account.html",
     "quality_profile": "standard",
     "viewBox": [
       1100,
-      800
+      600
     ]
   },
   "lanes": [
@@ -16,16 +16,16 @@
       "label": "Account progression"
     },
     {
+      "id": "warning",
+      "label": "Warning"
+    },
+    {
       "id": "failure",
       "label": "Rule breaches"
     },
     {
       "id": "ops",
       "label": "Ops halt"
-    },
-    {
-      "id": "terminal",
-      "label": "Account closure"
     }
   ],
   "states": [
@@ -77,15 +77,6 @@
       "sublabel": "ops halt",
       "lane": "ops",
       "col": 0,
-      "yOffset": 100
-    },
-    {
-      "id": "closed",
-      "type": "neutral",
-      "label": "Closed",
-      "sublabel": "account closed",
-      "lane": "terminal",
-      "col": 2,
       "yOffset": 100
     }
   ],
@@ -163,66 +154,6 @@
           240
         ]
       ]
-    },
-    {
-      "id": "close_passed",
-      "from": "passed",
-      "to": "closed",
-      "label": "close",
-      "labelAt": [
-        633,
-        560
-      ],
-      "via": [
-        [
-          700,
-          240
-        ],
-        [
-          700,
-          560
-        ]
-      ]
-    },
-    {
-      "id": "close_failed",
-      "from": "failed",
-      "to": "closed",
-      "label": "close",
-      "labelAt": [
-        540,
-        560
-      ],
-      "via": [
-        [
-          540,
-          240
-        ],
-        [
-          540,
-          560
-        ]
-      ]
-    },
-    {
-      "id": "close_emergency",
-      "from": "emergency_stopped",
-      "to": "closed",
-      "label": "close",
-      "labelAt": [
-        465,
-        560
-      ],
-      "via": [
-        [
-          465,
-          240
-        ],
-        [
-          465,
-          560
-        ]
-      ]
     }
   ],
   "cards": [
@@ -240,8 +171,7 @@
       "title": "Failure Paths",
       "items": [
         "Active -> Failed on rule breach with broker-reported equity",
-        "Active -> Emergency Stopped on ops emergency halt",
-        "Both failure paths converge to Closed"
+        "Active -> Emergency Stopped on ops emergency halt"
       ]
     },
     {
@@ -249,7 +179,7 @@
       "title": "Recovery",
       "items": [
         "Override can revert Failed or Emergency Stopped -> Active",
-        "Closed is the final state with no return path"
+        "No shared terminal state; terminal states stay terminal in this view"
       ]
     }
   ]
