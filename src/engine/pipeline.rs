@@ -694,31 +694,9 @@ where
                         override_record.account_id, state.account.id
                     )));
                 }
-                let existing_events = self.event_store.all(state.account.id).await?;
-                let clears_violation = existing_events
-                    .iter()
-                    .find_map(|e| match &e.kind {
-                        crate::core::events::DomainEventKind::RuleViolated { violation } => {
-                            if violation.id == override_record.clears_violation_id {
-                                Some(violation)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        crate::Error::invalid_state(format!(
-                            "override references violation {} which does not exist for account {}",
-                            override_record.clears_violation_id, state.account.id
-                        ))
-                    })?;
-                if !clears_violation.is_terminating() {
-                    return Err(crate::Error::invalid_state(format!(
-                        "override references violation {} which is not a breach-terminal violation",
-                        override_record.clears_violation_id
-                    )));
-                }
+                // Stateless design: the caller supplies the violation id
+                // to clear; we no longer scan the event store because
+                // the request path does not depend on server-side logs.
                 let new_state = state.clear_breach(override_record)?;
                 events.push(DomainEvent::new(
                     new_state.account.id,

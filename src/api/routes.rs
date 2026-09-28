@@ -46,7 +46,7 @@ pub async fn router(state: SharedState) -> Router {
         .route("/internal/v1/override", post(override_breach))
         .route("/internal/v1/manual-run", post(manual_run))
         .route("/internal/v1/emergency-stop", post(emergency_stop))
-        .route("/internal/v1/breach-report/:account_id", get(breach_report))
+        .route("/internal/v1/breach-report", post(breach_report))
         .route("/v1/evaluate-order", post(evaluate_order))
         // Rule pack validation endpoint (stateless, no storage required)
         .route("/v1/rule-packs/validate", post(validate_rule_pack))

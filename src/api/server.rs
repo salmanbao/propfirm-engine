@@ -11,16 +11,12 @@
 use crate::api::auth::AuthConfig;
 use crate::api::handlers::SharedState;
 use crate::api::idempotency::{IdempotencyBackend, IdempotencyStore};
-use crate::config::plan::ChallengePlan;
-use crate::engine::evaluator::Evaluator;
 use crate::notifications::log::LogNotifier;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub struct ServerState {
-    pub evaluator: Evaluator,
     pub notifier: LogNotifier,
-    pub event_store: Arc<dyn crate::events::store::EventStore>,
     pub idempotency: Arc<dyn IdempotencyBackend>,
     /// **§A.1 fix**: parsed auth configuration (per-tenant keys + service
     /// token. Required to build the router; an unauthenticated server
@@ -36,9 +32,7 @@ impl Clone for ServerState {
     ///
     fn clone(&self) -> Self {
         ServerState {
-            evaluator: self.evaluator.clone(),
             notifier: self.notifier.clone(),
-            event_store: self.event_store.clone(),
             idempotency: self.idempotency.clone(),
             auth: self.auth.clone(),
         }
@@ -47,11 +41,9 @@ impl Clone for ServerState {
 
 impl ServerState {
     #[must_use]
-    pub fn new(plan: ChallengePlan, auth: AuthConfig) -> Self {
+    pub fn new(auth: AuthConfig) -> Self {
         ServerState {
-            evaluator: Evaluator::new(&plan),
             notifier: LogNotifier::new(),
-            event_store: Arc::new(crate::events::store::InMemoryEventStore::new()),
             idempotency: Arc::new(IdempotencyStore::with_defaults()),
             auth,
         }
@@ -61,33 +53,33 @@ impl ServerState {
     pub fn pipeline(
         &self,
     ) -> crate::engine::pipeline::Pipeline<crate::notifications::log::LogNotifier> {
-        let mut p =
-            crate::engine::pipeline::Pipeline::new(self.evaluator.clone(), self.notifier.clone());
-        // Replace the pipeline's default event store with our shared one.
-        p.event_store = self.event_store.clone();
-        p
+        crate::engine::pipeline::Pipeline::new(
+            crate::engine::evaluator::Evaluator::with_registry(
+                crate::rules::registry::RuleRegistry::with_default_rules(),
+            ),
+            self.notifier.clone(),
+        )
     }
 }
 
 /// Builds and runs the HTTP server. **Fail closed**: refuses to start
 /// when no credentials are configured unless the explicit insecure
 /// escape hatch is set (a loud warning is printed in that case).
-pub async fn run_server(addr: &str, plan: ChallengePlan) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_server(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let auth = AuthConfig::from_env()?;
     for warning in auth.insecure_warnings() {
         eprintln!("{warning}");
     }
-    run_server_with_auth(addr, plan, auth).await
+    run_server_with_auth(addr, auth).await
 }
 
 /// Runs the server with an explicit [`AuthConfig`] (used by tests and by
 /// embedders that build configuration themselves).
 pub async fn run_server_with_auth(
     addr: &str,
-    plan: ChallengePlan,
     auth: AuthConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = ServerState::new(plan, auth);
+    let state = ServerState::new(auth);
 
     let state: SharedState = Arc::new(RwLock::new(state));
     let app = crate::api::routes::router(state).await;

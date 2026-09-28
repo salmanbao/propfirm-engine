@@ -5,6 +5,8 @@ use crate::core::types::{Money, Pct};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EvaluateOrderRequest {
     pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
     pub symbol: String,
     pub side: String,
     pub quantity: rust_decimal::Decimal,
@@ -19,6 +21,7 @@ pub struct EvaluateOrderResponse {
     pub decision: String,
     pub passed: bool,
     pub violations: Vec<String>,
+    pub account_state: crate::core::account::Account,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -65,4 +68,58 @@ pub struct CreateAccountResponse {
     pub account_id: String,
     pub tenant_id: String,
     pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OverrideRequest {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
+    pub clears_violation_id: String,
+    pub reason: String,
+    pub actor_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OverrideResponse {
+    pub override_id: String,
+    pub cleared_at: String,
+    pub account_state: crate::core::account::Account,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManualRunRequest {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManualRunResponse {
+    pub decision_kind: String,
+    pub violations: Vec<String>,
+    pub account_state: crate::core::account::Account,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyStopRequest {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
+    pub reason: String,
+    pub actor_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmergencyStopResponse {
+    pub decision_kind: String,
+    pub stopped_at: String,
+    pub account_state: crate::core::account::Account,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BreachReportRequest {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
 }

@@ -29,9 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "0.0.0.0:8080"
     };
-    let plan = propfirm::config::presets::ftmo_phase1();
     println!("Prop Firm Engine HTTP server on http://{addr}");
-    propfirm::api::server::run_server(addr, plan).await
+    propfirm::api::server::run_server(addr).await
 }
 
 #[cfg(not(feature = "server"))]

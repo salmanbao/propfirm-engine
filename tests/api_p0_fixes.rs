@@ -22,7 +22,8 @@ use propfirm::config::plan::LossReference;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
-use propfirm::core::types::{dec, Money, Pct};
+use propfirm::core::position::{Position, PositionSide};
+use propfirm::core::types::{dec, Money, Pct, Price, Quantity, Symbol};
 
 use propfirm::tenant::TenantId;
 use std::sync::Arc;
@@ -73,7 +74,6 @@ async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, A
     account.equity = Money::new(rust_decimal::Decimal::new(equity, 0));
     account.balance = account.equity;
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        plan,
         test_auth_config(),
     )));
     (state, account)
@@ -322,6 +322,7 @@ async fn p0_8_mutation_is_not_double_applied() {
     let app = router(state).await;
     let order_body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "symbol": "EURUSD",
         "side": "buy",
         "quantity": "1",
@@ -477,6 +478,7 @@ async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
 
     let override_body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "clears_violation_id": "00000000-0000-0000-0000-000000000000",
         "reason": "concurrency test",
         "actor_id": "test"
@@ -539,7 +541,6 @@ async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
         .with_loss_reference(LossReference::Trailing)
         .with_total_dd(Pct(dec!(0.05)));
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        plan.clone(),
         test_auth_config(),
     )));
     let app = router(state).await;
@@ -651,5 +652,171 @@ async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
         resp.contains("\"decision_kind\":\"Pass\"")
             || resp.contains("\"decision_kind\":\"GapFlagged\""),
         "evaluate response must contain a distinct decision_kind; got: {resp}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stateless handler regressions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn evaluate_order_missing_account_state_returns_400() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn evaluate_order_account_id_mismatch_returns_400() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let mut mismatched = account.clone();
+    mismatched.id = AccountId::new();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": mismatched,
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn evaluate_order_uses_account_plan_not_startup_plan() {
+    use propfirm::config::plan::{ChallengePlan, LossReference};
+    use propfirm::core::types::Pct;
+    // Server is started with FTMO default plan, but the account carries a
+    // tighter custom plan with max_open_positions = 1 and an existing open
+    // position. evaluate_order must reject the new order using the account's
+    // plan, not the startup plan.
+    let (state, _) = make_state_at(10000).await;
+    let app = router(state).await;
+    let mut tight_plan = ChallengePlan::default();
+    tight_plan.max_open_positions = Some(1);
+    tight_plan.max_loss_reference = LossReference::Static;
+    tight_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let mut account = Account::new(AccountId::new(), tight_plan)
+        .with_tenant(TenantId::named("test-tenant"))
+        .start(chrono::Utc::now())
+        .unwrap();
+    use propfirm::core::position::{Position, PositionSide};
+    use propfirm::core::types::Price;
+    account.open_positions = vec![Position::open(
+        account.id,
+        Symbol::new("EURUSD"),
+        PositionSide::Long,
+        Price(dec!(1.0800)),
+        Quantity(dec!(1)),
+        chrono::Utc::now(),
+        Money::ZERO,
+        None,
+        None,
+        None,
+        None,
+    )];
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+    let (status, body) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        body.contains("MaxOpenPositions") || body.contains("max_open_positions"),
+        "expected max-open-positions violation from account plan; got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn evaluate_order_same_server_different_plans_produce_different_verdicts() {
+    use propfirm::config::plan::{ChallengePlan, LossReference};
+    use propfirm::core::types::Pct;
+    let (state, _) = make_state_at(10000).await;
+    let app = router(state).await;
+
+    let mut hedging_plan = ChallengePlan::default();
+    hedging_plan.hedging_allowed = false;
+    hedging_plan.max_loss_reference = LossReference::Static;
+    hedging_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let mut hedging_account = Account::new(AccountId::new(), hedging_plan)
+        .with_tenant(TenantId::named("test-tenant"))
+        .start(chrono::Utc::now())
+        .unwrap();
+
+    let mut allowed_plan = ChallengePlan::default();
+    allowed_plan.hedging_allowed = true;
+    allowed_plan.max_loss_reference = LossReference::Static;
+    allowed_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let mut allowed_account = Account::new(AccountId::new(), allowed_plan)
+        .with_tenant(TenantId::named("test-tenant"))
+        .start(chrono::Utc::now())
+        .unwrap();
+
+    let position = Position::open(
+        hedging_account.id,
+        Symbol::new("EURUSD"),
+        PositionSide::Long,
+        Price(dec!(1.0800)),
+        Quantity(dec!(1)),
+        chrono::Utc::now(),
+        Money::ZERO,
+        None,
+        None,
+        None,
+        None,
+    );
+    hedging_account.open_positions.push(position.clone());
+    allowed_account.open_positions.push(position);
+
+    let hedging_body = serde_json::json!({
+        "account_id": hedging_account.id.to_string(),
+        "account_state": hedging_account,
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+    let allowed_body = serde_json::json!({
+        "account_id": allowed_account.id.to_string(),
+        "account_state": allowed_account,
+        "symbol": "EURUSD",
+        "side": "buy",
+        "quantity": "1",
+        "order_type": "market"
+    })
+    .to_string();
+
+    let (h_status, h_body) = send(
+        app.clone(),
+        Method::POST,
+        "/v1/evaluate-order",
+        Some(hedging_body),
+    )
+    .await;
+    let (a_status, a_body) =
+        send(app, Method::POST, "/v1/evaluate-order", Some(allowed_body)).await;
+    assert_eq!(h_status, StatusCode::OK);
+    assert_eq!(a_status, StatusCode::OK);
+    assert_ne!(
+        h_body, a_body,
+        "different plans must produce different verdicts; hedging={h_body}, allowed={a_body}"
     );
 }

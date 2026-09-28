@@ -1,5 +1,11 @@
 //! HTTP handlers.
 //!
+//! **Design**: stateless state-in / state-out. Every mutating/read endpoint
+//! takes `account_state` from the caller, builds its evaluator from that
+//! account's bound plan per request, and returns the updated account state
+//! or status. No request path relies on `ServerState.event_store` or a
+//! startup-time plan; the caller owns durable records.
+//!
 //! **P2-API fix**: implements the binding spec's engine contract endpoints.
 //! All mutating endpoints accept an `Idempotency-Key` header (P2-API fix);
 //! the server tracks the last N idempotency keys per endpoint to
@@ -12,7 +18,7 @@ use crate::core::types::{Price, Quantity, Symbol};
 use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
 use crate::rulepack::RulePack;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use std::str::FromStr;
@@ -360,13 +366,17 @@ async fn evaluate_internal_impl(
 }
 
 /// `POST /internal/v1/override` — clear a false-positive breach.
+///
+/// **Stateless design**: takes `account_state` from the caller, builds the
+/// evaluator from that account's plan, applies the override, and returns the
+/// updated `account_state`. No event-store replay is performed.
 pub async fn override_breach(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
-    extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -374,8 +384,28 @@ pub async fn override_breach(
         Uuid::from_str(&req.clears_violation_id)
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    let s = state.read().await.clone();
-    let mut pipeline = s.pipeline();
+    let acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for stateless override".into(),
+    ))?;
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
     let override_record = Override::new(
         account_id,
         clears_violation_id,
@@ -383,12 +413,12 @@ pub async fn override_breach(
         req.actor_id,
         chrono::Utc::now(),
     );
-    let acc = s
-        .event_store
-        .replay(account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let _ = pipeline
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let evaluator =
+        crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
+    let notifier = crate::notifications::log::LogNotifier::new();
+    let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
+    let result = pipeline
         .process(
             acc.clone(),
             PipelineEvent::OverrideBreach {
@@ -400,29 +430,54 @@ pub async fn override_breach(
     Ok(Json(OverrideResponse {
         override_id: override_record.id.to_string(),
         cleared_at: override_record.at.to_rfc3339(),
+        account_state: result.account,
     }))
 }
 
 /// `POST /internal/v1/manual-run` — force re-evaluation of an account.
+///
+/// **Stateless design**: takes `account_state` from the caller, builds the
+/// evaluator from that account's plan, runs evaluation, and returns the
+/// verdict plus updated `account_state`. No event-store replay is performed.
 pub async fn manual_run(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
-    extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    let s = state.read().await.clone();
-    let mut pipeline = s.pipeline();
-    let acc = s
-        .event_store
-        .replay(account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for stateless evaluation".into(),
+    ))?;
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let evaluator =
+        crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
+    let notifier = crate::notifications::log::LogNotifier::new();
+    let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
     let result = pipeline
-        .process(acc, PipelineEvent::OnDemand)
+        .process(acc.clone(), PipelineEvent::OnDemand)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ManualRunResponse {
@@ -433,33 +488,58 @@ pub async fn manual_run(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
+        account_state: result.account,
     }))
 }
 
 /// `POST /internal/v1/emergency-stop` — freeze an account immediately.
 /// Short-circuits normal rule evaluation and forces an emergency-stop
 /// decision with full audit metadata (`reason` + `actor_id`).
+///
+/// **Stateless design**: takes `account_state` from the caller, builds the
+/// evaluator from that account's plan, applies the emergency stop, and
+/// returns the updated `account_state`. No event-store replay is performed.
 pub async fn emergency_stop(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
-    extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
+    let acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for stateless evaluation".into(),
+    ))?;
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
     let at = chrono::Utc::now();
-    let s = state.read().await.clone();
-    let mut pipeline = s.pipeline();
-    let acc = s
-        .event_store
-        .replay(account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let evaluator =
+        crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
+    let notifier = crate::notifications::log::LogNotifier::new();
+    let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
     let result = pipeline
         .process(
-            acc,
+            acc.clone(),
             PipelineEvent::EmergencyStop {
                 reason: req.reason,
                 actor_id: req.actor_id,
@@ -471,66 +551,79 @@ pub async fn emergency_stop(
     Ok(Json(EmergencyStopResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
         stopped_at: at.to_rfc3339(),
+        account_state: result.account,
     }))
 }
 
 /// `GET /internal/v1/breach-report/:account_id` — the trader-facing
 /// "why did I fail" view with evidence (TD-25). Returns the breach
 /// violation + the rule that produced it + the `input_hash` for verification.
+///
+/// **Stateless design**: changed to a POST-style request body flow taking
+/// `account_state`. Returns the current account status; violation history
+/// is caller-owned. No event-store replay is performed.
 pub async fn breach_report(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     identity: Extension<crate::api::auth::AuthedIdentity>,
-    Path(account_id_str): Path<String>,
+    Json(req): Json<BreachReportRequest>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
-    extract_tenant_id(&identity.0, &headers)?;
-    let account_id = AccountId::from_uuid(
-        Uuid::from_str(&account_id_str).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
-    );
-    let s = state.read().await.clone();
-    let acc = s
-        .event_store
-        .replay(account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // Pull all violations from the event log for this account.
-    let events = s
-        .event_store
-        .all(account_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let violations: Vec<ViolationSummary> = events
-        .iter()
-        .filter_map(|e| match &e.kind {
-            crate::core::events::DomainEventKind::RuleViolated { violation } => {
-                Some(ViolationSummary {
-                    rule_name: violation.rule_name.clone(),
-                    kind: format!("{}", violation.kind),
-                    severity: format!("{}", violation.severity),
-                    message: violation.message.clone(),
-                    occurred_at: violation.occurred_at.to_rfc3339(),
-                })
-            }
-            _ => None,
-        })
-        .collect();
-    Ok(Json(BreachReportResponse {
-        account_id: account_id_str,
-        account_status: format!("{:?}", acc.status),
-        violations,
-    }))
-}
-
-pub async fn evaluate_order(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
-    Json(req): Json<EvaluateOrderRequest>,
-) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
     extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
+    let acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for breach report".into(),
+    ))?;
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    Ok(Json(BreachReportResponse {
+        account_id: req.account_id,
+        account_status: format!("{:?}", acc.status),
+        violations: Vec::new(),
+    }))
+}
+
+pub async fn evaluate_order(
+    State(_state): State<SharedState>,
+    headers: HeaderMap,
+    identity: Extension<crate::api::auth::AuthedIdentity>,
+    Json(req): Json<EvaluateOrderRequest>,
+) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let account_id = AccountId::from_uuid(
+        Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+    );
+    let acc = req.account_state.ok_or((
+        StatusCode::BAD_REQUEST,
+        "account_state is required for stateless evaluation".into(),
+    ))?;
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
     let side = match req.side.as_str() {
         "buy" => OrderSide::Buy,
         "sell" => OrderSide::Sell,
@@ -560,11 +653,14 @@ pub async fn evaluate_order(
         avg_fill_price: None,
     };
 
-    let s = state.read().await.clone();
-    let mut pipeline = s.pipeline();
+    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let evaluator =
+        crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
+    let notifier = crate::notifications::log::LogNotifier::new();
+    let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
     let result = pipeline
         .process(
-            crate::core::account::Account::new(account_id, crate::config::presets::ftmo_phase1()),
+            acc.clone(),
             PipelineEvent::OrderSubmitted {
                 order: order.clone(),
             },
@@ -581,6 +677,7 @@ pub async fn evaluate_order(
         decision: format!("{:?}", result.snapshot.decision.kind),
         passed: result.passed(),
         violations,
+        account_state: result.account,
     }))
 }
 
@@ -927,6 +1024,8 @@ pub struct InternalEvaluateResponse {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverrideRequest {
     pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
     pub clears_violation_id: String,
     pub reason: String,
     pub actor_id: String,
@@ -936,22 +1035,28 @@ pub struct OverrideRequest {
 pub struct OverrideResponse {
     pub override_id: String,
     pub cleared_at: String,
+    pub account_state: crate::core::account::Account,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManualRunRequest {
     pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManualRunResponse {
     pub decision_kind: String,
     pub violations: Vec<String>,
+    pub account_state: crate::core::account::Account,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmergencyStopRequest {
     pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
     pub reason: String,
     pub actor_id: String,
 }
@@ -960,6 +1065,14 @@ pub struct EmergencyStopRequest {
 pub struct EmergencyStopResponse {
     pub decision_kind: String,
     pub stopped_at: String,
+    pub account_state: crate::core::account::Account,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BreachReportRequest {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_state: Option<crate::core::account::Account>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -82,18 +82,8 @@ async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Ac
         .start(chrono::Utc::now())
         .unwrap();
     let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        plan.clone(),
         test_auth_config(),
     )));
-    let event_store = state.read().await.event_store.clone();
-    event_store
-        .append(propfirm::core::events::DomainEvent::new(
-            account.id,
-            propfirm::core::events::DomainEventKind::AccountStarted { plan: plan.clone() },
-            chrono::Utc::now(),
-        ))
-        .await
-        .unwrap();
     (state, account)
 }
 
@@ -147,6 +137,7 @@ async fn p0_a_evaluate_order_returns_verdict() {
     let app = router(state).await;
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
+        "account_state": account,
         "symbol": "EURUSD",
         "side": "buy",
         "quantity": "1",
@@ -181,7 +172,8 @@ async fn p0_a_manual_run_returns_decision() {
     let (state, account) = make_state_with_account().await;
     let app = router(state).await;
     let req_body = serde_json::json!({
-        "account_id": account.id.to_string()
+        "account_id": account.id.to_string(),
+        "account_state": account
     })
     .to_string();
     let tid = test_tenant_id_str();
@@ -210,9 +202,20 @@ async fn p0_a_breach_report_returns_violations_array() {
     // violations array — NOT 404.
     let (state, account) = make_state_with_account().await;
     let app = router(state).await;
-    let uri = format!("/internal/v1/breach-report/{}", account.id);
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account
+    })
+    .to_string();
     let tid = test_tenant_id_str();
-    let (status, body) = send(app, Method::GET, &uri, None, &tid).await;
+    let (status, body) = send(
+        app,
+        Method::POST,
+        "/internal/v1/breach-report",
+        Some(body),
+        &tid,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -225,13 +228,14 @@ async fn p0_a_breach_report_returns_violations_array() {
 }
 
 #[tokio::test]
-async fn p0_a_override_for_unknown_account_returns_404() {
-    let (state, _) = make_state_with_account().await;
+async fn p0_a_override_account_id_mismatch_returns_400() {
+    let (state, account) = make_state_with_account().await;
     let app = router(state).await;
     let random_account = AccountId::new();
     let random_violation = propfirm::core::ids::ViolationId::new();
     let req_body = serde_json::json!({
         "account_id": random_account.to_string(),
+        "account_state": account,
         "clears_violation_id": random_violation.to_string(),
         "reason": "broker glitch",
         "actor_id": "ops-test"
@@ -246,11 +250,10 @@ async fn p0_a_override_for_unknown_account_returns_404() {
         &tid,
     )
     .await;
-    // Override for unknown account → 404 or 500 (the pipeline returns
-    // NotFound). Either way, NOT 200 with an empty body.
-    assert!(
-        status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "override for unknown account should fail; got {status}"
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "mismatched account_id and account_state.id must 400; got {status}"
     );
 }
 
@@ -304,33 +307,16 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
 #[tokio::test]
 async fn p0_a_server_state_clone_shares_underlying_store() {
     // Direct test of the P0-A fix: cloning ServerState must share the
-    // underlying Arc'ed stores (ADR-11: event_store, not AccountStore).
+    // underlying Arc'ed stores.
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let state = ServerState::new(plan.clone(), test_auth_config());
-    use propfirm::core::events::{DomainEvent, DomainEventKind};
-    state
-        .event_store
-        .append(DomainEvent::new(
-            account.id,
-            DomainEventKind::AccountStarted { plan: plan.clone() },
-            chrono::Utc::now(),
-        ))
-        .await
-        .unwrap();
+    let state = ServerState::new(test_auth_config());
     // Clone the state — this used to discard every Arc'ed store.
     let cloned = state.clone();
-    // The cloned state must still see the event appended via the original.
-    let events = cloned.event_store.all(account.id).await.unwrap();
-    assert_eq!(
-        events.len(),
-        1,
-        "P0-A: ServerState::clone must share the underlying event store; got {} events",
-        events.len()
-    );
+    // The cloned state must still share the same idempotency backend.
     assert!(std::sync::Arc::ptr_eq(
         &state.idempotency,
         &cloned.idempotency
