@@ -704,10 +704,12 @@ async fn evaluate_order_uses_account_plan_not_startup_plan() {
     // plan, not the startup plan.
     let (state, _) = make_state_at(10000).await;
     let app = router(state).await;
-    let mut tight_plan = ChallengePlan::default();
-    tight_plan.max_open_positions = Some(1);
-    tight_plan.max_loss_reference = LossReference::Static;
-    tight_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let tight_plan = ChallengePlan {
+        max_open_positions: Some(1),
+        max_loss_reference: LossReference::Static,
+        max_total_drawdown_pct: Pct(dec!(0.10)),
+        ..ChallengePlan::default()
+    };
     let mut account = Account::new(AccountId::new(), tight_plan)
         .with_tenant(TenantId::named("test-tenant"))
         .start(chrono::Utc::now())
@@ -751,19 +753,23 @@ async fn evaluate_order_same_server_different_plans_produce_different_verdicts()
     let (state, _) = make_state_at(10000).await;
     let app = router(state).await;
 
-    let mut hedging_plan = ChallengePlan::default();
-    hedging_plan.hedging_allowed = false;
-    hedging_plan.max_loss_reference = LossReference::Static;
-    hedging_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let hedging_plan = ChallengePlan {
+        hedging_allowed: false,
+        max_loss_reference: LossReference::Static,
+        max_total_drawdown_pct: Pct(dec!(0.10)),
+        ..ChallengePlan::default()
+    };
     let mut hedging_account = Account::new(AccountId::new(), hedging_plan)
         .with_tenant(TenantId::named("test-tenant"))
         .start(chrono::Utc::now())
         .unwrap();
 
-    let mut allowed_plan = ChallengePlan::default();
-    allowed_plan.hedging_allowed = true;
-    allowed_plan.max_loss_reference = LossReference::Static;
-    allowed_plan.max_total_drawdown_pct = Pct(dec!(0.10));
+    let allowed_plan = ChallengePlan {
+        hedging_allowed: true,
+        max_loss_reference: LossReference::Static,
+        max_total_drawdown_pct: Pct(dec!(0.10)),
+        ..ChallengePlan::default()
+    };
     let mut allowed_account = Account::new(AccountId::new(), allowed_plan)
         .with_tenant(TenantId::named("test-tenant"))
         .start(chrono::Utc::now())

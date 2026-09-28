@@ -309,7 +309,7 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
     // Direct test of the P0-A fix: cloning ServerState must share the
     // underlying Arc'ed stores.
     let plan = ftmo_phase1();
-    let account = Account::new(AccountId::new(), plan.clone())
+    let _account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
