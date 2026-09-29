@@ -20,7 +20,7 @@ use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::plan::LossReference;
 use propfirm::config::presets::ftmo_phase1;
-use propfirm::core::account::Account;
+use propfirm::core::account::{Account, AccountStatus};
 use propfirm::core::ids::AccountId;
 use propfirm::core::position::{Position, PositionSide};
 use propfirm::core::types::{dec, Money, Pct, Price, Quantity, Symbol};
@@ -139,10 +139,6 @@ fn evaluate_body(account: &Account, equity_source: Option<&str>) -> String {
     body.to_string()
 }
 
-// ---------------------------------------------------------------------------
-// P0.5 — equity provenance
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
     // Account at 8k equity on a 10k static floor with a 10% max-loss
@@ -201,10 +197,6 @@ async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P0.6 — positions and trades on the stateless path
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn p0_6_open_position_in_overnight_window_produces_violation() {
     // ftmo_phase1 allows overnight holding, so flip it off via a pack
@@ -242,14 +234,6 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
         "an open position over the weekend must produce a weekend violation via the endpoint; got: {resp}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// P0.6 — positions and trades on the stateless path
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// P0.8 — idempotency
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn p0_8_same_key_same_body_replays_first_response() {
@@ -348,15 +332,22 @@ async fn p0_8_mutation_is_not_double_applied() {
     .await;
     assert_eq!(s1, StatusCode::OK);
     assert_eq!(s2, StatusCode::OK);
+    let v1: serde_json::Value = serde_json::from_str(&b1).unwrap();
+    let v2: serde_json::Value = serde_json::from_str(&b2).unwrap();
     assert_eq!(
-        b1, b2,
-        "replayed mutation must return the first response exactly"
+        v1["decision"], v2["decision"],
+        "decision must replay exactly"
+    );
+    assert_eq!(v1["passed"], v2["passed"], "passed must replay exactly");
+    assert_eq!(
+        v1["violations"], v2["violations"],
+        "violations must replay exactly"
+    );
+    assert_eq!(
+        v1["account_state"]["status"], v2["account_state"]["status"],
+        "account status must replay exactly"
     );
 }
-
-// ---------------------------------------------------------------------------
-// P2 — bridge.tick v1 wire contract
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn p2_bridge_tick_v1_broker_reported_equity_can_terminate() {
@@ -453,10 +444,6 @@ async fn p2_bridge_tick_v1_positions_flow_through() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P1 — concurrency / deadlock regression
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
     let (state, account) = make_state_at(10000).await;
@@ -525,10 +512,6 @@ async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
         "concurrent evaluate + override requests timed out — possible deadlock"
     );
 }
-
-// ---------------------------------------------------------------------------
-// ADR-11 — stateless two-call contract (replaces p2_create_account_*)
-// ---------------------------------------------------------------------------
 
 /// ADR-11: the server holds no account state, so the *caller* threads it.
 /// Call 1 observes a new peak; call 2 must receive that peak via the
@@ -619,10 +602,6 @@ async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P2 — GapFlagged end-to-end reachability
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
     let (state, account) = make_state_at(10000).await;
@@ -654,10 +633,6 @@ async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
         "evaluate response must contain a distinct decision_kind; got: {resp}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Stateless handler regressions
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn evaluate_order_missing_account_state_returns_400() {
@@ -827,10 +802,6 @@ async fn evaluate_order_same_server_different_plans_produce_different_verdicts()
     );
 }
 
-// ---------------------------------------------------------------------------
-// Stateless contract gap regressions A–E
-// ---------------------------------------------------------------------------
-
 /// **Gap A**: `evaluate_internal_impl` must apply post-verdict state transitions
 /// (target-hit pending, failed, emergency-stopped) so the returned
 /// `account_state` carries what the next call needs.
@@ -868,10 +839,8 @@ async fn evaluate_internal_applies_target_hit_transition() {
     );
 }
 
-/// **Gap B**: `evaluate_order` and `manual_run` must reject terminal accounts
-/// instead of silently evaluating them.
 #[tokio::test]
-async fn evaluate_order_rejects_terminal_account() {
+async fn evaluate_order_returns_not_evaluated_for_terminal_account() {
     let (state, mut account) = make_state_at(10000).await;
     let app = router(state).await;
     account.status = propfirm::core::account::AccountStatus::Failed;
@@ -884,12 +853,11 @@ async fn evaluate_order_rejects_terminal_account() {
         "order_type": "market"
     })
     .to_string();
-    let (status, _) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "evaluate-order must reject terminal account"
-    );
+    let (status, body) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["decision"], "NotEvaluated");
+    assert_eq!(parsed["passed"], false);
 }
 
 /// **Gap C**: `evaluate_internal_impl` must reject cross-tenant requests.
@@ -950,16 +918,30 @@ async fn override_breach_rejects_active_account() {
     );
 }
 
-/// **Gap E**: `breach_report` must return real violations, not an empty array.
 #[tokio::test]
 async fn breach_report_returns_violations_from_state() {
     let (state, mut account) = make_state_at(10000).await;
     let app = router(state).await;
-    // Seed a decision on the account so the handler has something to return.
-    account.status = propfirm::core::account::AccountStatus::Failed;
+    account.status = AccountStatus::Failed;
+    let violation = propfirm::core::violation::Violation {
+        id: propfirm::core::ids::ViolationId::new(),
+        account_id: account.id,
+        tenant_id: test_tenant_id(),
+        rule_id: propfirm::core::ids::RuleId::new(),
+        rule_name: "max_drawdown".into(),
+        kind: propfirm::core::violation::ViolationKind::MaxDrawdown,
+        severity: propfirm::core::violation::ViolationSeverity::Hard,
+        message: "drawdown breach".into(),
+        occurred_at: chrono::Utc::now(),
+        breach_value: Some(Money::new(dec!(1000))),
+        threshold_value: Some(Money::new(dec!(2000))),
+        utilization: Some(dec!(0.5)),
+    };
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
-        "account_state": account
+        "account_state": account,
+        "violations": [violation],
+        "overrides": []
     })
     .to_string();
     let (status, resp) = send(app, Method::POST, "/internal/v1/breach-report", Some(body)).await;
@@ -970,4 +952,624 @@ async fn breach_report_returns_violations_from_state() {
         !violations.is_empty(),
         "breach-report must return violations for a failed account; got: {resp}"
     );
+}
+
+#[tokio::test]
+async fn promotion_parity_evaluate_and_pipeline_agree() {
+    use propfirm::config::plan::{ChallengePhase, ChallengePlan};
+    use propfirm::engine::evaluator::Evaluator;
+    use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
+    use propfirm::notifications::log::LogNotifier;
+    use propfirm::rules::registry::RuleRegistry;
+
+    let plan = ChallengePlan {
+        phase: ChallengePhase::Phase1,
+        min_trading_days: 2,
+        ..ChallengePlan::default()
+    };
+    let mut account = Account::new(AccountId::new(), plan.clone())
+        .with_tenant(test_tenant_id())
+        .start(chrono::Utc::now())
+        .unwrap();
+    account.status = AccountStatus::TargetHitPending;
+    account.target_reached_at = Some(chrono::Utc::now());
+    account.active_trading_days = 2;
+    account.equity = Money::new(dec!(9_500));
+    account.balance = Money::new(dec!(9_500));
+
+    let registry = RuleRegistry::with_default_rules_for_plan(&account.plan);
+    let evaluator = Evaluator::with_registry(registry).for_account(account.id);
+    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
+    let pipeline_result = pipeline
+        .process(account.clone(), PipelineEvent::OnDemand)
+        .await
+        .expect("pipeline must process");
+
+    let (state, app) = make_state_at(9500).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let returned: Account =
+        serde_json::from_value(parsed["account_state"].clone()).expect("account_state in response");
+
+    assert_eq!(
+        returned.status,
+        pipeline_result.account.status,
+        "promotion parity: evaluate and pipeline must agree on status; pipeline={:?}, evaluate={:?}",
+        pipeline_result.account.status,
+        returned.status
+    );
+    assert_ne!(
+        returned.status,
+        AccountStatus::TargetHitPending,
+        "TargetHitPending must not survive promotion; got {:?}",
+        returned.status
+    );
+}
+
+#[tokio::test]
+async fn post_promotion_state_is_usable_on_next_evaluate() {
+    use propfirm::config::plan::{ChallengePhase, ChallengePlan};
+
+    let plan = ChallengePlan {
+        phase: ChallengePhase::Phase1,
+        min_trading_days: 1,
+        ..ChallengePlan::default()
+    };
+    let mut account = Account::new(AccountId::new(), plan.clone())
+        .with_tenant(test_tenant_id())
+        .start(chrono::Utc::now())
+        .unwrap();
+    account.status = AccountStatus::TargetHitPending;
+    account.target_reached_at = Some(chrono::Utc::now());
+    account.active_trading_days = 1;
+    account.equity = Money::new(dec!(10_500));
+    account.balance = Money::new(dec!(10_500));
+
+    let (state, app) = make_state_at(10500).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(
+        app.clone(),
+        Method::POST,
+        "/internal/v1/evaluate",
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first evaluate failed: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let promoted: Account =
+        serde_json::from_value(parsed["account_state"].clone()).expect("account_state in response");
+
+    let next_body = serde_json::json!({
+        "account_id": promoted.id.to_string(),
+        "account_state": promoted,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status2, resp2) = send(app, Method::POST, "/internal/v1/evaluate", Some(next_body)).await;
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "second evaluate on promoted state failed: {resp2}"
+    );
+}
+
+#[tokio::test]
+async fn evaluate_skips_non_evaluable_status() {
+    for status in [
+        AccountStatus::Pending,
+        AccountStatus::Passed,
+        AccountStatus::Failed,
+        AccountStatus::Closed,
+        AccountStatus::EmergencyStopped,
+    ] {
+        let (state, mut account) = make_state_at(10000).await;
+        let app = router(state).await;
+        account.status = status;
+        let body = serde_json::json!({
+            "account_id": account.id.to_string(),
+            "account_state": account,
+            "equity_source": "broker_reported",
+            "tick": {
+                "symbol": "EURUSD",
+                "quote": {
+                    "bid": "1.0800",
+                    "ask": "1.0802",
+                    "ts": chrono::Utc::now().to_rfc3339()
+                }
+            }
+        })
+        .to_string();
+        let (s, b) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+        assert_eq!(s, StatusCode::OK, "status={:?} body={b}", status);
+        let parsed: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(
+            parsed["evaluated"], false,
+            "status={:?} must not be evaluated",
+            status
+        );
+        assert_eq!(
+            parsed["decision_kind"], "NotEvaluated",
+            "status={:?} must return NotEvaluated",
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn evaluate_order_returns_200_for_non_evaluable_status() {
+    for status in [
+        AccountStatus::Pending,
+        AccountStatus::Passed,
+        AccountStatus::Failed,
+        AccountStatus::Closed,
+        AccountStatus::EmergencyStopped,
+    ] {
+        let (state, mut account) = make_state_at(10000).await;
+        let app = router(state).await;
+        account.status = status;
+        let body = serde_json::json!({
+            "account_id": account.id.to_string(),
+            "account_state": account,
+            "symbol": "EURUSD",
+            "side": "buy",
+            "quantity": "1",
+            "order_type": "market"
+        })
+        .to_string();
+        let (s, b) = send(app, Method::POST, "/v1/evaluate-order", Some(body)).await;
+        assert_eq!(s, StatusCode::OK, "status={:?} body={b}", status);
+        let parsed: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(
+            parsed["decision"], "NotEvaluated",
+            "status={:?} must return NotEvaluated decision",
+            status
+        );
+        assert_eq!(
+            parsed["passed"], false,
+            "status={:?} must be passed=false",
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn manual_run_returns_200_for_non_evaluable_status() {
+    for status in [
+        AccountStatus::Pending,
+        AccountStatus::Passed,
+        AccountStatus::Failed,
+        AccountStatus::Closed,
+        AccountStatus::EmergencyStopped,
+    ] {
+        let (state, mut account) = make_state_at(10000).await;
+        let app = router(state).await;
+        account.status = status;
+        let body = serde_json::json!({
+            "account_id": account.id.to_string(),
+            "account_state": account
+        })
+        .to_string();
+        let (s, b) = send(app, Method::POST, "/internal/v1/manual-run", Some(body)).await;
+        assert_eq!(s, StatusCode::OK, "status={:?} body={b}", status);
+        let parsed: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(
+            parsed["decision_kind"], "NotEvaluated",
+            "status={:?} must return NotEvaluated",
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn emergency_stop_on_already_stopped_account_is_idempotent() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::EmergencyStopped;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "reason": "double stop",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (s, b) = send(app, Method::POST, "/internal/v1/emergency-stop", Some(body)).await;
+    assert_eq!(s, StatusCode::OK, "body={b}");
+    let parsed: serde_json::Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(
+        parsed["decision_kind"], "Emergency",
+        "already stopped account must stay Emergency on repeat stop"
+    );
+}
+
+#[tokio::test]
+async fn evaluate_returns_structured_violation_details() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.equity = Money::new(dec!(8_500));
+    account.balance = Money::new(dec!(8_500));
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/evaluate", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let details = parsed["violation_details"]
+        .as_array()
+        .expect("violation_details array");
+    assert!(
+        !details.is_empty(),
+        "violation_details must be present when rules produced violations; got: {resp}"
+    );
+    assert!(
+        details[0].get("rule_name").is_some(),
+        "violation_details entries must carry rule_name"
+    );
+    assert!(
+        details[0].get("message").is_some(),
+        "violation_details entries must carry message"
+    );
+}
+
+#[tokio::test]
+async fn override_rejects_random_violation_uuid() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": uuid::Uuid::new_v4().to_string(),
+        "violation": {
+            "id": uuid::Uuid::new_v4().to_string(),
+            "account_id": account.id.to_string(),
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": "10000",
+            "threshold_value": "9000",
+            "utilization": "1.0"
+        },
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "mismatched violation id must 400"
+    );
+}
+
+#[tokio::test]
+async fn override_rejects_wrong_account_violation() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let wrong_account_id = AccountId::new().to_string();
+    let violation_id = propfirm::core::ids::ViolationId::new().to_string();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": violation_id,
+        "violation": {
+            "id": violation_id,
+            "account_id": wrong_account_id,
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": "10000",
+            "threshold_value": "9000",
+            "utilization": "1.0"
+        },
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "wrong account violation must 400"
+    );
+}
+
+#[tokio::test]
+async fn override_rejects_wrong_tenant_violation() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let violation_id = propfirm::core::ids::ViolationId::new().to_string();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": violation_id,
+        "violation": {
+            "id": violation_id,
+            "account_id": account.id.to_string(),
+            "tenant_id": uuid::Uuid::new_v4().to_string(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": "10000",
+            "threshold_value": "9000",
+            "utilization": "1.0"
+        },
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "wrong tenant violation must 403"
+    );
+}
+
+#[tokio::test]
+async fn override_rejects_non_terminating_violation() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let violation_id = propfirm::core::ids::ViolationId::new().to_string();
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": violation_id,
+        "violation": {
+            "id": violation_id,
+            "account_id": account.id.to_string(),
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "consistency",
+            "kind": "Consistency",
+            "severity": "Warning",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": "10000",
+            "threshold_value": "9000",
+            "utilization": "1.0"
+        },
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "non-terminating violation must 400"
+    );
+}
+
+#[tokio::test]
+async fn breach_report_returns_historical_violations_even_when_equity_recovered() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let violation = propfirm::core::violation::Violation {
+        id: propfirm::core::ids::ViolationId::new(),
+        account_id: account.id,
+        tenant_id: test_tenant_id(),
+        rule_id: propfirm::core::ids::RuleId::new(),
+        rule_name: "max_drawdown".into(),
+        kind: propfirm::core::violation::ViolationKind::MaxDrawdown,
+        severity: propfirm::core::violation::ViolationSeverity::Hard,
+        message: "drawdown breach".into(),
+        occurred_at: chrono::Utc::now(),
+        breach_value: Some(Money::new(dec!(1000))),
+        threshold_value: Some(Money::new(dec!(2000))),
+        utilization: Some(dec!(0.5)),
+    };
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "violations": [violation.clone()],
+        "overrides": []
+    })
+    .to_string();
+    let (status, resp) = send(app, Method::POST, "/internal/v1/breach-report", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "resp: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let returned = parsed["violations"].as_array().expect("violations array");
+    assert_eq!(returned.len(), 1, "must echo back the stored violation");
+    assert_eq!(returned[0]["rule_name"], "max_drawdown");
+}
+
+#[tokio::test]
+async fn breach_report_rejects_other_tenant_violation() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let violation = propfirm::core::violation::Violation {
+        id: propfirm::core::ids::ViolationId::new(),
+        account_id: account.id,
+        tenant_id: TenantId::named("other-tenant"),
+        rule_id: propfirm::core::ids::RuleId::new(),
+        rule_name: "max_drawdown".into(),
+        kind: propfirm::core::violation::ViolationKind::MaxDrawdown,
+        severity: propfirm::core::violation::ViolationSeverity::Hard,
+        message: "drawdown breach".into(),
+        occurred_at: chrono::Utc::now(),
+        breach_value: Some(Money::new(dec!(1000))),
+        threshold_value: Some(Money::new(dec!(2000))),
+        utilization: Some(dec!(0.5)),
+    };
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "violations": [violation],
+        "overrides": []
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/breach-report", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "other-tenant violation must 403"
+    );
+}
+
+#[tokio::test]
+async fn all_handlers_enforce_tenant_on_account_state() {
+    let (state, account) = make_state_at(10000).await;
+    let app = router(state).await;
+    let mut other_account = account.clone();
+    other_account.tenant_id = TenantId::named("other-tenant");
+    let other_account_json = serde_json::to_string(&other_account).unwrap();
+
+    let endpoints = [
+        (
+            "/internal/v1/evaluate",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap(),
+                "equity_source": "broker_reported",
+                "tick": {
+                    "symbol": "EURUSD",
+                    "quote": {
+                        "bid": "1.0800",
+                        "ask": "1.0802",
+                        "ts": chrono::Utc::now().to_rfc3339()
+                    }
+                }
+            }),
+        ),
+        (
+            "/v1/evaluate-order",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap(),
+                "symbol": "EURUSD",
+                "side": "buy",
+                "quantity": "1",
+                "order_type": "market"
+            }),
+        ),
+        (
+            "/internal/v1/override",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap(),
+                "clears_violation_id": uuid::Uuid::new_v4().to_string(),
+                "violation": {
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "account_id": account.id.to_string(),
+                    "tenant_id": other_account.tenant_id.to_string(),
+                    "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+                    "rule_name": "max_drawdown",
+                    "kind": "MaxDrawdown",
+                    "severity": "Hard",
+                    "message": "test",
+                    "occurred_at": chrono::Utc::now().to_rfc3339(),
+                    "breach_value": 10000.0,
+                    "threshold_value": 9000.0,
+                    "utilization": 1.0
+                },
+                "reason": "ops override",
+                "actor_id": "ops"
+            }),
+        ),
+        (
+            "/internal/v1/manual-run",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap()
+            }),
+        ),
+        (
+            "/internal/v1/emergency-stop",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap(),
+                "reason": "ops stop",
+                "actor_id": "ops"
+            }),
+        ),
+        (
+            "/internal/v1/breach-report",
+            Method::POST,
+            serde_json::json!({
+                "account_id": account.id.to_string(),
+                "account_state": other_account_json.parse::<serde_json::Value>().unwrap(),
+                "violations": [],
+                "overrides": []
+            }),
+        ),
+    ];
+
+    for (path, method, body) in endpoints {
+        let (status, _) = send(app.clone(), method, path, Some(body.to_string())).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "cross-tenant {} must 403",
+            path
+        );
+    }
 }

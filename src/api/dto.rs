@@ -21,6 +21,7 @@ pub struct EvaluateOrderResponse {
     pub decision: String,
     pub passed: bool,
     pub violations: Vec<String>,
+    pub violation_details: Vec<crate::core::violation::Violation>,
     pub account_state: crate::core::account::Account,
 }
 
@@ -78,6 +79,8 @@ pub struct OverrideRequest {
     pub clears_violation_id: String,
     pub reason: String,
     pub actor_id: String,
+    #[serde(default)]
+    pub violation: Option<crate::core::violation::Violation>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -98,6 +101,7 @@ pub struct ManualRunRequest {
 pub struct ManualRunResponse {
     pub decision_kind: String,
     pub violations: Vec<String>,
+    pub violation_details: Vec<crate::core::violation::Violation>,
     pub account_state: crate::core::account::Account,
 }
 

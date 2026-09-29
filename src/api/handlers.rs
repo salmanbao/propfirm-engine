@@ -51,6 +51,32 @@ fn extract_tenant_id(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
+fn validate_account_state(
+    acc: &crate::core::account::Account,
+    account_id: AccountId,
+    tenant_id: crate::tenant::TenantId,
+) -> Result<(), (StatusCode, String)> {
+    if acc.id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "account_state.id {} does not match account_id {}",
+                acc.id, account_id
+            ),
+        ));
+    }
+    if acc.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "account_state.tenant_id {} does not match authenticated tenant {}",
+                acc.tenant_id, tenant_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn health() -> &'static str {
     "ok"
 }
@@ -173,14 +199,19 @@ async fn evaluate_internal_impl(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless evaluation".into(),
     ))?;
-    if acc.tenant_id != tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "account_state.tenant_id {} does not match authenticated tenant {}",
-                acc.tenant_id, tenant_id
-            ),
-        ));
+    validate_account_state(&acc, account_id, tenant_id)?;
+    if acc.status.evaluation_mode() == crate::core::account::EvaluationMode::Skip {
+        return Ok(InternalEvaluateResponse {
+            evaluated: false,
+            decision_kind: "NotEvaluated".to_string(),
+            winning_priority: 0,
+            input_hash: String::new(),
+            pack_version: 0,
+            pack_id: String::new(),
+            violations: Vec::new(),
+            violation_details: Vec::new(),
+            account_state: acc,
+        });
     }
     let pack = if req.rule_pack.is_some() {
         return Err((
@@ -358,21 +389,13 @@ async fn evaluate_internal_impl(
         inputs,
     )
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let account_state = if verdict.decision.is_terminating() || verdict.decision.is_target_hit() {
-        let state = crate::engine::state::AccountState::new(acc.clone());
-        let actor_id = "evaluate_internal";
-        let (new_state, _events) = crate::engine::pipeline::apply_decision(
-            state,
-            &verdict.decision,
-            server_time.0,
-            actor_id,
-        )
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        new_state.account
-    } else {
-        acc.clone()
-    };
+    let state = crate::engine::state::AccountState::new(acc.clone());
+    let actor_id = "evaluate_internal";
+    let (new_state, _events) =
+        crate::engine::pipeline::apply_decision(state, &verdict.decision, server_time.0, actor_id)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(InternalEvaluateResponse {
+        evaluated: true,
         decision_kind: format!("{:?}", verdict.decision.kind),
         winning_priority: verdict.decision.winning_priority,
         input_hash: verdict.input_hash,
@@ -384,7 +407,8 @@ async fn evaluate_internal_impl(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
-        account_state,
+        violation_details: verdict.decision.all_violations,
+        account_state: new_state.account,
     })
 }
 
@@ -411,24 +435,7 @@ pub async fn override_breach(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless override".into(),
     ))?;
-    if acc.id != account_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account_state.id {} does not match account_id {}",
-                acc.id, account_id
-            ),
-        ));
-    }
-    if acc.tenant_id != tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "account_state.tenant_id {} does not match authenticated tenant {}",
-                acc.tenant_id, tenant_id
-            ),
-        ));
-    }
+    validate_account_state(&acc, account_id, tenant_id)?;
     if !acc.status.is_breach_terminal() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -437,6 +444,44 @@ pub async fn override_breach(
                 acc.id, acc.status
             ),
         ));
+    }
+    if let Some(violation) = req.violation {
+        if violation.id != clears_violation_id {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "violation.id {} does not match clears_violation_id {}",
+                    violation.id, clears_violation_id
+                ),
+            ));
+        }
+        if violation.account_id != account_id {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "violation.account_id {} does not match request account_id {}",
+                    violation.account_id, account_id
+                ),
+            ));
+        }
+        if violation.tenant_id != tenant_id {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "violation.tenant_id {} does not match authenticated tenant {}",
+                    violation.tenant_id, tenant_id
+                ),
+            ));
+        }
+        violation
+            .validate()
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        if !violation.is_terminating() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "override is only valid for terminating violations".into(),
+            ));
+        }
     }
     let override_record = Override::new(
         account_id,
@@ -485,32 +530,15 @@ pub async fn manual_run(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless evaluation".into(),
     ))?;
-    if acc.id != account_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account_state.id {} does not match account_id {}",
-                acc.id, account_id
-            ),
-        ));
-    }
-    if acc.tenant_id != tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "account_state.tenant_id {} does not match authenticated tenant {}",
-                acc.tenant_id, tenant_id
-            ),
-        ));
-    }
-    if acc.status.is_terminal() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account {} is in terminal status {:?} and cannot be re-evaluated",
-                acc.id, acc.status
-            ),
-        ));
+    validate_account_state(&acc, account_id, tenant_id)?;
+    if acc.status.evaluation_mode() == crate::core::account::EvaluationMode::Skip {
+        return Ok(Json(ManualRunResponse {
+            decision_kind: "NotEvaluated".to_string(),
+            passed: false,
+            violations: Vec::new(),
+            violation_details: Vec::new(),
+            account_state: acc,
+        }));
     }
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
@@ -529,6 +557,8 @@ pub async fn manual_run(
             .iter()
             .map(|v| v.message.clone())
             .collect(),
+        violation_details: result.result.decision.all_violations.clone(),
+        passed: result.passed(),
         account_state: result.account,
     }))
 }
@@ -554,23 +584,20 @@ pub async fn emergency_stop(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless evaluation".into(),
     ))?;
-    if acc.id != account_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account_state.id {} does not match account_id {}",
-                acc.id, account_id
-            ),
-        ));
+    validate_account_state(&acc, account_id, tenant_id)?;
+    if acc.status == crate::core::account::AccountStatus::EmergencyStopped {
+        return Ok(Json(EmergencyStopResponse {
+            decision_kind: "Emergency".to_string(),
+            stopped_at: chrono::Utc::now().to_rfc3339(),
+            account_state: acc,
+        }));
     }
-    if acc.tenant_id != tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "account_state.tenant_id {} does not match authenticated tenant {}",
-                acc.tenant_id, tenant_id
-            ),
-        ));
+    if acc.status.evaluation_mode() == crate::core::account::EvaluationMode::Skip {
+        return Ok(Json(EmergencyStopResponse {
+            decision_kind: "NotEvaluated".to_string(),
+            stopped_at: chrono::Utc::now().to_rfc3339(),
+            account_state: acc,
+        }));
     }
     let at = chrono::Utc::now();
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
@@ -609,7 +636,7 @@ pub async fn breach_report(
     identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<BreachReportRequest>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
-    extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -617,15 +644,37 @@ pub async fn breach_report(
         StatusCode::BAD_REQUEST,
         "account_state is required for breach report".into(),
     ))?;
-    if acc.id != account_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account_state.id {} does not match account_id {}",
-                acc.id, account_id
-            ),
-        ));
+    validate_account_state(&acc, account_id, tenant_id)?;
+    for v in &req.violations {
+        if v.tenant_id != tenant_id {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "violation.tenant_id {} does not match authenticated tenant {}",
+                    v.tenant_id, tenant_id
+                ),
+            ));
+        }
     }
+    let cleared_violation_ids: std::collections::HashSet<_> = req
+        .overrides
+        .iter()
+        .map(|o| {
+            crate::core::ids::ViolationId::from_str(&o.clears_violation_id).unwrap_or_default()
+        })
+        .collect();
+    let violations: Vec<ViolationSummary> = req
+        .violations
+        .iter()
+        .map(|v| ViolationSummary {
+            rule_name: v.rule_name.clone(),
+            kind: format!("{:?}", v.kind),
+            severity: format!("{:?}", v.severity),
+            message: v.message.clone(),
+            occurred_at: v.occurred_at.to_rfc3339(),
+            cleared: cleared_violation_ids.contains(&v.id),
+        })
+        .collect();
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
@@ -635,7 +684,7 @@ pub async fn breach_report(
         .process(acc.clone(), PipelineEvent::OnDemand)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let violations: Vec<ViolationSummary> = result
+    let current_violations: Vec<ViolationSummary> = result
         .result
         .violations()
         .iter()
@@ -645,12 +694,14 @@ pub async fn breach_report(
             severity: format!("{:?}", v.severity),
             message: v.message.clone(),
             occurred_at: v.occurred_at.to_rfc3339(),
+            cleared: false,
         })
         .collect();
     Ok(Json(BreachReportResponse {
         account_id: req.account_id,
         account_status: format!("{:?}", result.account.status),
         violations,
+        current_violations,
     }))
 }
 
@@ -668,32 +719,15 @@ pub async fn evaluate_order(
         StatusCode::BAD_REQUEST,
         "account_state is required for stateless evaluation".into(),
     ))?;
-    if acc.id != account_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account_state.id {} does not match account_id {}",
-                acc.id, account_id
-            ),
-        ));
-    }
-    if acc.tenant_id != tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!(
-                "account_state.tenant_id {} does not match authenticated tenant {}",
-                acc.tenant_id, tenant_id
-            ),
-        ));
-    }
-    if acc.status.is_terminal() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "account {} is in terminal status {:?} and cannot be evaluated",
-                acc.id, acc.status
-            ),
-        ));
+    validate_account_state(&acc, account_id, tenant_id)?;
+    if acc.status.evaluation_mode() == crate::core::account::EvaluationMode::Skip {
+        return Ok(Json(EvaluateOrderResponse {
+            decision: "NotEvaluated".to_string(),
+            passed: false,
+            violations: Vec::new(),
+            violation_details: Vec::new(),
+            account_state: acc,
+        }));
     }
     let side = match req.side.as_str() {
         "buy" => OrderSide::Buy,
@@ -748,6 +782,7 @@ pub async fn evaluate_order(
         decision: format!("{:?}", result.snapshot.decision.kind),
         passed: result.passed(),
         violations,
+        violation_details: result.result.decision.all_violations.clone(),
         account_state: result.account,
     }))
 }
@@ -1083,12 +1118,14 @@ pub struct InternalEvaluateRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InternalEvaluateResponse {
+    pub evaluated: bool,
     pub decision_kind: String,
     pub winning_priority: u32,
     pub input_hash: String,
     pub pack_version: u32,
     pub pack_id: String,
     pub violations: Vec<String>,
+    pub violation_details: Vec<crate::core::violation::Violation>,
     pub account_state: crate::core::account::Account,
 }
 
@@ -1098,6 +1135,8 @@ pub struct OverrideRequest {
     #[serde(default)]
     pub account_state: Option<crate::core::account::Account>,
     pub clears_violation_id: String,
+    #[serde(default)]
+    pub violation: Option<crate::core::violation::Violation>,
     pub reason: String,
     pub actor_id: String,
 }
@@ -1119,7 +1158,9 @@ pub struct ManualRunRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ManualRunResponse {
     pub decision_kind: String,
+    pub passed: bool,
     pub violations: Vec<String>,
+    pub violation_details: Vec<crate::core::violation::Violation>,
     pub account_state: crate::core::account::Account,
 }
 
@@ -1144,6 +1185,10 @@ pub struct BreachReportRequest {
     pub account_id: String,
     #[serde(default)]
     pub account_state: Option<crate::core::account::Account>,
+    #[serde(default)]
+    pub violations: Vec<crate::core::violation::Violation>,
+    #[serde(default)]
+    pub overrides: Vec<OverrideSummary>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1151,6 +1196,7 @@ pub struct BreachReportResponse {
     pub account_id: String,
     pub account_status: String,
     pub violations: Vec<ViolationSummary>,
+    pub current_violations: Vec<ViolationSummary>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1160,6 +1206,16 @@ pub struct ViolationSummary {
     pub severity: String,
     pub message: String,
     pub occurred_at: String,
+    pub cleared: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OverrideSummary {
+    pub override_id: String,
+    pub clears_violation_id: String,
+    pub reason: String,
+    pub actor_id: String,
+    pub at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

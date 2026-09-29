@@ -210,6 +210,9 @@ impl AccountState {
     #[must_use]
     pub fn emergency_stop(mut self, reason: &str, actor_id: &str, at: Timestamp) -> Self {
         let _ = (reason, actor_id, at);
+        if self.account.status_before_breach.is_none() {
+            self.account.status_before_breach = Some(self.account.status);
+        }
         self.account.status = crate::core::account::AccountStatus::EmergencyStopped;
         self
     }
@@ -223,10 +226,18 @@ impl AccountState {
         mut self,
         _override: &crate::override_engine::Override,
     ) -> Result<Self, Error> {
-        use crate::core::account::AccountStatus::{Active, EmergencyStopped, Failed};
+        use crate::core::account::AccountStatus::{Active, EmergencyStopped, Failed, Funded};
         match self.account.status {
             Failed | EmergencyStopped => {
-                self.account.status = Active;
+                self.account.status = self
+                    .account
+                    .status_before_breach
+                    .unwrap_or(if self.account.account_type == crate::core::account::AccountType::Funded {
+                        Funded
+                    } else {
+                        Active
+                    });
+                self.account.status_before_breach = None;
                 Ok(self)
             }
             other => Err(Error::invalid_state(format!(

@@ -74,6 +74,12 @@ pub enum AccountStatus {
     EmergencyStopped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationMode {
+    Evaluate,
+    Skip,
+}
+
 impl AccountStatus {
     #[must_use]
     pub fn is_active(self) -> bool {
@@ -92,14 +98,26 @@ impl AccountStatus {
                 | AccountStatus::EmergencyStopped
         )
     }
-    /// Returns true if this status was reached as a result of a breach
-    /// (vs. a positive outcome).
     #[must_use]
     pub fn is_breach_terminal(self) -> bool {
         matches!(
             self,
             AccountStatus::Failed | AccountStatus::EmergencyStopped
         )
+    }
+    #[must_use]
+    pub fn evaluation_mode(self) -> EvaluationMode {
+        match self {
+            AccountStatus::Active
+            | AccountStatus::Funded
+            | AccountStatus::TargetHitPending
+            | AccountStatus::PayoutPending => EvaluationMode::Evaluate,
+            AccountStatus::Pending
+            | AccountStatus::Passed
+            | AccountStatus::Failed
+            | AccountStatus::Closed
+            | AccountStatus::EmergencyStopped => EvaluationMode::Skip,
+        }
     }
 }
 
@@ -222,6 +240,8 @@ pub struct Account {
     /// is refundable).
     pub refund_used: bool,
 
+    pub status_before_breach: Option<AccountStatus>,
+
     /// **ADR-11 statelessness**: currently-open positions carried on the
     /// account aggregate itself, so a stateless `POST /internal/v1/evaluate`
     /// call can round-trip position state through `account_state` without a
@@ -286,6 +306,7 @@ impl Account {
             balance_at_last_payout: initial,
             last_payout_at: None,
             refund_used: false,
+            status_before_breach: None,
             open_positions: Vec::new(),
             today_trades: Vec::new(),
         }

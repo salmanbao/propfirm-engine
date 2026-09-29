@@ -171,11 +171,12 @@ pub fn apply_decision(
     let account_id = state.account.id;
 
     if decision.is_target_hit() {
+        let from = state.account.status;
         state = state.mark_target_reached(server_time);
         events.push(crate::core::events::DomainEvent::new(
             account_id,
             crate::core::events::DomainEventKind::AccountStatusChanged {
-                from: crate::core::account::AccountStatus::Active,
+                from,
                 to: crate::core::account::AccountStatus::TargetHitPending,
             },
             server_time,
@@ -185,33 +186,39 @@ pub fn apply_decision(
         && state.account.status == crate::core::account::AccountStatus::TargetHitPending
         && state.account.active_trading_days >= state.account.plan.min_trading_days
     {
-        let from = state.account.status;
+        let from_status = state.account.status;
+        let from_phase = state.account.plan.phase;
         state.account.status = crate::core::account::AccountStatus::Passed;
         events.push(crate::core::events::DomainEvent::new(
             account_id,
             crate::core::events::DomainEventKind::AccountStatusChanged {
-                from,
+                from: from_status,
                 to: crate::core::account::AccountStatus::Passed,
             },
             server_time,
         ));
-        let from_phase = state.account.plan.phase;
-        let to_phase =
-            Pipeline::<crate::notifications::log::LogNotifier>::next_phase_for(&from_phase);
-        if let Ok(upped) = state.clone().upgrade_phase(to_phase) {
-            state = upped;
-            events.push(crate::core::events::DomainEvent::new(
-                account_id,
-                crate::core::events::DomainEventKind::PlanUpgraded {
-                    from_phase,
-                    to_phase,
-                },
-                server_time,
-            ));
-        }
+        let next_phase = crate::engine::pipeline::Pipeline::<
+            crate::notifications::log::LogNotifier,
+        >::next_phase_for(&from_phase);
+        state = state
+            .upgrade_phase(next_phase)
+            .map_err(|e| crate::core::Error::InvalidState(format!("phase upgrade failed: {e}")))?;
+        events.push(crate::core::events::DomainEvent::new(
+            account_id,
+            crate::core::events::DomainEventKind::PlanUpgraded {
+                from_phase,
+                to_phase: next_phase,
+            },
+            server_time,
+        ));
     }
     if let Some(target_status) = decision.account_status_target() {
         let from = state.account.status;
+        if target_status == crate::core::account::AccountStatus::Failed
+            || target_status == crate::core::account::AccountStatus::EmergencyStopped
+        {
+            state.account.status_before_breach = Some(from);
+        }
         state.account.status = target_status;
         events.push(crate::core::events::DomainEvent::new(
             account_id,
@@ -684,11 +691,12 @@ where
                 actor_id,
                 at,
             } => {
+                let from = state.account.status;
                 let new_state = state.emergency_stop(reason, actor_id, *at);
                 events.push(DomainEvent::new(
                     new_state.account.id,
                     DomainEventKind::AccountStatusChanged {
-                        from: crate::core::account::AccountStatus::Active,
+                        from,
                         to: crate::core::account::AccountStatus::EmergencyStopped,
                     },
                     *at,
