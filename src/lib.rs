@@ -110,6 +110,8 @@ pub mod tenant;
 
 #[cfg(feature = "server")]
 pub mod api;
+#[cfg(feature = "server")]
+pub mod settings;
 
 pub mod prelude;
 

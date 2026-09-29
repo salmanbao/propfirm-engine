@@ -1,18 +1,17 @@
-//! Idempotency store (P0.8 fix).
+//! Idempotency backend trait + in-memory implementation.
 //!
-//! The API previously read the `Idempotency-Key` header and discarded it
-//! (`let _ = headers;`) while the routes module documented deduplication
-//! as non-negotiable. This module provides a bounded LRU + TTL store:
-//! the first response for `(endpoint, key)` is cached and replayed on
-//! retries; a replay with a *conflicting* request body is rejected
-//! (409) so a retry can never double-apply a different mutation.
+//! Durable backends (`PostgresIdempotencyBackend`, `RedisIdempotencyBackend`)
+//! live in [`crate::persistence`] — they require I/O dependencies the core
+//! API module doesn't carry.
 //!
-//! Implementation notes:
-//! - bounded: at most `capacity` entries; the least-recently-used entry
-//!   is evicted when full (classic LRU via an order-tracking `Vec`).
-//! - TTL: entries older than `ttl` are treated as absent and pruned.
-//! - the request body hash (sha256, via the crate's helper) is stored
-//!   alongside the response so conflicting replays are detectable.
+//! ## Why idempotency is still here even without auth
+//!
+//! The platform backend calls `/internal/v1/evaluate` over the private
+//! network. Network retries still happen — TCP RSTs, pod evictions, client
+//! timeouts. Without idempotency, a retried `emergency-stop` request could
+//! double-apply; a retried `override` could clear an unrelated later breach.
+//! Idempotency is a correctness property, not a security property, so it
+//! stays even though authentication has been removed.
 
 use crate::sha256_helper::Sha256Hasher;
 use crate::tenant::TenantId;
@@ -24,12 +23,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 
 /// Outcome of an idempotency lookup.
+#[derive(Debug, Clone)]
 pub enum IdempotencyOutcome {
     /// No prior request with this key — caller should execute and then
-    /// [`IdempotencyStore::remember`] the response.
+    /// [`IdempotencyBackend::remember`] the response.
     Fresh,
-    /// The same key + same body hash was seen before — replay the
-    /// stored response without re-executing.
+    /// The same key + same body hash was seen before — replay the stored
+    /// response without re-executing.
     Replay(String),
     /// The same key was used with a *different* body — a conflicting
     /// retry. Reject (HTTP 409), never double-apply.
@@ -66,9 +66,9 @@ pub trait IdempotencyBackend: Send + Sync {
 
     /// Atomically check for an existing entry and, if absent, remember
     /// the response. Default implementation delegates to [`check`] +
-    /// [`remember`]; implementations backed by a durable store can
-    /// override this with a single upsert to prevent concurrent
-    /// double-execution.
+    /// [`remember`]; implementations backed by a durable store should
+    /// override this with a single conditional upsert to prevent
+    /// concurrent double-execution.
     async fn check_and_remember(
         &self,
         tenant_id: TenantId,
@@ -97,7 +97,11 @@ struct Entry {
     inserted_at: Instant,
 }
 
-/// Bounded LRU + TTL idempotency store, keyed by `(endpoint, key)`.
+/// Bounded LRU + TTL idempotency store, keyed by `(tenant, endpoint, key)`.
+///
+/// This is the **default** backend (no I/O, no setup). For production use
+/// `PostgresIdempotencyBackend` or `RedisIdempotencyBackend` from
+/// [`crate::persistence`].
 #[derive(Clone)]
 pub struct IdempotencyStore {
     inner: Arc<Mutex<Inner>>,
@@ -132,13 +136,17 @@ impl IdempotencyStore {
         Self::new(10_000, Duration::from_secs(24 * 60 * 60))
     }
 
-    fn composite_key(endpoint: &str, key: &str) -> String {
-        format!("{endpoint}\u{0}{key}")
+    /// Capacity override.
+    #[must_use]
+    pub fn with_capacity_ttl(capacity: usize, ttl: Duration) -> Self {
+        Self::new(capacity, ttl)
     }
 
     /// Looks up `(endpoint, key)` against the given request body.
-    pub fn check(&self, endpoint: &str, key: &str, request_body: &str) -> IdempotencyOutcome {
-        let ckey = Self::composite_key(endpoint, key);
+    /// Convenience wrapper for tests — delegates to the trait method
+    /// with a default tenant.
+    pub fn check_now(&self, endpoint: &str, key: &str, request_body: &str) -> IdempotencyOutcome {
+        let ckey = composite_key(None, endpoint, key);
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
         Self::prune(&mut inner, self.ttl);
@@ -154,13 +162,11 @@ impl IdempotencyStore {
         }
     }
 
-    /// Records the first response for `(endpoint, key)`. Bumps the key
-    /// to most-recently-used and evicts the LRU entry when over capacity.
-    pub fn remember(&self, endpoint: &str, key: &str, request_body: &str, response: &str) {
-        let ckey = Self::composite_key(endpoint, key);
+    /// Records the first response for `(endpoint, key)`.
+    pub fn remember_now(&self, endpoint: &str, key: &str, request_body: &str, response: &str) {
+        let ckey = composite_key(None, endpoint, key);
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
-        // LRU bump: remove from current position, push to back.
         inner.order.retain(|k| k != &ckey);
         inner.order.push(ckey.clone());
         inner.entries.insert(
@@ -171,14 +177,12 @@ impl IdempotencyStore {
                 inserted_at: Instant::now(),
             },
         );
-        // Evict while over capacity.
         while inner.order.len() > self.capacity {
             let evicted = inner.order.remove(0);
             inner.entries.remove(&evicted);
         }
     }
 
-    /// Removes expired entries. Called lazily on `check`.
     fn prune(inner: &mut Inner, ttl: Duration) {
         let now = Instant::now();
         let expired: Vec<String> = inner
@@ -217,7 +221,7 @@ impl IdempotencyBackend for IdempotencyStore {
         key: &str,
         request_body: &str,
     ) -> IdempotencyOutcome {
-        let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
+        let ckey = composite_key(Some(tenant_id), endpoint, key);
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
         Self::prune(&mut inner, self.ttl);
@@ -241,7 +245,7 @@ impl IdempotencyBackend for IdempotencyStore {
         request_body: &str,
         response: &str,
     ) -> IdempotencyOutcome {
-        let ckey = format!("{tenant_id}\u{0}{endpoint}\u{0}{key}");
+        let ckey = composite_key(Some(tenant_id), endpoint, key);
         let body_hash = hash_body(request_body);
         let mut inner = self.inner.lock();
         inner.order.retain(|k| k != &ckey);
@@ -260,12 +264,96 @@ impl IdempotencyBackend for IdempotencyStore {
         }
         IdempotencyOutcome::Fresh
     }
+
+    /// Override the default to be truly atomic under the in-process lock.
+    async fn check_and_remember(
+        &self,
+        tenant_id: TenantId,
+        endpoint: &str,
+        key: &str,
+        request_body: &str,
+        response: &str,
+    ) -> IdempotencyOutcome {
+        let ckey = composite_key(Some(tenant_id), endpoint, key);
+        let body_hash = hash_body(request_body);
+        let mut inner = self.inner.lock();
+        Self::prune(&mut inner, self.ttl);
+        match inner.entries.get(&ckey) {
+            Some(entry) => {
+                if entry.body_hash == body_hash {
+                    IdempotencyOutcome::Replay(entry.response.clone())
+                } else {
+                    IdempotencyOutcome::Conflict
+                }
+            }
+            None => {
+                inner.order.retain(|k| k != &ckey);
+                inner.order.push(ckey.clone());
+                inner.entries.insert(
+                    ckey,
+                    Entry {
+                        body_hash,
+                        response: response.to_string(),
+                        inserted_at: Instant::now(),
+                    },
+                );
+                while inner.order.len() > self.capacity {
+                    let evicted = inner.order.remove(0);
+                    inner.entries.remove(&evicted);
+                }
+                IdempotencyOutcome::Fresh
+            }
+        }
+    }
+}
+
+/// Build the composite key with optional tenant scoping.
+fn composite_key(tenant: Option<TenantId>, endpoint: &str, key: &str) -> String {
+    match tenant {
+        Some(t) => format!("{t}\u{0}{endpoint}\u{0}{key}"),
+        None => format!("{endpoint}\u{0}{key}"),
+    }
 }
 
 /// sha256 of the request body (hex) — used to detect conflicting replays.
-fn hash_body(body: &str) -> String {
+pub fn hash_body(body: &str) -> String {
     use std::hash::Hash;
     let mut h = Sha256Hasher::new();
     body.hash(&mut h);
     h.finalize_hex()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::idempotency::IdempotencyBackend;
+    use crate::tenant::TenantId;
+
+    #[tokio::test]
+    async fn fresh_then_replay_then_conflict() {
+        let store = IdempotencyStore::with_defaults();
+        let tenant = TenantId::named("test");
+        let endpoint = "POST /internal/v1/evaluate";
+        let key = "abc-123";
+        let body_a = "{\"x\":1}";
+        let body_b = "{\"x\":2}";
+        let resp = "{\"ok\":true}";
+
+        // First call — Fresh.
+        let outcome = store
+            .check_and_remember(tenant, endpoint, key, body_a, resp)
+            .await;
+        assert!(matches!(outcome, IdempotencyOutcome::Fresh));
+
+        // Replay same body — Replay.
+        let outcome = IdempotencyBackend::check(&store, tenant, endpoint, key, body_a).await;
+        match outcome {
+            IdempotencyOutcome::Replay(cached) => assert_eq!(cached, resp),
+            _ => panic!("expected Replay"),
+        }
+
+        // Same key, different body — Conflict.
+        let outcome = IdempotencyBackend::check(&store, tenant, endpoint, key, body_b).await;
+        assert!(matches!(outcome, IdempotencyOutcome::Conflict));
+    }
 }

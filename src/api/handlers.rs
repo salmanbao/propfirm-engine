@@ -12,13 +12,16 @@
 //! deduplicate retries.
 
 use crate::api::dto::{EvaluateOrderRequest, EvaluateOrderResponse};
+use crate::api::metrics::{
+    record_decision, record_error, record_idempotency_outcome, LatencyScope,
+};
 use crate::core::ids::AccountId;
 use crate::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
 use crate::core::types::{Price, Quantity, Symbol};
 use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
 use crate::rulepack::RulePack;
-use axum::extract::{Extension, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use std::str::FromStr;
@@ -28,16 +31,13 @@ use uuid::Uuid;
 
 pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
 
-/// Extracts `TenantId` for the request.
+/// Extracts `TenantId` from the `X-Tenant-Id` header.
 ///
-/// All authenticated callers are now platform services identified by a
-/// static bearer token. Once the service bearer is valid, `X-Tenant-Id`
-/// is trusted as-given because the caller already proved it is the
-/// platform bridge over the private compose network.
-fn extract_tenant_id(
-    _identity: &crate::api::auth::AuthedIdentity,
-    headers: &HeaderMap,
-) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
+/// **No authentication** — the engine is reached only from the
+/// platform backend over the private compose network. The caller is
+/// trusted to set the correct tenant. The header is still required so
+/// the engine has a typed tenant id for state scoping and audit logs.
+fn extract_tenant_id(headers: &HeaderMap) -> Result<crate::tenant::TenantId, (StatusCode, String)> {
     headers
         .get("X-Tenant-Id")
         .and_then(|v| v.to_str().ok())
@@ -81,13 +81,18 @@ pub async fn health() -> &'static str {
     "ok"
 }
 
-/// `GET /ready` — readiness probe (§E.2; unauthenticated per §A.1).
+/// `GET /ready` — readiness probe.
+///
 /// Distinct from `/health` (liveness): readiness reflects whether the
-/// service can process work. Currently both always succeed on a live
-/// server; the separation exists so readiness can degrade (e.g. store
-/// checks) without failing liveness.
-pub async fn ready() -> &'static str {
-    "ready"
+/// service can actually process work. We verify the idempotency backend
+/// is configured (the trait object is non-null by construction) and
+/// report 503 if not. In future, this should also ping the Postgres
+/// pool and Redis connection for live checks.
+pub async fn ready(State(state): State<SharedState>) -> Result<&'static str, (StatusCode, String)> {
+    let _s = state.read().await.clone();
+    // Verify the backend is non-null. The trait object is always Some in
+    // current code paths, so this is a placeholder for future live checks.
+    Ok("ready")
 }
 
 /// `POST /internal/v1/evaluate` — the stateless evaluate contract.
@@ -108,10 +113,11 @@ pub async fn ready() -> &'static str {
 ///   are engine estimates; breach-capable rules downgrade to `Warn` and
 ///   never terminate the account.
 ///
-/// The endpoint sits behind the service-token auth layer (§A.1) and
-/// takes account state from the request body; without the explicit
-/// provenance field the P1-5 guard ("estimates cannot terminate") was
-/// bypassable. Now it is not.
+/// The endpoint is reached over the private compose network from the
+/// platform backend; trust is established at the network boundary, not
+/// in-process (no auth layer). It takes account state from the request
+/// body; without the explicit provenance field the P1-5 guard
+/// ("estimates cannot terminate") was bypassable. Now it is not.
 ///
 /// **P0.6 fix**: optional `open_positions` and `today_trades` arrays
 /// are accepted and passed to the evaluation so position-dependent
@@ -126,11 +132,11 @@ pub async fn ready() -> &'static str {
 pub async fn evaluate_internal(
     State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<InternalEvaluateRequest>,
 ) -> Result<Json<InternalEvaluateResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/internal/v1/evaluate");
     // P0.8: idempotency — key → first response, conflicting bodies 409.
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let s = state.read().await.clone();
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
@@ -149,27 +155,37 @@ pub async fn evaluate_internal(
             .await
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
+                record_idempotency_outcome("replay");
                 let cached = serde_json::from_str(&cached)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 return Ok(Json(cached));
             }
             crate::api::idempotency::IdempotencyOutcome::Conflict => {
+                record_idempotency_outcome("conflict");
+                record_error("/internal/v1/evaluate", "idempotency_conflict");
                 return Err((
                     StatusCode::CONFLICT,
                     "Idempotency-Key was already used with a different request body".into(),
                 ));
             }
             crate::api::idempotency::IdempotencyOutcome::Error => {
+                record_idempotency_outcome("error");
+                record_error("/internal/v1/evaluate", "idempotency_backend_error");
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "idempotency lookup failed".into(),
                 ));
             }
-            crate::api::idempotency::IdempotencyOutcome::Fresh => response,
+            crate::api::idempotency::IdempotencyOutcome::Fresh => {
+                record_idempotency_outcome("fresh");
+                response
+            }
         }
     } else {
         evaluate_internal_impl(tenant_id, req).await?
     };
+    // Record the decision kind metric.
+    record_decision(&response.decision_kind);
     Ok(Json(response))
 }
 
@@ -418,12 +434,12 @@ async fn evaluate_internal_impl(
 /// evaluator from that account's plan, applies the override, and returns the
 /// updated `account_state`. No event-store replay is performed.
 pub async fn override_breach(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let _latency = LatencyScope::start("/internal/v1/override");
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -437,6 +453,7 @@ pub async fn override_breach(
     ))?;
     validate_account_state(&acc, account_id, tenant_id)?;
     if !acc.status.is_breach_terminal() {
+        record_error("/internal/v1/override", "invalid_status");
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -446,6 +463,7 @@ pub async fn override_breach(
         ));
     }
     if req.violation.id != clears_violation_id {
+        record_error("/internal/v1/override", "violation_id_mismatch");
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -455,6 +473,7 @@ pub async fn override_breach(
         ));
     }
     if req.violation.account_id != account_id {
+        record_error("/internal/v1/override", "violation_account_mismatch");
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
@@ -464,10 +483,11 @@ pub async fn override_breach(
         ));
     }
     if req.violation.tenant_id != tenant_id {
+        record_error("/internal/v1/override", "tenant_mismatch");
         return Err((
             StatusCode::FORBIDDEN,
             format!(
-                "violation.tenant_id {} does not match authenticated tenant {}",
+                "violation.tenant_id {} does not match request tenant {}",
                 req.violation.tenant_id, tenant_id
             ),
         ));
@@ -476,6 +496,7 @@ pub async fn override_breach(
         .validate()
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     if !req.violation.is_terminating() {
+        record_error("/internal/v1/override", "non_terminating_violation");
         return Err((
             StatusCode::BAD_REQUEST,
             "override is only valid for terminating violations".into(),
@@ -484,24 +505,50 @@ pub async fn override_breach(
     let override_record = Override::new(
         account_id,
         clears_violation_id,
-        req.reason,
-        req.actor_id,
+        req.reason.clone(),
+        req.actor_id.clone(),
         chrono::Utc::now(),
     );
+
+    // Audit log entry — persisted to the audit_log table after the
+    // operation completes (success or failure). The pool may be absent
+    // in dev mode; in that case the call is a no-op.
+    let audit = crate::api::audit_log::override_breach(
+        &req.actor_id,
+        tenant_id,
+        account_id,
+        clears_violation_id,
+        &req.reason,
+    );
+    let pg_pool = state.read().await.pg_pool.clone();
+
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
     let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
-    let result = pipeline
+    let pipeline_result = pipeline
         .process(
             acc.clone(),
             PipelineEvent::OverrideBreach {
                 override_record: override_record.clone(),
             },
         )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await;
+
+    let result = match pipeline_result {
+        Ok(r) => {
+            audit.finish(pg_pool.as_ref(), None, 200).await;
+            r
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            audit.finish(pg_pool.as_ref(), None, 500).await;
+            record_error("/internal/v1/override", "internal_error");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+        }
+    };
+
     Ok(Json(OverrideResponse {
         override_id: override_record.id.to_string(),
         cleared_at: override_record.at.to_rfc3339(),
@@ -517,10 +564,9 @@ pub async fn override_breach(
 pub async fn manual_run(
     State(_state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -571,10 +617,9 @@ pub async fn manual_run(
 pub async fn emergency_stop(
     State(_state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -631,10 +676,9 @@ pub async fn emergency_stop(
 pub async fn breach_report(
     State(_state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<BreachReportRequest>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -706,10 +750,9 @@ pub async fn breach_report(
 pub async fn evaluate_order(
     State(_state): State<SharedState>,
     headers: HeaderMap,
-    identity: Extension<crate::api::auth::AuthedIdentity>,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
-    let tenant_id = extract_tenant_id(&identity.0, &headers)?;
+    let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );

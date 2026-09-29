@@ -1,39 +1,77 @@
-//! HTTP server entry point.
+//! `propfirm-server` binary entry point.
 //!
-//! **§A.1 fix**: the server is authenticated by default and fails closed.
-//! Required environment:
-//!
-//! - `PROPFIRM_API_KEYS` — comma-separated `tenant-uuid:key` pairs
-//!   (one key per tenant).
-//! - `PROPFIRM_SERVICE_TOKEN` — the token for the `/internal/*`
-//!   bridge/platform-only endpoints (tenant keys are rejected there).
-//!
-//! Escape hatch (NOT for production): `PROPFIRM_ALLOW_INSECURE=1` runs
-//! the server without tenant keys (prints a loud warning);
-//! `PROPFIRM_ALLOW_NO_SERVICE_TOKEN=1` allows startup without the
-//! internal token.
+//! Initializes:
+//! 1. `.env` loading (handled by `Settings::load`)
+//! 2. `tracing_subscriber` with `EnvFilter` (JSON or pretty format)
+//! 3. Prometheus metrics recorder (idempotent; the actual install
+//!    happens in `propfirm::api::server::default_metrics_handle()`)
+//! 4. Panic hook (routes panics through `tracing::error`)
+//! 5. Settings load + Postgres migrations (if enabled)
+//! 6. Optional TLS (rustls, in-process)
+//! 7. Graceful shutdown (SIGINT/SIGTERM, drain in-flight requests)
 
-use std::env;
+use propfirm::api::middleware::install_panic_hook;
+use propfirm::api::server::{default_metrics_handle, run_server};
+use propfirm::settings::Settings;
+use tracing_subscriber::{fmt, EnvFilter};
 
-#[cfg(feature = "server")]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let addr = if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
-        println!("Usage: propfirm-server [ADDR]");
-        println!("  ADDR   bind address (default: 0.0.0.0:8080)");
-        println!("  --help show this help");
-        std::process::exit(0);
-    } else if args.len() > 1 {
-        args[1].as_str()
-    } else {
-        "0.0.0.0:8080"
-    };
-    println!("Prop Firm Engine HTTP server on http://{addr}");
-    propfirm::api::server::run_server(addr).await
+async fn main() -> anyhow::Result<()> {
+    // 1. Load settings (also loads .env if present).
+    let settings = Settings::load().map_err(|e| {
+        eprintln!("FATAL: failed to load settings: {e}");
+        e
+    })?;
+
+    // 2. Initialize tracing subscriber.
+    init_tracing(&settings);
+
+    tracing::info!(
+        bind_addr = %settings.server.bind_addr,
+        tls_enabled = %settings.server.tls.enabled,
+        idempotency_backend = %settings.idempotency.backend,
+        metrics_enabled = %settings.observability.metrics_enabled,
+        "propfirm-server starting"
+    );
+
+    // 3. Install panic hook.
+    if settings.observability.panic_hook {
+        install_panic_hook();
+        tracing::info!("panic hook installed");
+    }
+
+    // 4. Touch the metrics handle so the recorder is installed up-front
+    //    (cosmetic — `run_server` also calls this idempotently).
+    if settings.observability.metrics_enabled {
+        let _ = default_metrics_handle();
+        tracing::info!(
+            metrics_path = %settings.observability.metrics_path,
+            "Prometheus metrics recorder installed"
+        );
+    }
+
+    // 5. Run the server (handles TLS, graceful shutdown, state building).
+    run_server(settings).await?;
+
+    Ok(())
 }
 
-#[cfg(not(feature = "server"))]
-fn main() {
-    eprintln!("This binary requires the `server` feature: cargo run --features server --bin propfirm-server");
+/// Initialize the `tracing_subscriber` global default.
+fn init_tracing(settings: &Settings) {
+    let filter = EnvFilter::try_new(&settings.observability.log_filter)
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    match settings.observability.log_format.as_str() {
+        "pretty" => {
+            fmt().with_env_filter(filter).with_target(false).init();
+        }
+        // default to json for production
+        _ => {
+            fmt()
+                .with_env_filter(filter)
+                .with_target(true)
+                .json()
+                .init();
+        }
+    }
 }

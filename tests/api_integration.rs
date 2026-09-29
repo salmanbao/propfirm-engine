@@ -25,7 +25,6 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt; // for collect()
-use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
@@ -44,33 +43,6 @@ fn test_tenant_id_str() -> String {
     test_tenant_id().to_string()
 }
 
-fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
-    let bytes = bytes.as_ref();
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-/// **§A.1 fix**: the test config now carries a per-service bearer token
-/// digest. The raw token `service-secret` authenticates `/internal/*`
-/// and `/v1/*`; `X-Tenant-Id` selects the tenant after service auth.
-fn test_auth_config() -> AuthConfig {
-    use sha2::{Digest, Sha256};
-    let active = hex_fmt(Sha256::digest(SERVICE_KEY.as_bytes()));
-    AuthConfig {
-        service_tokens: std::sync::Arc::new(
-            [(SERVICE_KEY.to_string(), (active, None))]
-                .into_iter()
-                .collect(),
-        ),
-        allow_insecure: false,
-    }
-}
-
-const SERVICE_KEY: &str = "service-secret";
-
 /// Builds a `ServerState` plus a matching in-memory `Account`.
 ///
 /// The account is returned so tests can serialize it into
@@ -81,9 +53,7 @@ async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Ac
         .with_tenant(test_tenant_id())
         .start(chrono::Utc::now())
         .unwrap();
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        test_auth_config(),
-    )));
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
     (state, account)
 }
 
@@ -98,8 +68,7 @@ async fn send(
     let req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("X-Tenant-Id", tenant_id)
-        .header("Authorization", format!("Bearer {SERVICE_KEY}"));
+        .header("X-Tenant-Id", tenant_id);
     let req = if let Some(b) = body {
         req.header("content-type", "application/json")
             .body(Body::from(b))
@@ -327,7 +296,7 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let state = ServerState::new(test_auth_config());
+    let state = ServerState::with_memory();
     // Clone the state — this used to discard every Arc'ed store.
     let cloned = state.clone();
     // The cloned state must still share the same idempotency backend.

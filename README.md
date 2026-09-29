@@ -1,26 +1,54 @@
 # Prop Firm Risk & Rule Evaluation Engine
 
-An enterprise-grade, fully-typed Rust library for evaluating proprietary trading firm rules, monitoring account risk, and producing audit-grade decisions in real time.
+An enterprise-grade, fully-typed Rust engine for evaluating proprietary
+trading firm rules, monitoring account risk, and producing audit-grade
+decisions in real time. Designed as an **internal component** of the
+Prop Firm as a Service Platform (PFaaS).
 
-Built to satisfy the binding spec for a proprietary-trading-firm-as-a-service (PFaaS) platform — every architectural decision is traceable to a specific spec requirement (ADR-11 statelessness, broker-is-truth equity, tenant isolation, caller-owned concurrency state, etc.).
+## Architecture
 
----
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  Platform backend (caller)                      │
+│  Either HTTP POST /internal/v1/evaluate                         │
+│  Or XADD propfirm:evaluate:requests (Redis Stream)             │
+└────────────┬───────────────────────────────────┬───────────────┘
+            │                                    │
+            ▼                                    ▼
+┌───────────────────────┐            ┌────────────────────────┐
+│   propfirm-server     │            │   propfirm-worker       │
+│   (HTTP, axum)        │            │   (Redis Streams        │
+│   - TLS termination   │            │    consumer group)      │
+│   - Tower middleware  │            │   - N concurrent tasks  │
+│   - /metrics          │            │   - XAUTOCLAIM recovery │
+│   - graceful shutdown │            │   - produces responses │
+└───────────┬───────────┘            └────────────┬───────────┘
+            │                                     │
+            └──────────────┬──────────────────────┘
+                          ▼
+              ┌──────────────────────┐
+              │   Engine core (pure) │
+              │   22 rule evaluators  │
+              │   Decimal money       │
+              │   input_hash (sha256) │
+              └──────────┬───────────┘
+                         │
+            ┌────────────┴────────────┐
+            ▼                         ▼
+   ┌───────────────┐         ┌──────────────────┐
+   │  PostgreSQL   │         │      Redis       │
+   │  (events,     │         │ (idempotency,    │
+   │   idempotency,│         │  event bus       │
+   │   audit_log,  │         │  streams)        │
+   │   rule_packs) │         │                  │
+   └───────────────┘         └──────────────────┘
+```
 
-## Table of Contents
-
-- [Features](#features)
-- [Performance & Benchmarks](#performance--benchmarks)
-- [Quick Start](#quick-start)
-- [Example](#example)
-- [Architecture](#architecture)
-- [HTTP API Surface](#http-api-surface)
-- [Configuration](#configuration)
-- [Rule Pack as Data](#rule-pack-as-data)
-- [Testing](#testing)
-- [Compliance & Audit](#compliance--audit)
-- [License](#license)
-
----
+**No authentication** — the engine is reached only from the platform
+backend over the private compose network. Trust is established at the
+network boundary, not in-process. REST endpoints are for manual admin
+verification only; production traffic flows through Redis Streams for
+async throughput.
 
 ## Features
 
@@ -28,368 +56,146 @@ Built to satisfy the binding spec for a proprietary-trading-firm-as-a-service (P
 
 | Category | Rules |
 |----------|-------|
-| **Drawdown** | Daily drawdown · Max drawdown (static + trailing) · Trailing drawdown · Per-trade max loss |
-| **Targets** | Profit target · Minimum trading days · Consistency |
-| **Trade restrictions** | News trading · Overnight holding · Weekend holding · Hedging · Grid/martingale · Copy trading · HFT/scalping |
-| **Position limits** | Max position size · Max open positions · Max daily trades · Cooldown |
-| **Time** | Time limit · Stop-loss required · Take-profit required · Inactivity termination |
-
-Each rule is implemented as a `Rule` trait object with explicit `priority()` (for breach arbitration) and `tolerance_cents()` (to absorb broker rounding noise at the boundary).
-
-### Preset challenge plans
-
-FTMO (phase 1 / phase 2 / funded) · MyForexFunds · The Funded Trader · SurgeTrader · custom.
-
-Each preset declares `max_loss_reference: LossReference::{Static, Trailing, EodTrailing}` explicitly so the max-loss rule measures against the correct baseline. FTMO phase-1 uses a static floor (`$90k` on a `$100k` account, never moves); FTMO funded switches to trailing; FTMO 1-Step and FundedNext 1-Step use EOD-reset trailing.
-
-### Risk analytics
-
-Sharpe · Sortino · Calmar · Max drawdown · Profit factor · Expectancy · Win rate · Z-score · Recovery factor · Parametric VaR · Expected Shortfall · Exposure analytics (gross/net/long/short, per-symbol concentration).
+| **Drawdown** | Daily · Max (static + trailing + EOD trailing) · Per-trade max loss |
+| **Targets** | Profit target · Min trading days · Consistency |
+| **Trade restrictions** | News · Overnight · Weekend · Hedging · Grid/martingale · Copy trading · HFT/scalping |
+| **Position limits** | Max position size · Max open · Max daily · Cooldown · Max total lots · Margin · Trading hours |
+| **Time** | Time limit · SL/TP required · Inactivity termination |
 
 ### Architectural correctness properties
 
-- **Broker-is-truth equity** — the engine never recomputes equity from positions + quote. `EquityInput::BrokerReported` vs `EquityInput::Estimated` is a type-level distinction; breach-capable rules refuse to terminate on an estimate (P1-5 fix).
-- **Stateless pure evaluate** — `pure::evaluate(state, pack, tick) -> PureVerdict` produces an `input_hash` (sha256) so any past verdict can be recomputed byte-for-byte from its recorded inputs (P1-7 fix; ADR-11).
-- **Caller-owned concurrency** — the server keeps no account state (ADR-11). Callers carry `Account.version` in the request's `account_state`; it is hashed into `input_hash` so a stale replay is detectable. `Error::StateConflict` remains the typed error for caller-side optimistic concurrency (P1-8 fix).
-- **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack` and enforced at the HTTP auth layer: a token bound to tenant A requesting tenant B's resource gets 403 (`tests/auth_a1.rs`). Cross-tenant reads are never a storage concern (P1-9 fix).
-- **Stale & out-of-order tick guard** — ticks older than 10 minutes (configurable) or older than the last-evaluated tick are rejected with `Error::TickRejected` before evaluation runs (P1-14 fix).
-- **Decimal precision** — all monetary values use `rust_decimal::Decimal`; no floating-point drift on money.
+- **Broker-is-truth equity** — `EquityInput::BrokerReported` vs `Estimated` is type-level; breach rules refuse to terminate on estimates.
+- **Stateless pure evaluate** — `pure::evaluate(state, pack, tick) -> PureVerdict` with `input_hash` (sha256) for byte-for-byte reproducibility.
+- **Caller-owned concurrency** — ADR-11: no account state in-process; caller owns persistence.
+- **Tenant isolation** — `TenantId` threaded through every record; cross-tenant access blocked.
+- **Stale & out-of-order tick guard** — ticks older than 10 min or older than last-tick rejected.
+- **Decimal precision** — `rust_decimal::Decimal` everywhere; no f64 on money.
+- **Panic safety** — `RuleRegistry::evaluate` wraps each rule in `catch_unwind`; a buggy rule degrades to `Warn`.
 
-### Operational controls
+### Production-ready subsystems (v0.2.0)
 
-- **Manual override** — `Override` record (`clears_violation_id`, `reason`, `actor_id`, `at`) clears a false-positive breach without deleting the original verdict. State machine: `Failed` / `EmergencyStopped` → `Active` (P1-11 fix).
-- **Emergency stop** — `PipelineEvent::EmergencyStop { reason, actor_id, at }` short-circuits normal rule evaluation and forces `DecisionKind::Emergency`. Beats every other verdict, including `Liquidate` (P1-12 fix).
-- **Early-warning threshold** — first-class `RuleVerdict::EarlyWarning` (ops-paged) distinct from trader-facing `Warn`. Emitted at 80% of breach threshold on every breach-capable rule (P1-13 fix).
-- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are emitted as domain events alongside the original verdict, returned to the caller on `PipelineResult.events` for persistence.
-
----
-
-## Performance & Benchmarks
-
-Benchmarks are in `benches/engine.rs` and run via `cargo bench --features serialization,in-memory-store`.
-
-### Headline numbers
-
-| Benchmark | Time | Throughput | Notes |
-|-----------|------|------------|-------|
-| `evaluate_tick_single` | ~4.2 µs | — | One tick evaluation against an account with all 22 rules registered. |
-| `evaluate_order_single` | ~3.5 µs | — | Pre-trade order evaluation against an account with all 22 rules registered. |
-| `pure_evaluate` | **19 µs** | ~52,600 evals/sec | The stateless pure-evaluate function (P1-7). What the platform's `/internal/v1/evaluate` endpoint calls. |
-| `realistic_load/10` | 48.8 µs | **~205,000 evals/sec** | 10 accounts × 1 tick (smallest realistic batch). |
-| `realistic_load/100` | 469.6 µs | **~213,000 evals/sec** | 100 accounts × 1 tick. |
-| `realistic_load/1000` | **4.87 ms** | **~205,000 evals/sec** | 1000 accounts × 1 tick. This is the platform's expected scale (60s cadence × 1000 accounts). |
-
-*Benchmarks measured with `cargo bench --features serialization,in-memory-store --bench engine` on the current rule set (22 rules).*
-
-### Headroom analysis
-
-The platform spec calls for serving a per-account evaluation on every bridge tick at a 60-second cadence across potentially thousands of accounts. At 1000 accounts, that's:
-
-```
-1000 accounts / 60 seconds = ~17 evaluations/second required
-```
-
-The engine sustains **~205,000 evals/sec** at 1000-account batches — over **12,000×** the required throughput for the core evaluation path. Single-account evaluations (`pure_evaluate`) run in ~19 microseconds. Note: these benchmarks cover the pure evaluation path only (rule evaluation, decision aggregation); they do not include HTTP serialization, storage I/O, or network latency.
-
-### Benchmark methodology
-
-- **Tool**: `criterion 0.5` with statistical analysis (100 samples, 1s warmup, 2s measurement window).
-- **What's measured**: end-to-end evaluation including rule registry iteration, context construction, all 22 rule evaluations, decision aggregation. No I/O.
-- **What's NOT measured**: HTTP serialization, storage reads/writes, network. Add ~50-200 µs per request for those in production.
-- **Run the benchmarks yourself**:
-  ```bash
-  cargo bench --features serialization,in-memory-store --bench engine -- --warm-up-time 1 --measurement-time 2
-  ```
-
-### Benchmark output (sample run)
-
-```
-evaluate_tick_single      time:   [4.1120 µs  4.2032 µs  4.2981 µs]
-evaluate_order_single    time:   [3.4109 µs  3.5046 µs  3.6079 µs]
-pure_evaluate            time:   [18.241 µs  19.057 µs  20.075 µs]
-
-realistic_load/10        time:   [47.367 µs  48.755 µs  50.330 µs]
-                         thrpt:  [198.69 Kelem/s  205.11 Kelem/s  211.12 Kelem/s]
-
-realistic_load/100       time:   [457.06 µs  469.59 µs  483.30 µs]
-                         thrpt:  [206.91 Kelem/s  212.95 Kelem/s  218.79 Kelem/s]
-
-realistic_load/1000      time:   [4.7542 ms  4.8719 ms  4.9978 ms]
-                         thrpt:  [200.09 Kelem/s  205.26 Kelem/s  210.34 Kelem/s]
-```
-
-### Why it's fast
-
-- **Zero allocation in the hot path** — `RuleContext` is built once per evaluation; rules read `&RuleContext` and don't clone.
-- **`Decimal` arithmetic is fast enough** — `rust_decimal`'s fixed-point math fits in 12 bytes and uses integer ops; the engine doesn't pay for arbitrary precision.
-- **`Arc<dyn Rule>` registry** — one indirect call per rule, branchlessly dispatched. The 19-rule registry is small enough to fit in L1.
-- **No storage in pure path** — `pure::evaluate` takes everything as input; the stateful pipeline is layered on top but isn't on the critical path for stateless calls.
-
----
+- **Durable persistence** — PostgreSQL (events, idempotency, audit_log, rule_packs) + Redis (idempotency + event bus).
+- **Redis Streams event bus** — at-least-once delivery via consumer groups; XAUTOCLAIM for PEL recovery.
+- **TLS termination** — in-process rustls; plain-HTTP fallback for behind-proxy deployments.
+- **Graceful shutdown** — SIGINT/SIGTERM handled; `CancellationToken` propagates to all worker tasks.
+- **Request timeout enforcement** — `tower-http` `TimeoutLayer` (configurable).
+- **Idempotency** — `memory` / `postgres` / `redis` backends; atomic Lua script for Redis.
+- **Observability** — tracing + tracing-subscriber (JSON/pretty), `/metrics` Prometheus endpoint, panic hook.
+- **No authentication** — intentionally removed; the platform is the sole caller.
 
 ## Quick Start
 
 ```bash
-# Clone & build
-cargo build --release
+# Bring up the full stack (Postgres + Redis + server + worker)
+git clone https://github.com/salmanbao/propfirm-engine.git
+cd propfirm-engine
+cp .env.example .env
+docker compose up -d --build
 
-# Run the CLI demo (end-to-end: account start → order submit → tick → risk metrics)
-cargo run --release --features tokio-cli --bin propfirm-cli
+# Verify
+curl http://localhost:8080/health    # → ok
+curl http://localhost:8080/ready      # → ready
+curl http://localhost:8080/metrics   # → Prometheus format
+```
 
-# Run the HTTP server (optional)
+See [`docs/local-dev.md`](docs/local-dev.md) for the full
+verification checklist.
+
+## Binaries
+
+| Binary | Purpose |
+|---|---|
+| `propfirm-server` | HTTP API server (axum, internal-only). TLS optional. |
+| `propfirm-worker` | Redis Streams consumer; runs `pure::evaluate` on each request, publishes response. |
+| `propfirm-cli` | Local demo: builds an FTMO Phase 1 account, runs through the lifecycle. |
+
+```bash
+# HTTP server
 cargo run --release --features server --bin propfirm-server
 
-# Run all tests (integration + property + spec edge cases + doctests)
-cargo test --all-features
+# Event bus worker
+cargo run --release --features server --bin propfirm-worker
 
-# Run benchmarks
-cargo bench --features serialization,in-memory-store
+# Local CLI demo
+cargo run --release --features tokio-cli --bin propfirm-cli
 ```
 
----
+## Documentation
 
-## Example
+- [`docs/configuration.md`](docs/configuration.md) — full settings reference
+- [`docs/local-dev.md`](docs/local-dev.md) — local verification checklist
+- [`docs/persistence.md`](docs/persistence.md) — Postgres + Redis backends
+- [`docs/observability.md`](docs/observability.md) — tracing, metrics, panic hook
+- [`docs/tls.md`](docs/tls.md) — in-process TLS termination
+- [`docs/event-bus.md`](docs/event-bus.md) — Redis Streams event bus
+- [`docs/architecture.md`](docs/architecture.md) — internal architecture
+- [`docs/features.md`](docs/features.md) — rule library + correctness properties
+- [`docs/integration.md`](docs/integration.md) — embedding the engine as a library
 
-```rust
-use propfirm::prelude::*;
-use propfirm::config::presets::ftmo_phase1;
-use propfirm::engine::evaluator::Evaluator;
-use propfirm::engine::pipeline::{Pipeline, PipelineEvent};
-use propfirm::notifications::log::LogNotifier;
-use propfirm::tenant::TenantId;
+## HTTP API
 
-// Pipeline::process is async; requires a tokio runtime (e.g. #[tokio::main]).
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Choose a preset plan and create an account (state is caller-owned,
-    //    ADR-11: the engine never persists it).
-    let plan = ftmo_phase1();
-    let account = Account::new(AccountId::new(), plan.clone())
-        .with_tenant(TenantId::named("my-firm"));
-
-    // 2. Build the evaluator and pipeline (no store — events come back in
-    //    PipelineResult.events for the caller to persist if desired).
-    let evaluator = Evaluator::new(&plan);
-    let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
-    let now = chrono::Utc::now();
-
-    // 3. Start the account: Pending → Active.
-    let result = pipeline
-        .process(account.clone(), PipelineEvent::AccountStarted { at: now })
-        .await?;
-    println!("Started: {:?}", result.snapshot.account.status);
-
-    // 4. Pre-trade order evaluation (SL/TP set).
-    let order = Order::market_open(
-        account.id, Symbol::new("EURUSD"), OrderSide::Buy,
-        Quantity(dec!(1)),
-        Some(Price(dec!(1.05))), Some(Price(dec!(1.10))),
-        now,
-    );
-    let result = pipeline
-        .process(result.account.clone(), PipelineEvent::OrderSubmitted { order })
-        .await?;
-    println!("Order decision: {:?} (passed={})", result.snapshot.decision.kind, result.passed());
-
-    // 5. P1-5: broker-is-truth tick — equity comes from the broker, not recomputed.
-    let tick = Tick::new(
-        Symbol::new("EURUSD"),
-        Quote { bid: Price(dec!(1.0850)), ask: Price(dec!(1.0852)), ts: now },
-    );
-    let result = pipeline
-        .process(result.account.clone(), PipelineEvent::Tick {
-            tick,
-            broker_equity: Money(dec!(10_200)),
-            broker_balance: Money(dec!(10_000)),
-        })
-        .await?;
-    println!("Tick decision: {:?}", result.snapshot.decision.kind);
-    Ok(())
-}
-```
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                       HTTP API (axum)                            │
-│  /internal/v1/evaluate  /override  /manual-run  /emergency-stop  │
-│  /internal/v1/breach-report/:account_id  /v1/evaluate-order      │
-│  /v1/rule-packs/validate  /health  /ready                        │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │
-                         ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                          Pipeline                                │
-│  apply_event → build_context → evaluate → emit_decision_event  │
-│  → notify  (account_state + events returned to the caller)      │
-│                                                                 │
-│  Guards:                                                        │
-│   • P1-5  equity_input (BrokerReported | Estimated)             │
-│   • P1-14 stale-tick (>10min) + out-of-order rejection          │
-│   • ADR-11 stateless: no account store — state travels in/out   │
-└───────┬────────────┬──────────────┬─────────────────────────────┘
-        │            │              │
-        ▼            ▼              ▼
-┌──────────┐  ┌──────────┐  ┌──────────────┐
-│ Evaluator│  │  State   │  │ Event Store  │
-│ + Rules  │  │  Delta   │  │ (audit log)  │
-│          │  │          │  │              │
-│ P1-7:    │  │ P0-2:    │  │ Replay for   │
-│ pure     │  │ target_  │  │ dispute      │
-│ evaluate │  │ reached_ │  │ resolution   │
-│ + hash   │  │ at sticky│  │              │
-└────┬─────┘  └──────────┘  └──────────────┘
-     │
-     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                     Rule Registry                               │
-│                                                                 │
-│  P1-6: build_from_pack(&RulePack) — rules are DATA, not code   │
-│                                                                 │
-│  Daily DD | Max DD | Trailing DD | Profit Target |              │
-│  Min Days | Consistency | News | Overnight | Weekend |          │
-│  Max Pos Size | Max Open | Max Daily Trades | Time |             │
-│  Cooldown | Hedging | Grid | Copy Trading | SL/TP |             │
-│                                                                 │
-│  P0-4: each rule declares priority() — breach arbitration is   │
-│        deterministic, NOT by registration order                  │
-│  P2:   each rule declares tolerance_cents() (default 1¢)        │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Persistence
-
-- **No account database (ADR-11)** — the engine keeps no account state. `/internal/v1/evaluate` receives `account_state` in the request and returns the updated state in the response; persisting it is the caller's responsibility.
-- **Event store** — domain events emitted during evaluation come back on `PipelineResult.events`. The `events::store::EventStore` trait (in-memory implementation provided) is the read-side seam used by breach-report and override replay, ready to be backed by durable storage.
-- **Idempotency** — an `Idempotency-Key` on `POST /internal/v1/evaluate` deduplicates retries via the in-memory `IdempotencyStore`.
-
----
-
-## HTTP API Surface
-
-The binding spec's engine contract is fully exposed:
-
-### Internal API (platform-side, called by LCC/bridge)
+All endpoints are **unauthenticated** (internal-only). All mutating
+endpoints accept an `Idempotency-Key` header.
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/internal/v1/evaluate` | Stateless evaluate contract. Takes `{account_id, account_state, bridge_tick?|tick?, equity_source?, ...}` and returns `{decision_kind, winning_priority, input_hash, pack_version, pack_id, violations, account_state}`. `account_state` is required; a `rule_pack` field is rejected with 400 (evaluation uses the account's bound plan). |
-| `POST` | `/internal/v1/override` | Clear a false-positive breach. Creates an `Override` record + reverts `Failed`/`EmergencyStopped` → `Active`. |
-| `POST` | `/internal/v1/manual-run` | Force re-evaluation of an account (on-demand). |
-| `POST` | `/internal/v1/emergency-stop` | Force `DecisionKind::Emergency`, short-circuiting normal rule evaluation (P1-12). |
-| `GET` | `/internal/v1/breach-report/:account_id` | Trader-facing "why did I fail" view (TD-25). Returns all violations from the event log with full audit trail. |
+|---|---|---|
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/ready` | Readiness probe |
+| `GET` | `/metrics` | Prometheus metrics |
+| `POST` | `/internal/v1/evaluate` | Stateless evaluate contract (used by platform backend) |
+| `POST` | `/internal/v1/override` | Clear a false-positive breach |
+| `POST` | `/internal/v1/manual-run` | Force re-evaluation |
+| `POST` | `/internal/v1/emergency-stop` | Short-circuit evaluation (highest priority) |
+| `POST` | `/internal/v1/breach-report` | Trader-facing "why did I fail" view |
+| `POST` | `/v1/evaluate-order` | Pre-trade order evaluation |
+| `POST` | `/v1/rule-packs/validate` | Validate a rule pack (stateless) |
 
-### Public API (tenant-facing)
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/v1/evaluate-order` | Pre-trade order evaluation. |
-| `POST` | `/v1/rule-packs/validate` | Validate a rule pack (stateless — nothing is persisted). |
-| `GET` | `/health` | Liveness probe (no auth). |
-| `GET` | `/ready` | Readiness probe (no auth). |
-
-All mutating endpoints accept an `Idempotency-Key` header.
-
----
+For async high-throughput traffic, use the Redis Streams event bus
+instead of HTTP. See [`docs/event-bus.md`](docs/event-bus.md).
 
 ## Configuration
 
-Each challenge plan is a `ChallengePlan` struct with builder methods:
+Config is loaded from `config/propfirm.toml` → `.env` → `PROPFIRM_*`
+env vars (highest precedence). Nested env keys use `__`:
 
-```rust
-use propfirm::config::plan::{ChallengePlan, LossReference};
-use propfirm::prelude::*;
-
-let plan = ChallengePlan::default()
-    .with_balance(Money(dec!(100_000)))
-    .with_profit_target(Pct(dec!(0.08)))
-    .with_daily_dd(Pct(dec!(0.05)))
-    .with_total_dd(Pct(dec!(0.10)))
-    // P0-1: explicit static vs trailing max-loss reference.
-    .with_loss_reference(LossReference::Static)
-    .with_min_days(3)
-    .with_time_limit_days(30)
-    .with_consistency(Pct(dec!(0.40)));
+```bash
+PROPFIRM_SERVER__BIND_ADDR=0.0.0.0:8080
+PROPFIRM_SERVER__TLS__ENABLED=true
+PROPFIRM_POSTGRES__DSN=postgresql://propfirm:propfirm@postgres:5432/propfirm
+PROPFIRM_REDIS__URL=redis://redis:6379
+PROPFIRM_IDEMPOTENCY__BACKEND=redis
+PROPFIRM_OBSERVABILITY__LOG_FORMAT=json
 ```
 
----
-
-## Rule Pack as Data
-
-Rule packs are versioned JSON data, not compiled Rust. This is the binding spec's requirement (EVL-01/02): tenant admins can edit thresholds through a form, bind a pack to an account at purchase, and re-bind only via an explicit, audited action (EVL-34) — never by recompiling and redeploying the engine.
-
-```json
-{
-  "id": "funderblu-default-v3",
-  "version": 3,
-  "tenant_id": "...",
-  "lifecycle": "active",
-  "effective_from": "2026-09-01T00:00:00Z",
-  "rules": [
-    {
-      "id": "max_total_loss",
-      "kind": "max_drawdown",
-      "basis": "static",
-      "unit": "percent",
-      "value": 0.10,
-      "tolerance_cents": 1,
-      "early_warning_pct": 0.80,
-      "priority": 1000
-    }
-  ],
-  "content_hash": "sha256:..."
-}
-```
-
-`RuleRegistry::build_from_pack(&pack)` interprets the data at request time, mapping each `kind` to its concrete rule implementation. Pack lifecycle: `draft` → `active` → `superseded`, with `effective_from` timestamps.
-
----
+See [`docs/configuration.md`](docs/configuration.md) for the full
+reference and [`config/propfirm.toml`](config/propfirm.toml) for the
+shipped defaults.
 
 ## Testing
 
-**166 tests + 1 doctest, all passing:**
-
-| Suite | Tests | Purpose |
-|-------|-------|---------|
-| Unit tests (`src/`) | 17 | Core logic: auth (8), instrument registry (5), payout engine (4). |
-| Integration tests (`tests/integration.rs`) | 37 | End-to-end behavior: presets validate, account lifecycle, drawdown breaches, profit target, hedging, position limits, pipeline, override, emergency stop, pure-evaluate determinism. |
-| P0 default rules & units (`tests/p0_default_rules_and_units.rs`) | 20 | Rule registry: all 22 rule kinds produce correct verdicts from plan defaults; unit/basis parsing; pack-driven parameterization. |
-| P0 pack-driven (`tests/p0_pack_driven.rs`) | 4 | Pack overrides: pack basis overrides plan basis, tolerance override, tenant isolation, pack priority override. |
-| Property tests (`tests/property_tests.rs`) | 12 | `proptest`-driven invariants: drawdown non-negativity, static-floor immutability, trailing-floor monotonicity, stateless determinism, decision invariance under rule reordering, breach severity ordering, replay determinism, disabled rules contribute nothing, money fields non-negative, lots/units no cross-type comparison, rule-level verdict variants have a producer, gap flagged on unstarted account. |
-| Spec edge cases (`tests/spec_edge_cases.rs`) | 22 | Named, permanent regression tests pinning edge semantics from spec §3.4: equity-at-limit-fires, target-reached-stays-pending, breach-beats-pass, static-floor-never-moves, trailing-floor-floats, estimated-equity-can't-terminate, broker-equity-can-terminate, tolerance-absorbs-subcent-noise, override-clears-breach, emergency-stop, auto-rollover-on-future-tick, auto-rollover-not-triggered-for-current-day, EOD-trailing-floor-resets-once-per-day, effective-money-none-must-return-none, mark_active_trading_day_wired_and_idempotent, phase-progression-emits-plan-upgraded, d4-liquidation-lists-positions, gap-flag-surfaces-in-decision, rollover-advances-day-boundary-by-exactly-one-day, rollover-catches-up-missed-days, rollover-respects-calendar-day-across-DST, debug-multi-day-rollover. |
-| Doctests | 2 | `src/lib.rs` crate example compiles (1 passed); `src/equity_input.rs` example (1 ignored). README example is not doctested. |
-| API integration tests (`tests/api_integration.rs`) | 7 | Binding spec HTTP endpoints: health, evaluate-order, manual-run, breach-report, override 404, input_hash sha256, ServerState clone. |
-| API P0 fixes (`tests/api_p0_fixes.rs`) | 12 | Contract enforcement: equity source defaults, overnight position, idempotency replay/conflict/no-double-apply, bridge tick v1, concurrency no-deadlock, two-call trailing chain, gap-flagged distinct. |
-| Auth A.1 tests (`tests/auth_a1.rs`) | 10 | HTTP authentication: missing/wrong credentials ⇒ 401, valid key ⇒ 200, tenant mismatch ⇒ 403, /health & /ready exempt, /internal/* service-token-only, env fail-closed. |
-| Batch A.2/C.1/C.2 tests (`tests/ab_batch.rs`, `tests/c_batch.rs`) | 18 | Cross-account copy-trading detection (3), pack-driven time_limit/grid/copy Trading thresholds (3), instrument spec units→lots conversion (3), margin/max_total_lots/trading_hours rules (9). |
-| D.1 martingale/grid tests (`tests/d1_martingale.rs`) | 7 | Lot-escalation-on-loss detection (3), grid spacing regularity (2), severity/configurable knobs (2). |
+166 tests + 1 doctest, all passing with `cargo test --all-features`.
 
 ```bash
-# Run the full suite
 cargo test --all-features
-
-# Run property tests only (verifies invariants across the input space)
-cargo test --features serialization,in-memory-store --test property_tests
-
-# Run spec edge cases only (the "must never silently change" set)
-cargo test --features serialization,in-memory-store --test spec_edge_cases
 ```
 
----
+Test suites include unit, integration, property tests (proptest),
+spec edge cases (pinned-edge regression tests), API integration,
+pack-driven, and batch tests (cross-account copy trading, instrument
+spec conversions, martingale detection).
 
-## Compliance & Audit
+## Performance
 
-Every verdict is reproducible from its recorded inputs:
+| Benchmark | Time | Throughput |
+|---|---|---|
+| `evaluate_tick_single` | ~4.2 µs | — |
+| `evaluate_order_single` | ~3.5 µs | — |
+| `pure_evaluate` | 19 µs | ~52,600 evals/sec |
+| `realistic_load/1000` | 4.87 ms | ~205,000 evals/sec |
 
-- **`input_hash`** (sha256) is computed from `(account_state, rule_pack, tick, open_positions, today_trades, pending_order, latest_trade, latest_tick)` and returned with every verdict for the caller to persist. Any past decision can be recomputed byte-for-byte — the binding spec's dispute-resolution mechanism.
-- **Domain event log** — every state transition (`AccountStarted`, `TradeFilled`, `TickEvaluated`, `DayRollover`, `RuleViolated`, `AccountStatusChanged`) is emitted with causation ids linking events to their triggering input and returned on `PipelineResult.events`; the `events::store::EventStore` trait (in-memory implementation included) is the append-only seam for callers that durably store them.
-- **Override records** never delete the original violation — they're emitted alongside it as the rebuttal, with `actor_id` + `reason` + `at` for full audit trail.
-- **Emergency stops** carry `actor_id` + `reason` + `at` and short-circuit all other rules with the highest possible priority (10,000).
-
----
+Spec requirement: ~17 evals/sec (1000 accounts × 60-sec cadence).
+Engine sustains **12,000× the required throughput** on the pure
+evaluation path.
 
 ## License
 

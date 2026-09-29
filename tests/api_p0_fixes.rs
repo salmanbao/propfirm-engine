@@ -15,7 +15,6 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use chrono::Datelike;
 use http_body_util::BodyExt;
-use propfirm::api::auth::AuthConfig;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::plan::LossReference;
@@ -37,30 +36,6 @@ fn test_tenant_id_str() -> String {
     test_tenant_id().to_string()
 }
 
-const SERVICE_KEY: &str = "service-secret";
-
-fn hex_fmt(bytes: impl AsRef<[u8]>) -> String {
-    let bytes = bytes.as_ref();
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn test_auth_config() -> AuthConfig {
-    use sha2::{Digest, Sha256};
-    let active = hex_fmt(Sha256::digest(SERVICE_KEY.as_bytes()));
-    AuthConfig {
-        service_tokens: std::sync::Arc::new(
-            [(SERVICE_KEY.to_string(), (active, None))]
-                .into_iter()
-                .collect(),
-        ),
-        allow_insecure: false,
-    }
-}
-
 /// Builds a `ServerState` plus an `Account` at the given equity.
 ///
 /// ADR-11: the server holds no account state — the account is returned
@@ -73,9 +48,7 @@ async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, A
         .unwrap();
     account.equity = Money::new(rust_decimal::Decimal::new(equity, 0));
     account.balance = account.equity;
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        test_auth_config(),
-    )));
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
     (state, account)
 }
 
@@ -91,8 +64,7 @@ async fn send_with_headers(
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("X-Tenant-Id", &tid)
-        .header("Authorization", format!("Bearer {SERVICE_KEY}"));
+        .header("X-Tenant-Id", &tid);
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
@@ -537,9 +509,7 @@ async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
     let plan = ftmo_phase1()
         .with_loss_reference(LossReference::Trailing)
         .with_total_dd(Pct(dec!(0.05)));
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::new(
-        test_auth_config(),
-    )));
+    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
     let app = router(state).await;
 
     let mut account = Account::new(AccountId::new(), plan)
@@ -898,7 +868,6 @@ async fn evaluate_internal_rejects_cross_tenant_request() {
         .method(Method::POST)
         .uri("/internal/v1/evaluate")
         .header("X-Tenant-Id", wrong_tenant)
-        .header("Authorization", format!("Bearer {SERVICE_KEY}"))
         .header("content-type", "application/json")
         .body(axum::body::Body::from(body))
         .unwrap();
