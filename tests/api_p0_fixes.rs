@@ -985,7 +985,7 @@ async fn promotion_parity_evaluate_and_pipeline_agree() {
         .await
         .expect("pipeline must process");
 
-    let (state, app) = make_state_at(9500).await;
+    let (state, _) = make_state_at(9500).await;
     let app = router(state).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -1041,7 +1041,7 @@ async fn post_promotion_state_is_usable_on_next_evaluate() {
     account.equity = Money::new(dec!(10_500));
     account.balance = Money::new(dec!(10_500));
 
-    let (state, app) = make_state_at(10500).await;
+    let (state, _) = make_state_at(10500).await;
     let app = router(state).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
