@@ -4,28 +4,16 @@
   "meta": {
     "title": "Account Lifecycle",
     "output": "lifecycle-account.html",
-    "quality_profile": "standard",
+    "quality_profile": "showcase",
     "viewBox": [
-      1100,
+      900,
       600
     ]
   },
   "lanes": [
     {
       "id": "main",
-      "label": "Account progression"
-    },
-    {
-      "id": "warning",
-      "label": "Warning"
-    },
-    {
-      "id": "failure",
-      "label": "Rule breaches"
-    },
-    {
-      "id": "ops",
-      "label": "Ops halt"
+      "label": "Evaluation flow"
     }
   ],
   "states": [
@@ -33,7 +21,6 @@
       "id": "pending",
       "type": "start",
       "label": "Pending",
-      "sublabel": "account created",
       "lane": "main",
       "col": 0
     },
@@ -41,15 +28,13 @@
       "id": "active",
       "type": "active",
       "label": "Active",
-      "sublabel": "evaluating",
       "lane": "main",
       "col": 1
     },
     {
       "id": "target_hit_pending",
       "type": "waiting",
-      "label": "Target Hit Pending",
-      "sublabel": "min days check",
+      "label": "Target Hit",
       "lane": "main",
       "col": 2
     },
@@ -57,27 +42,8 @@
       "id": "passed",
       "type": "success",
       "label": "Passed",
-      "sublabel": "challenge complete",
       "lane": "main",
       "col": 3
-    },
-    {
-      "id": "failed",
-      "type": "failure",
-      "label": "Failed",
-      "sublabel": "rule breach",
-      "lane": "failure",
-      "col": 1,
-      "yOffset": 100
-    },
-    {
-      "id": "emergency_stopped",
-      "type": "failure",
-      "label": "Emergency Stopped",
-      "sublabel": "ops halt",
-      "lane": "ops",
-      "col": 0,
-      "yOffset": 100
     }
   ],
   "transitions": [
@@ -85,101 +51,36 @@
       "id": "start",
       "from": "pending",
       "to": "active",
-      "label": "start",
-      "labelAt": [
-        170,
-        202
-      ]
+      "label": "start"
     },
     {
       "id": "evaluate",
       "from": "active",
       "to": "target_hit_pending",
-      "label": "evaluate",
-      "labelAt": [
-        325,
-        202
-      ]
+      "label": "profit target",
+      "labelAt": [325, 202]
     },
     {
       "id": "target_hit",
       "from": "target_hit_pending",
       "to": "passed",
-      "label": "target hit",
-      "labelAt": [
-        479,
-        202
-      ]
-    },
-    {
-      "id": "fail",
-      "from": "active",
-      "to": "failed",
-      "label": "fail",
-      "labelAt": [
-        260,
-        240
-      ],
-      "via": [
-        [
-          260,
-          240
-        ],
-        [
-          450,
-          240
-        ],
-        [
-          450,
-          320
-        ]
-      ]
-    },
-    {
-      "id": "emergency",
-      "from": "active",
-      "to": "emergency_stopped",
-      "label": "emergency",
-      "labelAt": [
-        120,
-        240
-      ],
-      "via": [
-        [
-          120,
-          240
-        ],
-        [
-          200,
-          240
-        ]
-      ]
+      "label": "min days",
+      "labelAt": [479, 202]
     }
   ],
   "cards": [
     {
       "dot": "emerald",
-      "title": "Main Path",
+      "title": "Main Flow",
       "items": [
-        "Pending -> Active on account start",
-        "Active -> Target Hit Pending when profit target is reached",
-        "Target Hit Pending -> Passed after minimum trading days"
-      ]
-    },
-    {
-      "dot": "rose",
-      "title": "Failure Paths",
-      "items": [
-        "Active -> Failed on rule breach with broker-reported equity",
-        "Active -> Emergency Stopped on ops emergency halt"
+        "Pending → Active → Target Hit → Passed"
       ]
     },
     {
       "dot": "amber",
-      "title": "Recovery",
+      "title": "Other States",
       "items": [
-        "Override can revert Failed or Emergency Stopped -> Active",
-        "No shared terminal state; terminal states stay terminal in this view"
+        "Failed / EmergencyStopped reachable via override back to Active"
       ]
     }
   ]

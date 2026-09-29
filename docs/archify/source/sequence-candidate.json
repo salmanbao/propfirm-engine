@@ -39,17 +39,17 @@
     {
       "id": "external_caller",
       "type": "external",
-      "label": "External Caller"
+      "label": "Platform Bridge"
     },
     {
       "id": "api_router",
-      "type": "frontend",
+      "type": "backend",
       "label": "API Router"
     },
     {
       "id": "auth_layer",
       "type": "security",
-      "label": "Auth Layer"
+      "label": "Auth"
     },
     {
       "id": "pipeline",
@@ -171,7 +171,7 @@
       "participant": "api_router",
       "from": 165,
       "to": 455,
-      "type": "frontend"
+      "type": "backend"
     },
     {
       "participant": "auth_layer",

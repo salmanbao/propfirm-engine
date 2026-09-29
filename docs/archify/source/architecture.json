@@ -5,8 +5,18 @@
     "title": "Prop Firm Risk & Rule Evaluation Engine",
     "quality_profile": "showcase",
     "views": [
-      { "id": "runtime-path", "label": "Runtime Path", "focus": ["external", "api", "pipeline", "evaluator", "event_store"], "note": "Request to evaluation to persistence" },
-      { "id": "stateless-contract", "label": "Stateless Contract", "focus": ["api", "pure", "rulepack"], "note": "No server-side account persistence" }
+      {
+        "id": "runtime-path",
+        "label": "Runtime Path",
+        "focus": ["external", "api", "auth", "pipeline", "evaluator", "rules", "event_store"],
+        "note": "Request to evaluation to persistence"
+      },
+      {
+        "id": "stateless-contract",
+        "label": "Stateless Contract",
+        "focus": ["api", "pure", "rulepack"],
+        "note": "No server-side account persistence"
+      }
     ],
     "legend": {
       "mode": "auto",
@@ -18,12 +28,12 @@
   },
   "components": [
     { "id": "external", "type": "external", "label": "Platform Bridge", "sublabel": "LCC / trading gateway", "pos": [20, 200], "size": [150, 60] },
-    { "id": "api", "type": "frontend", "label": "API Server", "sublabel": "axum HTTP", "pos": [220, 200], "size": [130, 60] },
+    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "axum HTTP", "pos": [220, 200], "size": [130, 60] },
     { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "event orchestrator", "pos": [400, 200], "size": [130, 60] },
     { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only replay", "pos": [580, 200], "size": [130, 60] },
     { "id": "auth", "type": "security", "label": "Auth", "sublabel": "service bearer + tenant", "pos": [220, 60], "size": [130, 56], "tag": "Compliance" },
     { "id": "evaluator", "type": "backend", "label": "Evaluator", "sublabel": "pure rule execution", "pos": [400, 60], "size": [130, 56] },
-    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "pack-driven rules", "pos": [580, 60], "size": [130, 56] },
+    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "22 pack-driven rules", "pos": [580, 60], "size": [130, 56] },
     { "id": "pure", "type": "backend", "label": "Pure Evaluate", "sublabel": "stateless input_hash", "pos": [400, 340], "size": [130, 56] },
     { "id": "rulepack", "type": "backend", "label": "RulePack", "sublabel": "versioned JSON rules", "pos": [580, 340], "size": [130, 56] },
     { "id": "notifications", "type": "messagebus", "label": "Notifier", "sublabel": "webhook / log", "pos": [760, 340], "size": [130, 56] }
@@ -34,10 +44,10 @@
   "connections": [
     { "id": "caller-to-api", "from": "external", "to": "api", "label": "HTTP", "variant": "emphasis", "labelAt": [110, 274] },
     { "id": "auth-gate", "from": "auth", "to": "api", "label": "verify bearer + tenant", "variant": "security", "labelAt": [285, 150] },
-    { "id": "api-to-pipeline", "from": "api", "to": "pipeline", "label": "PipelineEvent", "variant": "default", "labelAt": [310, 274] },
+    { "id": "api-to-pipeline", "from": "api", "to": "pipeline", "label": "PipelineEvent", "variant": "default", "labelAt": [310, 310] },
     { "id": "pipeline-to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis" },
     { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate registry", "variant": "default", "labelAt": [555, 130] },
-    { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 274] },
+    { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 186] },
     { "id": "api-to-pure", "from": "api", "to": "pure", "label": "stateless evaluate", "variant": "emphasis", "via": [[220, 280], [400, 280]], "labelAt": [310, 300] },
     { "id": "pure-to-rulepack", "from": "pure", "to": "rulepack", "label": "synthetic pack", "variant": "default", "labelAt": [555, 410] },
     { "id": "pipeline-to-notifier", "from": "pipeline", "to": "notifications", "label": "violations?", "variant": "security", "via": [[400, 280], [760, 280]], "labelAt": [580, 300] }

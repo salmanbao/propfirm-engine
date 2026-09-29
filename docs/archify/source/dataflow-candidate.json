@@ -7,28 +7,54 @@
     "quality_profile": "showcase"
   },
   "stages": [
-    { "label": "Input" },
-    { "label": "Processing" },
+    { "label": "Request" },
+    { "label": "Validation" },
+    { "label": "Evaluation" },
     { "label": "Output" }
   ],
   "nodes": [
-    { "id": "external_caller", "type": "external", "label": "External Caller", "stage": 0, "row": 0 },
-    { "id": "api_router", "type": "frontend", "label": "API Router", "stage": 0, "row": 1 },
-    { "id": "auth_layer", "type": "security", "label": "Auth Layer", "stage": 0, "row": 2 },
-    { "id": "rulepack", "type": "backend", "label": "RulePack", "stage": 0, "row": 3 },
-    { "id": "pipeline", "type": "backend", "label": "Pipeline", "stage": 1, "row": 0 },
-    { "id": "evaluator", "type": "backend", "label": "Evaluator", "stage": 1, "row": 1 },
-    { "id": "event_store", "type": "database", "label": "Event Store", "stage": 1, "row": 2 },
-    { "id": "output_bus", "type": "messagebus", "label": "Output Bus", "stage": 2, "row": 1 }
+    { "id": "external_caller", "type": "external", "label": "Platform Bridge", "stage": 0, "row": 1 },
+    { "id": "api_router", "type": "backend", "label": "API Router", "stage": 0, "row": 2 },
+    { "id": "auth_layer", "type": "security", "label": "Auth", "stage": 1, "row": 1 },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline", "stage": 2, "row": 1 },
+    { "id": "evaluator", "type": "backend", "label": "Evaluator", "stage": 2, "row": 2 },
+    { "id": "event_store", "type": "database", "label": "Event Store", "stage": 3, "row": 1 },
+    { "id": "output_bus", "type": "messagebus", "label": "Notifier", "stage": 3, "row": 2 }
   ],
   "flows": [
-    { "id": "call-request", "from": "external_caller", "to": "api_router", "label": "HTTP POST", "variant": "emphasis", "labelAt": [120, 200] },
-    { "id": "route-auth", "from": "api_router", "to": "auth_layer", "label": "route", "variant": "default", "labelAt": [130, 310] },
-    { "id": "auth-ok", "from": "auth_layer", "to": "pipeline", "label": "authenticated", "variant": "security", "labelAt": [180, 350], "labelDx": 40 },
-    { "id": "to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis", "labelAt": [270, 200] },
-    { "id": "decision-back", "from": "evaluator", "to": "pipeline", "label": "PureVerdict", "variant": "default", "labelAt": [360, 220] },
-    { "id": "to-output", "from": "pipeline", "to": "output_bus", "label": "events/state/alerts", "variant": "default", "labelAt": [480, 310] },
-    { "id": "rulepack-flow", "from": "rulepack", "to": "evaluator", "label": "synthetic pack", "variant": "dashed", "labelAt": [540, 120] },
-    { "id": "event-store-flow", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "via": [[400, 186], [400, 356]], "labelAt": [520, 350] }
+    { "id": "http-request", "from": "external_caller", "to": "api_router", "label": "HTTP POST", "variant": "emphasis", "labelAt": [100, 314] },
+    { "id": "route-auth", "from": "api_router", "to": "auth_layer", "label": "route", "variant": "default" },
+    { "id": "auth-ok", "from": "auth_layer", "to": "pipeline", "label": "authenticated", "variant": "security", "labelAt": [315, 314] },
+    { "id": "to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis", "labelAt": [537, 428] },
+    { "id": "decision-back", "from": "evaluator", "to": "pipeline", "label": "PureVerdict", "variant": "default", "labelAt": [537, 238] },
+    { "id": "to-output", "from": "pipeline", "to": "output_bus", "label": "events + alerts", "variant": "default" },
+    { "id": "event-store-flow", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [474, 328] }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Stateless Contract",
+      "items": [
+        "account_state in via request body",
+        "account_state out via response body",
+        "No server-side account persistence"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Deterministic Replay",
+      "items": [
+        "input_hash = sha256(account_state, pack, tick, positions, trades)",
+        "Any past verdict can be recomputed byte-for-byte"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Broker-is-Truth",
+      "items": [
+        "Broker-reported equity drives Fail/Liquidate",
+        "Estimated equity can only Warn at most"
+      ]
+    }
   ]
 }
