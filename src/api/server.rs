@@ -252,7 +252,7 @@ pub async fn load_tls_config(
         let cert_chain: Vec<rustls::pki_types::CertificateDer<'static>> = certs;
 
         // Build the rustls ServerConfig directly.
-        let mut server_config_builder = rustls::server::ServerConfig::builder();
+        let server_config_builder = rustls::server::ServerConfig::builder();
         // Apply the client-cert verifier when mTLS is configured.
         let ca_pem = std::fs::read(client_ca_path).map_err(|e| {
             anyhow::anyhow!(

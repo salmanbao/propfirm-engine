@@ -53,7 +53,7 @@ use propfirm::tenant::TenantId;
 
 use std::str::FromStr;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -117,16 +117,14 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             interval.tick().await;
-            match recovery_bus.claim_idle().await {
-                propfirm::persistence::redis_store::EventBusResult::Consumed {
-                    stream_id,
-                    payload,
-                } => {
-                    info!(stream_id = %stream_id, request_id = %payload.request_id, "claimed idle message");
-                    worker_metrics::record_message_claimed();
-                    process_request(&recovery_bus, stream_id, payload, "recovery").await;
-                }
-                _ => {}
+            if let propfirm::persistence::redis_store::EventBusResult::Consumed {
+                stream_id,
+                payload,
+            } = recovery_bus.claim_idle().await
+            {
+                info!(stream_id = %stream_id, request_id = %payload.request_id, "claimed idle message");
+                worker_metrics::record_message_claimed();
+                process_request(&recovery_bus, stream_id, payload, "recovery").await;
             }
         }
     });
@@ -261,7 +259,7 @@ async fn parse_and_evaluate(
     let tenant_id = TenantId::from_str(&payload.tenant_id)
         .map_err(|e| anyhow::anyhow!("invalid tenant_id: {e}"))?;
 
-    let mut acc = req
+    let acc = req
         .account_state
         .ok_or_else(|| anyhow::anyhow!("account_state is required for stateless evaluation"))?;
     if acc.id != account_id {

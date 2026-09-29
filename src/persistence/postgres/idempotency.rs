@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 use crate::api::idempotency::{hash_body, IdempotencyOutcome};
 use crate::api::IdempotencyBackend;
@@ -63,9 +62,16 @@ impl IdempotencyBackend for PostgresIdempotencyBackend {
         let expires_at = now
             + chrono::Duration::from_std(self.ttl).unwrap_or_else(|_| chrono::Duration::days(1));
         match self
-            .upsert(
-                &composite, tenant_id, endpoint, key, &body_hash, response, now, expires_at,
-            )
+            .upsert(UpsertParams {
+                composite: &composite,
+                tenant_id,
+                endpoint,
+                key,
+                body_hash: &body_hash,
+                response,
+                now,
+                expires_at,
+            })
             .await
         {
             Ok(o) => o,
@@ -95,9 +101,16 @@ impl IdempotencyBackend for PostgresIdempotencyBackend {
         // Try the upsert; if the row already exists, fall through to lookup
         // to determine Replay vs Conflict.
         match self
-            .upsert(
-                &composite, tenant_id, endpoint, key, &body_hash, response, now, expires_at,
-            )
+            .upsert(UpsertParams {
+                composite: &composite,
+                tenant_id,
+                endpoint,
+                key,
+                body_hash: &body_hash,
+                response,
+                now,
+                expires_at,
+            })
             .await
         {
             Ok(o) => o,
@@ -143,17 +156,17 @@ impl PostgresIdempotencyBackend {
         })
     }
 
-    async fn upsert(
-        &self,
-        composite: &str,
-        tenant_id: TenantId,
-        endpoint: &str,
-        key: &str,
-        body_hash: &str,
-        response: &str,
-        now: chrono::DateTime<chrono::Utc>,
-        expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> sqlx::Result<IdempotencyOutcome> {
+    async fn upsert(&self, params: UpsertParams<'_>) -> sqlx::Result<IdempotencyOutcome> {
+        let UpsertParams {
+            composite,
+            tenant_id,
+            endpoint,
+            key,
+            body_hash,
+            response,
+            now,
+            expires_at,
+        } = params;
         let tenant_uuid = tenant_id.raw();
         // INSERT ... ON CONFLICT DO NOTHING — if the row already exists,
         // we'll fall through to the lookup to determine Replay vs Conflict.
@@ -161,8 +174,8 @@ impl PostgresIdempotencyBackend {
             r#"INSERT INTO idempotency
                  (composite_key, tenant_id, endpoint, idempotency_key,
                   body_hash, response, inserted_at, expires_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               ON CONFLICT (composite_key) DO NOTHING"#,
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (composite_key) DO NOTHING"#,
         )
         .bind(composite)
         .bind(tenant_uuid)
@@ -182,6 +195,18 @@ impl PostgresIdempotencyBackend {
             self.lookup(composite, body_hash, now).await
         }
     }
+}
+
+#[derive(Debug)]
+struct UpsertParams<'a> {
+    composite: &'a str,
+    tenant_id: TenantId,
+    endpoint: &'a str,
+    key: &'a str,
+    body_hash: &'a str,
+    response: &'a str,
+    now: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 fn composite_key(tenant: TenantId, endpoint: &str, key: &str) -> String {

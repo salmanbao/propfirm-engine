@@ -67,7 +67,7 @@ pub async fn router(state: SharedState) -> Router {
         //   4. CompressionLayer         — response compression
         //   5. RequestBodyLimitLayer    — request body cap
         //   6. PropagateRequestIdLayer  — echoes x-request-id in response
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid::default()))
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
             TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
                 let req_id = req

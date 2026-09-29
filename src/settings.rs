@@ -36,7 +36,7 @@ use figment::{
 use serde::{Deserialize, Serialize};
 
 /// Top-level settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
     /// HTTP server settings.
@@ -51,19 +51,6 @@ pub struct Settings {
     pub idempotency: IdempotencySettings,
     /// Event bus (Redis Streams) — used by the worker binary.
     pub event_bus: EventBusSettings,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            server: ServerSettings::default(),
-            postgres: PostgresSettings::default(),
-            redis: RedisSettings::default(),
-            observability: ObservabilitySettings::default(),
-            idempotency: IdempotencySettings::default(),
-            event_bus: EventBusSettings::default(),
-        }
-    }
 }
 
 /// HTTP server settings.
@@ -273,6 +260,7 @@ impl Settings {
     ///
     /// # Errors
     /// Returns an error if TOML parsing fails or env var coercion fails.
+    #[allow(clippy::result_large_err)]
     pub fn load() -> Result<Self, figment::Error> {
         // Best-effort .env load — ignores file-not-found.
         let _ = dotenvy::dotenv();
