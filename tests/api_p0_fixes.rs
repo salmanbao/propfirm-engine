@@ -914,7 +914,7 @@ async fn evaluate_internal_rejects_cross_tenant_request() {
 /// **Gap D**: `override_breach` must reject clearing a non-terminal account.
 #[tokio::test]
 async fn override_breach_rejects_active_account() {
-    let (state, mut account) = make_state_at(10000).await;
+    let (state, account) = make_state_at(10000).await;
     let app = router(state).await;
     let violation_id = propfirm::core::ids::ViolationId::new();
     let body = serde_json::json!({
@@ -1158,7 +1158,7 @@ async fn promotion_continues_into_new_phase_rules() {
         min_trading_days: 1,
         ..ChallengePlan::default()
     };
-    let phase2_plan = ChallengePlan {
+    let _phase2_plan = ChallengePlan {
         phase: ChallengePhase::Phase2,
         max_total_drawdown_pct: Pct(dec!(0.05)),
         min_trading_days: 1,
@@ -1175,7 +1175,7 @@ async fn promotion_continues_into_new_phase_rules() {
     account.equity = Money::new(dec!(10_500));
     account.balance = Money::new(dec!(10_500));
 
-    let (state, app) = make_state_at(10500).await;
+    let (state, _app) = make_state_at(10500).await;
     let app = router(state).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
