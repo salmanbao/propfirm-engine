@@ -8,7 +8,7 @@
 # Runtime image is debian:bookworm-slim with ca-certificates + tini (PID 1).
 
 # ---- Builder stage ----
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.96-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
@@ -25,7 +25,7 @@ RUN echo "fn main() {}" > src/bin/server.rs
 RUN echo "fn main() {}" > src/bin/worker.rs
 
 # Build dependencies only.
-RUN cargo build --release --features server --bin propfirm-server --bin propfirm-worker --bin propfirm-cli 2>/dev/null || true
+RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-worker --bin propfirm-cli 2>/dev/null || true
 
 # Now copy the real source and rebuild.
 COPY src/ src/
@@ -35,7 +35,7 @@ COPY examples/ examples/
 
 # Force a clean rebuild of the crate (dependencies are cached).
 RUN touch src/lib.rs src/bin/cli.rs src/bin/server.rs src/bin/worker.rs
-RUN cargo build --release --features server --bin propfirm-server --bin propfirm-worker --bin propfirm-cli
+RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-worker --bin propfirm-cli
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim AS runtime
