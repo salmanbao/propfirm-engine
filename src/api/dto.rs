@@ -79,8 +79,7 @@ pub struct OverrideRequest {
     pub clears_violation_id: String,
     pub reason: String,
     pub actor_id: String,
-    #[serde(default)]
-    pub violation: Option<crate::core::violation::Violation>,
+    pub violation: crate::core::violation::Violation,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

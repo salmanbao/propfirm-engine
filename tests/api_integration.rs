@@ -237,6 +237,20 @@ async fn p0_a_override_account_id_mismatch_returns_400() {
         "account_id": random_account.to_string(),
         "account_state": account,
         "clears_violation_id": random_violation.to_string(),
+        "violation": {
+            "id": random_violation.to_string(),
+            "account_id": random_account.to_string(),
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
+        },
         "reason": "broker glitch",
         "actor_id": "ops-test"
     })

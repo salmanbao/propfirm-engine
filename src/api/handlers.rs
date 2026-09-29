@@ -445,43 +445,41 @@ pub async fn override_breach(
             ),
         ));
     }
-    if let Some(violation) = req.violation {
-        if violation.id != clears_violation_id {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "violation.id {} does not match clears_violation_id {}",
-                    violation.id, clears_violation_id
-                ),
-            ));
-        }
-        if violation.account_id != account_id {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "violation.account_id {} does not match request account_id {}",
-                    violation.account_id, account_id
-                ),
-            ));
-        }
-        if violation.tenant_id != tenant_id {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!(
-                    "violation.tenant_id {} does not match authenticated tenant {}",
-                    violation.tenant_id, tenant_id
-                ),
-            ));
-        }
-        violation
-            .validate()
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        if !violation.is_terminating() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "override is only valid for terminating violations".into(),
-            ));
-        }
+    if req.violation.id != clears_violation_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "violation.id {} does not match clears_violation_id {}",
+                req.violation.id, clears_violation_id
+            ),
+        ));
+    }
+    if req.violation.account_id != account_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "violation.account_id {} does not match request account_id {}",
+                req.violation.account_id, account_id
+            ),
+        ));
+    }
+    if req.violation.tenant_id != tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "violation.tenant_id {} does not match authenticated tenant {}",
+                req.violation.tenant_id, tenant_id
+            ),
+        ));
+    }
+    req.violation
+        .validate()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    if !req.violation.is_terminating() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "override is only valid for terminating violations".into(),
+        ));
     }
     let override_record = Override::new(
         account_id,
@@ -1135,8 +1133,7 @@ pub struct OverrideRequest {
     #[serde(default)]
     pub account_state: Option<crate::core::account::Account>,
     pub clears_violation_id: String,
-    #[serde(default)]
-    pub violation: Option<crate::core::violation::Violation>,
+    pub violation: crate::core::violation::Violation,
     pub reason: String,
     pub actor_id: String,
 }

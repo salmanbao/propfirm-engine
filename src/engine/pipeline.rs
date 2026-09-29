@@ -203,6 +203,21 @@ pub fn apply_decision(
         state = state
             .upgrade_phase(next_phase)
             .map_err(|e| crate::core::Error::InvalidState(format!("phase upgrade failed: {e}")))?;
+        state.account.status = crate::core::account::AccountStatus::Active;
+        state.account.target_reached_at = None;
+        state.account.target_reached_on_day = None;
+        state.account.active_trading_days = 0;
+        state.account.trading_day_index = 0;
+        state.account.day_counted_today = false;
+        state.account.today_realized_pnl = Money::ZERO;
+        state.account.largest_day_profit = Money::ZERO;
+        state.account.largest_day_loss = Money::ZERO;
+        state.account.sum_positive_days_profit = Money::ZERO;
+        state.account.day_start_balance = state.account.balance;
+        state.account.day_start_equity = state.account.equity;
+        state.account.current_trading_day_start = None;
+        state.account.peak_equity = state.account.equity;
+        state.account.peak_balance = state.account.balance;
         events.push(crate::core::events::DomainEvent::new(
             account_id,
             crate::core::events::DomainEventKind::PlanUpgraded {

@@ -467,6 +467,20 @@ async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
         "account_id": account.id.to_string(),
         "account_state": account,
         "clears_violation_id": "00000000-0000-0000-0000-000000000000",
+        "violation": {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "account_id": account.id.to_string(),
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
+        },
         "reason": "concurrency test",
         "actor_id": "test"
     })
@@ -900,12 +914,27 @@ async fn evaluate_internal_rejects_cross_tenant_request() {
 /// **Gap D**: `override_breach` must reject clearing a non-terminal account.
 #[tokio::test]
 async fn override_breach_rejects_active_account() {
-    let (state, account) = make_state_at(10000).await;
+    let (state, mut account) = make_state_at(10000).await;
     let app = router(state).await;
+    let violation_id = propfirm::core::ids::ViolationId::new();
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
-        "clears_violation_id": propfirm::core::ids::ViolationId::new().to_string(),
+        "clears_violation_id": violation_id.to_string(),
+        "violation": {
+            "id": violation_id.to_string(),
+            "account_id": account.id.to_string(),
+            "tenant_id": test_tenant_id_str(),
+            "rule_id": propfirm::core::ids::RuleId::new().to_string(),
+            "rule_name": "max_drawdown",
+            "kind": "MaxDrawdown",
+            "severity": "Hard",
+            "message": "test",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
+        },
         "reason": "ops override",
         "actor_id": "ops"
     })
@@ -915,6 +944,26 @@ async fn override_breach_rejects_active_account() {
         status,
         StatusCode::BAD_REQUEST,
         "override must reject active account"
+    );
+}
+
+#[tokio::test]
+async fn override_requires_violation_field() {
+    let (state, mut account) = make_state_at(10000).await;
+    let app = router(state).await;
+    account.status = AccountStatus::Failed;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "clears_violation_id": propfirm::core::ids::ViolationId::new().to_string(),
+        "reason": "ops override",
+        "actor_id": "ops"
+    })
+    .to_string();
+    let (status, _) = send(app, Method::POST, "/internal/v1/override", Some(body)).await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "missing violation must be rejected; got {status}"
     );
 }
 
@@ -1088,6 +1137,116 @@ async fn post_promotion_state_is_usable_on_next_evaluate() {
         status2,
         StatusCode::OK,
         "second evaluate on promoted state failed: {resp2}"
+    );
+    let parsed2: serde_json::Value = serde_json::from_str(&resp2).unwrap();
+    assert_eq!(
+        parsed2["evaluated"], true,
+        "promoted account must be evaluable on next call; got: {resp2}"
+    );
+    assert_ne!(
+        parsed2["decision_kind"], "NotEvaluated",
+        "promoted account must produce a real decision; got: {resp2}"
+    );
+}
+
+#[tokio::test]
+async fn promotion_continues_into_new_phase_rules() {
+    use propfirm::config::plan::{ChallengePhase, ChallengePlan};
+
+    let phase1_plan = ChallengePlan {
+        phase: ChallengePhase::Phase1,
+        min_trading_days: 1,
+        ..ChallengePlan::default()
+    };
+    let phase2_plan = ChallengePlan {
+        phase: ChallengePhase::Phase2,
+        max_total_drawdown_pct: Pct(dec!(0.05)),
+        min_trading_days: 1,
+        ..ChallengePlan::default()
+    };
+
+    let mut account = Account::new(AccountId::new(), phase1_plan.clone())
+        .with_tenant(test_tenant_id())
+        .start(chrono::Utc::now())
+        .unwrap();
+    account.status = AccountStatus::TargetHitPending;
+    account.target_reached_at = Some(chrono::Utc::now());
+    account.active_trading_days = 1;
+    account.equity = Money::new(dec!(10_500));
+    account.balance = Money::new(dec!(10_500));
+
+    let (state, app) = make_state_at(10500).await;
+    let app = router(state).await;
+    let body = serde_json::json!({
+        "account_id": account.id.to_string(),
+        "account_state": account,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status, resp) = send(
+        app.clone(),
+        Method::POST,
+        "/internal/v1/evaluate",
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first evaluate failed: {resp}");
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    let promoted: Account =
+        serde_json::from_value(parsed["account_state"].clone()).expect("account_state in response");
+
+    assert_eq!(
+        promoted.plan.phase,
+        ChallengePhase::Phase2,
+        "account should be promoted to Phase2"
+    );
+    assert_eq!(
+        promoted.status,
+        AccountStatus::Active,
+        "promoted account should be Active, not Passed"
+    );
+
+    let mut breached = promoted;
+    breached.equity = Money::new(dec!(9_400));
+    breached.balance = Money::new(dec!(9_400));
+    let breach_body = serde_json::json!({
+        "account_id": breached.id.to_string(),
+        "account_state": breached,
+        "equity_source": "broker_reported",
+        "tick": {
+            "symbol": "EURUSD",
+            "quote": {
+                "bid": "1.0800",
+                "ask": "1.0802",
+                "ts": chrono::Utc::now().to_rfc3339()
+            }
+        }
+    })
+    .to_string();
+    let (status2, resp2) = send(
+        app,
+        Method::POST,
+        "/internal/v1/evaluate",
+        Some(breach_body),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK, "second evaluate failed: {resp2}");
+    let parsed2: serde_json::Value = serde_json::from_str(&resp2).unwrap();
+    assert_eq!(
+        parsed2["evaluated"], true,
+        "promoted account must be evaluated under Phase2 rules; got: {resp2}"
+    );
+    assert_eq!(
+        parsed2["decision_kind"], "Liquidate",
+        "Phase2 drawdown should fail with tighter threshold; got: {resp2}"
     );
 }
 
@@ -1278,9 +1437,9 @@ async fn override_rejects_random_violation_uuid() {
             "severity": "Hard",
             "message": "test",
             "occurred_at": chrono::Utc::now().to_rfc3339(),
-            "breach_value": "10000",
-            "threshold_value": "9000",
-            "utilization": "1.0"
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
         },
         "reason": "ops override",
         "actor_id": "ops"
@@ -1315,9 +1474,9 @@ async fn override_rejects_wrong_account_violation() {
             "severity": "Hard",
             "message": "test",
             "occurred_at": chrono::Utc::now().to_rfc3339(),
-            "breach_value": "10000",
-            "threshold_value": "9000",
-            "utilization": "1.0"
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
         },
         "reason": "ops override",
         "actor_id": "ops"
@@ -1351,9 +1510,9 @@ async fn override_rejects_wrong_tenant_violation() {
             "severity": "Hard",
             "message": "test",
             "occurred_at": chrono::Utc::now().to_rfc3339(),
-            "breach_value": "10000",
-            "threshold_value": "9000",
-            "utilization": "1.0"
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
         },
         "reason": "ops override",
         "actor_id": "ops"
@@ -1387,9 +1546,9 @@ async fn override_rejects_non_terminating_violation() {
             "severity": "Warning",
             "message": "test",
             "occurred_at": chrono::Utc::now().to_rfc3339(),
-            "breach_value": "10000",
-            "threshold_value": "9000",
-            "utilization": "1.0"
+            "breach_value": 10000.0,
+            "threshold_value": 9000.0,
+            "utilization": 1.0
         },
         "reason": "ops override",
         "actor_id": "ops"
