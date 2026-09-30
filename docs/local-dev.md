@@ -27,6 +27,26 @@ This brings up four containers:
 | propfirm-server   | `propfirm-server`   | 8080 (HTTP)          |
 | propfirm-worker   | `propfirm-worker`   | —                    |
 
+## Required `X-Tenant-Id` header
+
+Every `/internal/v1/*` and `/v1/*` request **must** carry an
+`X-Tenant-Id` header — without it, the engine returns HTTP 400 with
+the body `missing X-Tenant-Id header` (see
+`src/api/handlers.rs::extract_tenant_id`, lines 40–52).
+
+The engine has **no authentication** (intentionally removed in v0.2.0).
+Trust is established at the network boundary (private compose network,
+k8s NetworkPolicy, and optionally mTLS — see `docs/tls.md`). The
+`X-Tenant-Id` header is **not** cryptographic identity; it's the
+typed tenant id the engine uses for:
+
+- Audit-log scoping (`audit_log.tenant_id` column).
+- Request validation: the engine cross-checks the header against
+  `account_state.tenant_id` and returns HTTP 403 if they mismatch.
+
+So every curl request to a stateful endpoint needs `-H "X-Tenant-Id: <uuid>"`.
+For probes (`/health`, `/ready`, `/metrics`), the header is not required.
+
 ## Verification checklist
 
 ### 1. Containers are up
@@ -55,7 +75,9 @@ curl -fsS http://localhost:8080/ready
 
 ```bash
 curl -fsS http://localhost:8080/metrics | head -20
-# Expected: a Prometheus-formatted metrics dump
+# Expected: a Prometheus-formatted metrics dump with every metric
+# prefixed by `propfirm_` (http_requests_total, evaluate_decisions_total,
+# idempotency_outcomes_total, request_duration_seconds, event_bus_*).
 ```
 
 ### 5. Postgres schema applied
@@ -180,7 +202,46 @@ curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/interna
 # Expected: 409
 ```
 
-### 11. Graceful shutdown
+### 11. Missing `X-Tenant-Id` returns 400
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/internal/v1/evaluate \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d @/tmp/eval.json
+# Expected: 400 (the body says "missing X-Tenant-Id header")
+```
+
+### 12. Breach-report (POST with JSON body)
+
+```bash
+curl -fsS -X POST http://localhost:8080/internal/v1/breach-report \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -d "{\"account_id\":\"$ACCOUNT_ID\"}" | jq .
+```
+
+The route is `POST /internal/v1/breach-report` with a JSON body
+`{"account_id": "uuid"}` (not a path parameter). The engine
+cross-checks the account's tenant against the `X-Tenant-Id` header
+and returns 403 on mismatch.
+
+### 13. Audit log writes
+
+```bash
+# Send a non-Pass evaluation (e.g. trigger a drawdown breach by
+# submitting a tick with low equity), then check the audit_log table:
+docker compose exec postgres psql -U propfirm -d propfirm -c \
+  "SELECT occurred_at, action, account_id, metadata->>'decision_kind' AS decision, \
+   request_hash FROM audit_log ORDER BY id DESC LIMIT 10;"
+```
+
+Expected: rows for `action = 'evaluate'` (non-Pass only), `breach_report`
+queries, etc. The `evaluate` audit_log row only appears when the
+decision is non-Pass (Pass verdicts are observable via the
+`propfirm_evaluate_decisions_total{kind="Pass"}` metric instead).
+
+### 14. Graceful shutdown
 
 ```bash
 # Send a long-running request, then SIGTERM the server mid-flight.
@@ -189,7 +250,7 @@ docker compose logs --tail 20 propfirm-server
 # Expected: "shutdown signal received, draining in-flight requests"
 ```
 
-### 12. TLS verification (optional)
+### 15. TLS verification (optional)
 
 To enable in-process TLS for verification:
 
@@ -208,6 +269,39 @@ cargo run --release --features server --bin propfirm-server
 # Verify (self-signed certs need --insecure):
 curl --insecure https://localhost:8080/health
 # Expected: ok
+```
+
+For mTLS verification, see `docs/tls.md` — generate a CA, server cert,
+and client cert, then set `PROPFIRM_SERVER__TLS__CLIENT_CA_PATH` to
+the CA bundle.
+
+### 16. Worker subcommands
+
+```bash
+# Healthcheck (useful for k8s liveness probes):
+docker compose exec propfirm-worker /app/propfirm-worker healthcheck
+
+# Status (PEL stats + consumer list):
+docker compose exec propfirm-worker /app/propfirm-worker status
+
+# Drain stuck PEL entries older than 120s:
+docker compose exec propfirm-worker /app/propfirm-worker drain 120
+
+# Recreate the consumer group (after a Redis flush):
+docker compose exec propfirm-worker /app/propfirm-worker reset-group
+```
+
+### 17. OpenAPI + Swagger UI (when `openapi` feature is enabled)
+
+```bash
+# Build with the openapi feature:
+cargo run --release --features server,openapi --bin propfirm-server
+
+# Fetch the OpenAPI spec:
+curl -fsS http://localhost:8080/openapi.json | jq .info
+
+# Open the Swagger UI in a browser:
+open http://localhost:8080/swagger-ui/
 ```
 
 ## Common integration issues and fixes
@@ -280,12 +374,26 @@ If pending count is high but no consumer is active, the worker crashed
 mid-message. `XAUTOCLAIM` will pick up idle messages after
 `idle_claim_ms` (default 60s).
 
-## Verification scripts
+### "missing X-Tenant-Id header" (HTTP 400)
 
-A handful of convenience scripts live under `scripts/`:
+You sent a request to `/internal/v1/*` or `/v1/*` without the
+`X-Tenant-Id` header. Add `-H "X-Tenant-Id: $(uuidgen)"` to your curl
+command. (Probes like `/health`, `/ready`, `/metrics`, `/openapi.json`,
+`/swagger-ui/` do not require it.)
 
-- `scripts/health-check.sh` — hits `/health`, `/ready`, `/metrics` and prints status codes
-- `scripts/redis-stream-test.sh` — produces a fake request, waits for the response
+### "account_state.tenant_id ... does not match authenticated tenant" (HTTP 403)
+
+The `X-Tenant-Id` header value does not match the `tenant_id` field
+inside the `account_state` JSON body. Make sure both are the same UUID.
+
+### Audit log table is empty after Pass evaluations
+
+This is expected — the `evaluate` audit_log write only fires for
+**non-Pass** verdicts (to avoid drowning the table in normal traffic).
+Pass verdicts are observable via the
+`propfirm_evaluate_decisions_total{kind="Pass"}` metric instead. To
+verify audit_log writes, trigger a breach (e.g. submit a tick with
+low equity to trigger `MaxDrawdown`) and re-check the table.
 
 ## Cleanup
 

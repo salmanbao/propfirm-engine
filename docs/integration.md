@@ -2,9 +2,17 @@
 
 This guide shows how to embed the prop firm engine in a Rust service, run evaluations, carry account state in and out (ADR-11), and hook into the HTTP API.
 
+**Version: 0.2.0** — the engine is released as an **internal component**
+of the Prop Firm as a Service Platform. There is no in-process
+authentication: the engine is reached only from the platform backend
+over the private compose network (HTTP) or the centralized Redis event
+bus (worker). Trust is established at the network boundary, optionally
+strengthened with mTLS (see `docs/tls.md`).
+
 ## Prerequisites
 
 - Rust 1.70+ (2021 edition)
+- (For the server / worker) Postgres 14+ and Redis 6.2+
 
 ## Adding the dependency
 
@@ -17,29 +25,33 @@ Or from crates.io when published:
 
 ```toml
 [dependencies]
-propfirm-engine = "0.1"
+propfirm-engine = "0.2"
 ```
 
 ## Feature flags
 
 | Feature | Description |
 |---------|-------------|
-| `default` | Enables `serialization` and `in-memory-store`. |
+| `default` | Enables `serialization` + `in-memory-store`. |
 | `serialization` | Enables `serde`/`serde_json`/`chrono/serde` for JSON config and request/response payloads. |
-| `in-memory-store` | Vestigial (kept so existing build commands keep working); gates nothing — there is no account store (ADR-11). |
-| `server` | Enables the `axum` HTTP server and all REST endpoints. |
-| `tracing` | Enables `tracing`/`tracing-subscriber` for structured audit logging. |
+| `server` | Enables the `axum` HTTP server, the `propfirm-worker` binary, durable persistence (`sqlx` + `redis` + `bb8` + `bb8-redis`), `rustls` TLS, `metrics-exporter-prometheus`, `figment` config loading, `dotenvy`. |
+| `otel` | Enables `tracing-opentelemetry` + `opentelemetry-otlp` (gRPC/HTTP) for exporting spans to a collector. |
+| `flame` | Enables `tracing-flame` for flame-graph profiling (writes a trace to `observability.flame_output_path`). |
+| `openapi` | Enables `utoipa` + `utoipa-swagger-ui`; serves `GET /openapi.json` + `GET /swagger-ui/`. |
+| `tracing` | Enables `tracing`/`tracing-subscriber` for structured logging. |
+| `tokio-cli` | Enables the `propfirm-cli` binary (tokio runtime). |
+| `in-memory-store` | Vestigial (kept so existing build commands keep working); gates nothing in v0.2.0. |
 
 For a typical embedded use (no HTTP server):
 
 ```toml
-propfirm-engine = { version = "0.1", default-features = false, features = ["serialization"] }
+propfirm-engine = { version = "0.2", default-features = false, features = ["serialization"] }
 ```
 
-For the HTTP server:
+For the HTTP server + OTLP + Swagger UI:
 
 ```toml
-propfirm-engine = { version = "0.1", default-features = false, features = ["serialization", "server", "tracing"] }
+propfirm-engine = { version = "0.2", default-features = false, features = ["serialization", "server", "otel", "openapi"] }
 ```
 
 ## Quick start
@@ -161,10 +173,21 @@ fn main() -> anyhow::Result<()> {
 
 Account persistence lives with the caller (ADR-11): `/internal/v1/evaluate` receives `account_state` and returns the updated state; storing it between calls is your responsibility. What the engine keeps:
 
-- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`) with an in-memory implementation in `events::store::InMemoryEventStore`. This is the read-side seam behind breach-report and override replay.
-- **Idempotency store** — in-memory `IdempotencyStore` in `propfirm::api::idempotency`, behind the `Idempotency-Key` header on `POST /internal/v1/evaluate`.
+- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`). Two implementations:
+  - `events::store::InMemoryEventStore` — the dev / in-memory default.
+  - `persistence::postgres::PostgresEventStore` — durable, append-only, backs the `events` table.
+  This is the read-side seam behind breach-report and override replay.
+- **Idempotency store** — three implementations behind the `IdempotencyBackend` trait:
+  - `api::idempotency::IdempotencyStore` — in-memory (dev).
+  - `persistence::postgres::PostgresIdempotencyBackend` — durable, atomic `INSERT ... ON CONFLICT DO NOTHING`.
+  - `persistence::redis_store::RedisIdempotencyBackend` — atomic Lua-script check-and-remember.
+  Backs the `Idempotency-Key` header on `POST /internal/v1/evaluate`.
+- **Audit log** — `api::audit_log` writes to the `audit_log` Postgres table from override / emergency-stop / manual-run / breach-report / evaluate-order / evaluate-internal non-Pass / worker evaluate+error paths.
+- **Event bus** — `persistence::redis_store::event_bus::RedisEventBus` for the worker binary's Redis Streams consumer.
 
-There is no `postgres` feature, no `AccountStore`, and no `put_with_version`. For your own optimistic-concurrency layer, carry `Account.version` inside `account_state`: it is hashed into every verdict's `input_hash`, so replaying a stale state is detectable (`Error::StateConflict` is retained as the typed error for that purpose).
+The `server` cargo feature pulls `sqlx` (Postgres), `redis`, `bb8`, and `bb8-redis` — the durable backends are compiled in whenever the server feature is on. There is no separate `postgres` cargo feature.
+
+There is no `AccountStore` and no `put_with_version`. For your own optimistic-concurrency layer, carry `Account.version` inside `account_state`: it is hashed into every verdict's `input_hash`, so replaying a stale state is detectable (`Error::StateConflict` is retained as the typed error for that purpose).
 
 ## HTTP API
 
@@ -172,38 +195,60 @@ Enable the `server` feature and start the HTTP server:
 
 ```rust
 use propfirm::api::server::run_server;
+use propfirm::settings::Settings;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    run_server("0.0.0.0:8080", ftmo_phase1()).await?;
+    let settings = Settings::load()?;
+    run_server(settings).await?;
     Ok(())
 }
 ```
 
-Authentication is configured via environment variables:
+`run_server(settings: Settings)` takes a fully-built `Settings` struct
+(loaded via `Settings::load()` from `config/propfirm.toml` + `PROPFIRM_*`
+env vars + `.env`), wires up the idempotency backend, runs Postgres
+migrations when `postgres.run_migrations = true`, builds the axum
+router, optionally installs TLS / mTLS, and serves with graceful shutdown.
 
-```bash
-export PROPFIRM_SERVICE_TOKENS='{"web":"active-digest","relay":"active-digest"}'
-export PROPFIRM_ALLOW_INSECURE=0
-```
-
-If no tokens are configured and `PROPFIRM_ALLOW_INSECURE` is not set, the server fails closed and refuses to start.
+There is **no authentication**. The engine is internal-only; trust is
+established at the network boundary (private compose network, k8s
+NetworkPolicy, and optionally mTLS — see `docs/tls.md`). The `X-Tenant-Id`
+header is **required** on every `/internal/v1/*` and `/v1/*` request —
+without it, the engine returns 400 `missing X-Tenant-Id header`
+(see `src/api/handlers.rs::extract_tenant_id`). The header is not
+cryptographic identity — it's the typed tenant id the engine uses for
+audit-log scoping and request validation.
 
 ### Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
+| Method | Path | Tenant header | Description |
+|--------|------|---------------|-------------|
 | `GET` | `/health` | none | Liveness probe. |
 | `GET` | `/ready` | none | Readiness probe. |
-| `POST` | `/internal/v1/evaluate` | service | Stateless evaluate contract (`account_state` required; a `rule_pack` field is rejected with 400). |
-| `POST` | `/internal/v1/override` | service | Clear a false-positive breach. |
-| `POST` | `/internal/v1/manual-run` | service | Force re-evaluation of an account. |
-| `POST` | `/internal/v1/emergency-stop` | service | Force `DecisionKind::Emergency`, short-circuiting rule evaluation. |
-| `GET` | `/internal/v1/breach-report/:account_id` | service | Trader-facing "why did I fail" view. |
-| `POST` | `/v1/evaluate-order` | tenant/service | Pre-trade order evaluation. |
-| `POST` | `/v1/rule-packs/validate` | tenant/service | Validate a rule pack (stateless — nothing is persisted). |
+| `GET` | `/metrics` | none | Prometheus metrics scrape. |
+| `GET` | `/openapi.json` | none | OpenAPI 3.0 spec (when `openapi` feature enabled). |
+| `GET` | `/swagger-ui/` | none | Interactive Swagger UI (when `openapi` feature enabled). |
+| `POST` | `/internal/v1/evaluate` | required | Stateless evaluate contract (`account_state` required; a `rule_pack` field is rejected with 400). |
+| `POST` | `/internal/v1/override` | required | Clear a false-positive breach. |
+| `POST` | `/internal/v1/manual-run` | required | Force re-evaluation of an account. |
+| `POST` | `/internal/v1/emergency-stop` | required | Force `DecisionKind::Emergency`, short-circuiting rule evaluation. |
+| `POST` | `/internal/v1/breach-report` | required | Trader-facing "why did I fail" view. The JSON body contains `account_id` (not a path parameter). |
+| `POST` | `/v1/evaluate-order` | required | Pre-trade order evaluation. |
+| `POST` | `/v1/rule-packs/validate` | required | Validate a rule pack (stateless — nothing is persisted). |
 
 All mutating endpoints accept an `Idempotency-Key` header.
+
+The breach-report route is `POST /internal/v1/breach-report` with a
+JSON body:
+
+```json
+{ "account_id": "uuid" }
+```
+
+(The caller's tenant id comes from the `X-Tenant-Id` header. The
+engine cross-checks the account's tenant against the header value and
+returns 403 if they mismatch.)
 
 ## Rule packs
 
@@ -297,22 +342,51 @@ Run specific test files:
 
 ```bash
 cargo test --features serialization,in-memory-store --test property_tests
-cargo test --features server --test auth_a1
+cargo test --features server --test api_integration
+cargo test --features server --test event_bus_integration
 ```
 
-Run benchmarks:
+Run benchmarks (the benchmark harness requires the `server` feature for
+the `IdempotencyStore` + `RuleRegistry` types it exercises):
 
 ```bash
-cargo bench --features serialization,in-memory-store
+cargo bench --features server
+```
+
+Run chaos tests (require a live Redis — `#[ignore]` by default):
+
+```bash
+cargo test --features server --test chaos_redis -- --ignored
+```
+
+Run the OTLP end-to-end test (requires a live OTLP collector —
+`#[ignore]` by default):
+
+```bash
+cargo test --features server,otel --test otlp_e2e -- --ignored
+```
+
+Run fuzz targets (nightly only, via `cargo +nightly fuzz`):
+
+```bash
+cd fuzz
+cargo +nightly fuzz run pure_evaluate_input_hash
+cargo +nightly fuzz run rule_registry_panic_safety
 ```
 
 ## Error handling
 
-All fallible operations return `propfirm::Result<T>`. The error type is `propfirm::Error`:
+All fallible operations return `propfirm::Result<T>`. The error type is
+`propfirm::Error` (see `src/core/mod.rs`):
 
-- `Error::Persistence(msg)` — storage failure (event store, idempotency backend).
+- `Error::InvalidConfig(msg)` — configuration validation failure.
+- `Error::RuleNotApplicable(rule_id, ctx_kind)` — a rule was attempted on an unsupported context kind.
+- `Error::NumericConversion(msg)` — a numeric conversion could not be performed safely (e.g. `Decimal` → `i64` overflow when serializing cents).
+- `Error::NotFound(msg)` — entity not found in storage.
+- `Error::Persistence(msg)` — storage failure (event store, idempotency backend, audit-log write).
+- `Error::Serialization(msg)` — JSON / serde error.
+- `Error::InvalidState(msg)` — a logical precondition was violated (e.g. applying `TradeFilled` to a `Pending` account).
+- `Error::RuleEval(msg)` — a user-supplied rule produced an error.
 - `Error::StateConflict(id, expected, actual)` — optimistic concurrency violation; retained for caller-side use (ADR-11: the stateless contract never produces it).
 - `Error::TickRejected(reason)` — stale or out-of-order tick.
-- `Error::RuleEval(msg)` — rule evaluation error.
-- `Error::InvalidConfig(msg)` — configuration validation failure.
-- `Error::NotFound(msg)` — resource not found.
+- `Error::MissingMetric(name)` — a required metric was unavailable for evaluation (distinct from a clean Pass — the verdict should be "ok-with-data-gap" rather than "ok").

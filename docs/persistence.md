@@ -1,15 +1,24 @@
 # Persistence
 
-The propfirm-engine ships with three pluggable persistence backends:
+The propfirm-engine ships with four pluggable persistence layers:
 
-| Backend | Use case | Survives restart | Survives crash | Shared across replicas |
+| Layer | Backends | Use case | Survives restart | Survives crash | Shared across replicas |
+|---|---|---|---|---|---|
+| Event store | `InMemoryEventStore`, `PostgresEventStore` | Append-only domain-event log; `replay(account_id)` rebuilds account state | ✅ (postgres) | ✅ (postgres) | ✅ (postgres) |
+| Idempotency | `IdempotencyStore` (memory), `PostgresIdempotencyBackend`, `RedisIdempotencyBackend` | Dedupes mutating HTTP retries | depends on backend | depends on backend | depends on backend |
+| Audit log | Postgres `audit_log` table | Who-did-what-when for sensitive operations | ✅ | ✅ | ✅ |
+| Event bus | `RedisEventBus` | Async eval-request delivery to the worker | ✅ (Redis Streams) | ✅ (PEL + XAUTOCLAIM) | ✅ |
+
+Select idempotency backend via `PROPFIRM_IDEMPOTENCY__BACKEND` env var
+(or `[idempotency] backend = "..."` in TOML). The event store and
+audit_log are auto-selected based on the configured idempotency backend
+(Postgres is provisioned whenever `backend` is `postgres` or `redis`).
+
+| `backend` | Event store | Idempotency backend | Audit log | Event bus |
 |---|---|---|---|---|
-| `memory` | Dev / tests | ❌ | ❌ | ❌ |
-| `postgres` | Durable audit + idempotency | ✅ | ✅ | ✅ |
-| `redis` | Durable idempotency + event bus | ✅ (AOF) | ✅ | ✅ |
-
-Select via `PROPFIRM_IDEMPOTENCY__BACKEND` env var (or
-`[idempotency] backend = "..."` in TOML).
+| `memory` (default) | `InMemoryEventStore` | `IdempotencyStore` (in-process HashMap) | not written (`pg_pool = None`) | `RedisEventBus` (if `redis.url` reachable) |
+| `postgres` | `PostgresEventStore` | `PostgresIdempotencyBackend` | ✅ | `RedisEventBus` (if `redis.url` reachable) |
+| `redis` | `PostgresEventStore` (preferred) or `InMemoryEventStore` (fallback) | `RedisIdempotencyBackend` | ✅ (if pg pool present) | `RedisEventBus` |
 
 ## Architecture
 
@@ -17,39 +26,65 @@ Select via `PROPFIRM_IDEMPOTENCY__BACKEND` env var (or
 ┌──────────────────────────────────────────────────────────┐
 │                      HTTP server                         │
 │  ┌───────────────────┐         ┌──────────────────────┐ │
-│  │   /internal/v1/  │         │     /metrics         │ │
-│  │     evaluate     │         └──────────────────────┘ │
-│  └─────────┬────────┘                                  │
+│  │  /internal/v1/    │         │     /metrics         │ │
+│  │   evaluate,       │         └──────────────────────┘ │
+│  │   override,       │                                  │
+│  │   manual-run,     │         ┌──────────────────────┐ │
+│  │   emergency-stop, │         │  /openapi.json       │ │
+│  │   breach-report  │         │  /swagger-ui/        │ │
+│  └─────────┬────────┘         └──────────────────────┘ │
 │            │                                            │
-└────────────┼────────────────────────────────────────────┘
-             │
-             ▼
-   ┌──────────────────┐
-   │  IdempotencyBackend  ◄── trait, dyn Arc
-   └─────────┬────────┘
-             │
-       ┌─────┴─────┬─────────────┐
-       ▼           ▼             ▼
- ┌──────────┐ ┌───────────┐ ┌───────────┐
- │ Memory   │ │ Postgres  │ │  Redis    │
- │ (default)│ │           │ │           │
- └──────────┘ └───────────┘ └───────────┘
-                              ▲
-                              │
-                ┌─────────────┴────────────┐
-                │   propfirm-worker binary │
-                │   (Redis Streams         │
-                │    event bus)            │
-                └──────────────────────────┘
+│            ▼                                            │
+│  ┌──────────────────────────────────────────────┐       │
+│  │ ServerState {                                │       │
+│  │   idempotency: Arc<dyn IdempotencyBackend>,  │       │
+│  │   event_store: Arc<dyn EventStore>,          │       │
+│  │   pg_pool: Option<Arc<sqlx::PgPool>>,        │       │
+│  │   metrics_handle: PrometheusHandle,          │       │
+│  │ }                                            │       │
+│  └─────────┬─────────────────────┬────────────┘        │
+└────────────┼─────────────────────┼────────────────────┘
+             │                     │
+             ▼                     ▼
+   ┌──────────────────┐  ┌──────────────────┐
+   │ Idempotency      │  │ audit_log table  │
+   │ (memory/postgres │  │ (Postgres only;  │
+   │  /redis)         │  │  no-op if no     │
+   │                  │  │  pg_pool)        │
+   └──────────────────┘  └──────────────────┘
+                                ▲
+   ┌──────────────────┐         │
+   │ Event store      │         │ audit_log::AuditEntry::finish()
+   │ (InMemory or     │         │ called from every sensitive handler
+   │  Postgres)       │         │
+   └──────────────────┘
+
+┌──────────────────────────────────────────────────────────┐
+│              propfirm-worker binary                      │
+│  ┌──────────────────────────────────────────────┐         │
+│  │ N concurrent consumer tasks                 │         │
+│  │   XREADGROUP → pure::evaluate → XADD         │         │
+│  │   response + XACK request                     │         │
+│  │   + audit_log::worker_evaluate/_error write  │         │
+│  └──────────────┬───────────────────────────────┘         │
+│                 │                                         │
+│                 ▼                                         │
+│        ┌──────────────────┐                               │
+│        │ RedisEventBus    │                               │
+│        │ (Redis Streams,  │                               │
+│        │  consumer group, │                               │
+│        │  bb8 pool for    │                               │
+│        │  cluster mode)   │                               │
+│        └──────────────────┘                               │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## 1. PostgreSQL (recommended for durable audit)
+## 1. PostgreSQL (recommended for durable audit + event store)
 
 ### Schema
 
-Migration: `src/persistence/migrations/0001_init.sql`
-
-Tables:
+Migration: `src/persistence/migrations/0001_init.sql` (run
+automatically on startup when `postgres.run_migrations = true`).
 
 #### `events`
 
@@ -62,32 +97,33 @@ CREATE TABLE events (
     payload         JSONB NOT NULL,
     occurred_at     TIMESTAMPTZ NOT NULL,
     causation_id    UUID,
-    inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    inserted_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX events_account_idx ON events (account_id, occurred_at);
-CREATE INDEX events_tenant_idx  ON events (tenant_id, occurred_at);
+CREATE INDEX events_account_idx  ON events (account_id, occurred_at);
+CREATE INDEX events_tenant_idx   ON events (tenant_id, occurred_at);
 CREATE INDEX events_kind_idx     ON events (kind);
+CREATE INDEX events_causation_idx ON events (causation_id);
 ```
 
-Used by `PostgresEventStore` for the durable domain-event audit
-log. The `replay(account_id)` method reconstructs `Account` state
-from the event log — the dispute-resolution seam.
+Used by `PostgresEventStore` for the durable domain-event audit log.
+The `replay(account_id)` method reconstructs `Account` state from the
+event log — the dispute-resolution seam.
 
 #### `idempotency`
 
 ```sql
 CREATE TABLE idempotency (
-    composite_key   TEXT PRIMARY KEY,
-    tenant_id       UUID NOT NULL,
-    endpoint        TEXT NOT NULL,
-    idempotency_key TEXT NOT NULL,
-    body_hash       TEXT NOT NULL,
-    response        TEXT NOT NULL,
-    inserted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at      TIMESTAMPTZ NOT NULL
+    composite_key   TEXT PRIMARY KEY,         -- "{tenant}\0{endpoint}\0{key}"
+    tenant_id        UUID NOT NULL,
+    endpoint         TEXT NOT NULL,
+    idempotency_key  TEXT NOT NULL,
+    body_hash        TEXT NOT NULL,            -- sha256 hex of request body
+    response         TEXT NOT NULL,            -- serialized first response
+    inserted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at       TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX idempotency_tenant_idx ON idempotency (tenant_id);
-CREATE INDEX idempotency_expires_idx ON idempotency (expires_at);
+CREATE INDEX idempotency_tenant_idx   ON idempotency (tenant_id);
+CREATE INDEX idempotency_expires_idx  ON idempotency (expires_at);
 ```
 
 Used by `PostgresIdempotencyBackend`. Atomic check-and-remember via
@@ -101,13 +137,56 @@ preserved for replay. See `src/rulepack.rs`.
 
 #### `audit_log`
 
-For who-did-what-when audit trail (overrides, emergency stops).
-Schema exists; write-path not yet wired (TODO).
+For who-did-what-when audit trail (overrides, emergency stops,
+manual-runs, breach-report queries, evaluate-order, evaluate-internal
+non-Pass, worker evaluate / worker_error).
+
+```sql
+CREATE TABLE audit_log (
+    id              BIGSERIAL PRIMARY KEY,
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    correlation_id  UUID,
+    actor_id        TEXT,                    -- "evaluate_internal" / actor / consumer name
+    action          TEXT NOT NULL,            -- "evaluate" / "override_breach" / ...
+    tenant_id       UUID,
+    account_id      UUID,
+    resource_kind   TEXT,                    -- "violation" / "order" / "request" / ...
+    resource_id     TEXT,
+    request_hash    TEXT,                    -- sha256 of request body if available
+    response_status INTEGER,
+    latency_ms      INTEGER,
+    metadata        JSONB                    -- free-form context
+);
+CREATE INDEX audit_log_tenant_idx   ON audit_log (tenant_id, occurred_at DESC);
+CREATE INDEX audit_log_account_idx ON audit_log (account_id, occurred_at DESC);
+CREATE INDEX audit_log_action_idx  ON audit_log (action, occurred_at DESC);
+```
+
+The write-path is **wired** in v0.2.0 (see `src/api/audit_log.rs`,
+301 LOC). Every sensitive handler constructs an `AuditEntry` via the
+convenience constructors (`override_breach`, `emergency_stop`,
+`manual_run`, `breach_report`, `evaluate`, `evaluate_order`,
+`worker_evaluate`, `worker_error`) and calls `.finish(pg_pool,
+correlation_id, response_status)`. If `pg_pool` is `None` (memory-only
+dev mode), the write is a silent no-op — the operation still
+succeeds, just without an audit record.
+
+The `audit_log.action` column receives one of:
+
+- `evaluate` — non-Pass `/internal/v1/evaluate` verdicts
+- `evaluate_order` — every `/v1/evaluate-order` call
+- `override_breach` — successful `/internal/v1/override`
+- `emergency_stop` — successful `/internal/v1/emergency-stop`
+- `manual_run` — successful `/internal/v1/manual-run`
+- `breach_report` — every `/internal/v1/breach-report` query (read but audited)
+- `worker_evaluate` — every consumed event-bus message with a verdict
+- `worker_error` — decode / redis / panic failures in the worker loop
 
 ### Connection pooling
 
 `sqlx::PgPool` with `max_connections` from settings (default 10).
-Pool is wrapped in `Arc` and shared across all handlers.
+Pool is wrapped in `Arc` and shared across all handlers + worker
+tasks via `ServerState.pg_pool`.
 
 ```rust
 let pool = PgPoolOptions::new()
@@ -156,10 +235,31 @@ backends are interchangeable for the replay use case.
 
 ### Connection model
 
-- **Single-node**: `MultiplexedConnection` (cloneable, async-safe,
-  handles pipelining internally).
-- **Cluster**: `Arc<tokio::sync::Mutex<ClusterConnection>>` —
-  serialized cluster ops. For higher throughput, run multiple workers.
+- **Single-node**: `redis::aio::MultiplexedConnection` (cloneable,
+  async-safe, handles pipelining internally). One underlying connection
+  multiplexed across all clones.
+- **Cluster**: `bb8::Pool<bb8_redis::RedisConnectionManager>`. The
+  pool maintains N concurrent connections (configurable via
+  `Settings::redis.pool_size`, default 8), so cluster ops run in
+  parallel without serializing through a Mutex.
+
+This is a deliberate upgrade from the previous
+`tokio::sync::Mutex<ClusterConnection>` model, which serialized all
+cluster ops through a single connection — only one in-flight command
+per worker process. With bb8, the pool hands out a fresh (multiplexed)
+connection per `get()` call, so concurrent tasks can issue Redis
+commands in parallel. For a 16-concurrency worker, this is roughly a
+16x throughput improvement on the Redis side.
+
+The `RedisConn` wrapper enum (`persistence::redis_store::mod`) hides
+the single-vs-cluster split behind one type:
+
+```rust
+pub enum RedisConn {
+    Single(redis::aio::MultiplexedConnection),
+    Cluster(Pool<RedisConnectionManager>),
+}
+```
 
 ### Idempotency backend
 
@@ -191,45 +291,17 @@ TTL: from `idempotency.ttl_secs` (default 24h).
 
 `RedisEventBus` uses Redis Streams for at-least-once delivery:
 
-- **Request stream**: `propfirm:evaluate:requests`
-- **Response stream**: `propfirm:evaluate:responses`
-- **Consumer group**: `propfirm-worker` (configurable)
+- **Request stream**: `propfirm:evaluate:requests` (configurable via `event_bus.request_stream`)
+- **Response stream**: `propfirm:evaluate:responses` (configurable via `event_bus.response_stream`)
+- **Consumer group**: `propfirm-worker` (configurable via `event_bus.consumer_group`)
 
 Wire format (XADD fields):
 
 - `request_id` — UUID (correlation key)
 - `payload` — JSON-serialized request/response
 
-#### Consumer lifecycle
-
-1. `ensure_group()` creates the consumer group with `MKSTREAM` —
-   idempotent (ignores `BUSYGROUP`).
-2. Each worker task calls `XREADGROUP` with `COUNT 1 BLOCK <block_ms>`.
-3. After processing, `XACK` removes the message from the PEL.
-4. A periodic `XAUTOCLAIM` task picks up messages idle for
-   `idle_claim_ms` (default 60s) — recovery for crashed workers.
-
-#### Sample
-
-```bash
-# Produce a request
-redis-cli XADD propfirm:evaluate:requests '*' \
-  request_id "$(uuidgen)" \
-  payload '{"account_id":"...", "tenant_id":"...", ...}'
-
-# Consume (the worker does this; here's the underlying call)
-redis-cli XREADGROUP GROUP propfirm-worker worker-1 \
-  COUNT 1 BLOCK 5000 STREAMS propfirm:evaluate:requests '>'
-
-# Ack
-redis-cli XACK propfirm:evaluate:requests propfirm-worker 1234-0
-
-# Inspect pending
-redis-cli XPENDING propfirm:evaluate:requests propfirm-worker
-
-# Reclaim idle messages (the worker's periodic task does this)
-redis-cli XAUTOCLAIM propfirm:evaluate:requests propfirm-worker worker-1 60000 0-0 COUNT 10
-```
+See `docs/event-bus.md` for the full consumer lifecycle, recovery
+semantics, and the bb8 pool's role in cluster mode.
 
 ### Cluster mode
 
@@ -239,12 +311,17 @@ Set `redis.cluster = true` and provide a comma-separated URL list:
 [redis]
 url = "redis://node-1:6379,redis://node-2:6379,redis://node-3:6379"
 cluster = true
+pool_size = 16
 ```
 
-The `redis` crate's `cluster-async` feature handles slot routing
-internally. Note: cluster ops are serialized through a Mutex in
-this PoC — for production throughput, run multiple worker processes
-each with their own `ClusterConnection`.
+The `bb8_redis::RedisConnectionManager` handles slot routing
+internally — it only needs one seed URL to discover the rest of the
+cluster via `CLUSTER NODES` / `CLUSTER SLOTS`. All cluster ops run
+through the bb8 pool, so concurrent worker tasks issue commands in
+parallel without serialization.
+
+For higher throughput, raise `redis.pool_size` (more concurrent
+connections per worker) and / or run more worker replicas.
 
 ## 3. In-memory (dev only)
 
@@ -256,20 +333,36 @@ each with their own `ClusterConnection`.
 - CI smoke tests
 
 **Never use in production** — all state is lost on every deploy,
-causing double-applied mutations on client retries.
+causing double-applied mutations on client retries, and there's no
+audit_log record of any sensitive action.
 
 ## Backend selection matrix
 
 | Setup | Use when |
 |---|---|
 | `backend = memory` | Local dev / CI smoke |
-| `backend = postgres` | Durable idempotency + audit log; HTTP-only (no event bus) |
-| `backend = redis` | Durable idempotency + event bus; recommended for HA |
+| `backend = postgres` | Durable idempotency + audit log; HTTP-only (no event bus worker) |
+| `backend = redis` | Durable idempotency + event bus; recommended for HA deployments |
 | Both `postgres` + `redis` | `backend = redis` (idempotency) + Postgres still used for event store + audit log |
 
 The default `docker-compose.yml` ships with `backend = redis` and
-Postgres still wired for the event store.
+Postgres still wired for the event store + audit log.
+
+## Throughput recommendation
+
+For high-throughput workers (≥ 100k RPS):
+
+- Use `redis.backend = redis` (Lua-script idempotency, no Postgres round-trip on every request).
+- Use cluster-mode Redis with `pool_size >= concurrency` (16 or 32 — one connection per in-flight task).
+- Use single-node Redis with a replica for HA when 100k+ RPS is required on a single stream (cluster mode adds slot-routing overhead per command).
+- Keep `audit_log` writes off the hot path: the engine already only writes `evaluate` audit entries on non-Pass verdicts, so the audit-log write rate equals the breach rate, not the request rate.
 
 ## Verification
 
-See `docs/local-dev.md` for the full verification checklist.
+See `docs/local-dev.md` for the full verification checklist —
+including the audit_log write check:
+
+```bash
+docker compose exec postgres psql -U propfirm -d propfirm -c \
+  "SELECT occurred_at, action, account_id, metadata FROM audit_log ORDER BY id DESC LIMIT 10;"
+```

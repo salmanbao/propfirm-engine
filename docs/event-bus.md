@@ -2,7 +2,8 @@
 
 The propfirm-engine is designed for **async communication** with the
 platform backend via Redis Streams. This document covers the wire
-format, the consumer model, and verification steps.
+format, the consumer model, the connection pool, and verification
+steps.
 
 ## Why streams (not pub/sub, not HTTP)
 
@@ -16,10 +17,13 @@ format, the consumer model, and verification steps.
 | Throughput | very high | medium | high |
 
 Streams are the right choice for async evaluation traffic:
+
 - A worker restart never loses a request.
 - A crashed worker's pending messages get auto-claimed after
   `idle_claim_ms`.
 - Throughput scales horizontally with worker count.
+- The bb8 connection pool (see below) lets concurrent worker tasks
+  issue Redis commands in parallel without serializing through a Mutex.
 
 ## Streams
 
@@ -88,7 +92,7 @@ Response `payload` JSON:
   "input_hash": "sha256:...",
   "account_state": { ... updated Account ... },
   "violations": [...],
-  "processed_at": "2026-09-29T10:30:00.123Z",
+  "processed_at": "2026-09-30T10:30:00.123Z",
   "error": null | "error message"
 }
 ```
@@ -112,11 +116,23 @@ Each `propfirm-worker` process spawns N concurrent consumer tasks
 5. Applies the decision to the account (state mutation, ADR-11 caller-owned).
 6. Serializes the response and `XADD`s it to the response stream.
 7. `XACK`s the request message (removes from PEL).
+8. Writes an `audit_log::worker_evaluate(...)` entry to Postgres
+   (best-effort — skipped silently if no `pg_pool`).
 
 If any step panics, the panic hook logs it via `tracing::error`, the
 worker writes a response with `error: "panic: ..."` and still `XACK`s
 so the message leaves the PEL (don't poison the queue with a
-poison-message loop).
+poison-message loop). It also writes an
+`audit_log::worker_error(...)` entry with `error_kind="panic"`.
+
+Metrics emitted per task iteration:
+
+- `propfirm_event_bus_messages_consumed_total{consumer=...}`
+- `propfirm_event_bus_messages_produced_total`
+- `propfirm_event_bus_messages_acked_total`
+- `propfirm_event_bus_errors_total{kind=decode|redis|panic}`
+- `propfirm_request_duration_seconds{endpoint=event_bus_worker}` (via
+  `worker::latency_scope()`)
 
 ### PEL recovery
 
@@ -128,16 +144,53 @@ This handles:
 - Worker panicked and exited
 - Network partition between worker and Redis
 
-### Idempotency
+Each claimed message increments `propfirm_event_bus_messages_claimed_total`.
 
-Delivery is **at-least-once**. The platform backend must include an
-`Idempotency-Key` field in the request payload (currently the worker
-doesn't read this — it relies on the request_id for correlation, but
-re-processing the same request_id is safe because the evaluation is
-pure).
+## Connection model — bb8 pool (cluster mode) and MultiplexedConnection (single-node)
 
-In a future PR, the worker will use the `IdempotencyBackend` (Redis
-backend recommended) to short-circuit duplicate processing.
+The connection type is hidden behind the `RedisConn` wrapper enum
+(see `src/persistence/redis_store/mod.rs`):
+
+```rust
+pub enum RedisConn {
+    Single(redis::aio::MultiplexedConnection),
+    Cluster(bb8::Pool<bb8_redis::RedisConnectionManager>),
+}
+```
+
+- **Single-node** — `MultiplexedConnection` (cloneable, async-safe,
+  handles pipelining internally). One underlying connection multiplexed
+  across all clones. Appropriate for dev / single-replica deployments.
+
+- **Cluster** — `bb8::Pool<bb8_redis::RedisConnectionManager>`. The
+  pool maintains N concurrent connections (configurable via
+  `Settings::redis.pool_size`, default 8), so cluster ops run in
+  parallel without serializing through a Mutex. Cloning the pool is
+  cheap (it's `Arc` internally), so multiple worker tasks share the
+  same underlying connections.
+
+### Why bb8 instead of `Mutex<ClusterConnection>`
+
+The previous `tokio::sync::Mutex<ClusterConnection>` model serialized
+all cluster ops through a single connection — only one in-flight
+command per worker process. With bb8, the pool hands out a fresh
+(multiplexed) connection per `get()` call, so concurrent tasks can
+issue Redis commands in parallel. For a 16-concurrency worker, this
+is roughly a 16x throughput improvement on the Redis side.
+
+The `bb8_redis::RedisConnectionManager` only needs one seed URL to
+discover the rest of the cluster via `CLUSTER NODES` / `CLUSTER
+SLOTS` — set `redis.url` to a comma-separated list of cluster node
+URLs and the manager handles slot routing internally.
+
+### Cluster mode config
+
+```toml
+[redis]
+url = "redis://node-1:6379,redis://node-2:6379,redis://node-3:6379"
+cluster = true
+pool_size = 16
+```
 
 ## Verification
 
@@ -244,6 +297,23 @@ docker compose start propfirm-worker
 docker compose logs --tail 30 propfirm-worker | grep "claimed idle"
 ```
 
+### 7. Verify the bb8 pool is in use (cluster mode)
+
+If `redis.cluster = true`, the worker log line on startup will show
+`mode=cluster pool_size=16`. The `bb8::Pool<bb8_redis::RedisConnectionManager>`
+type means each concurrent worker task can issue Redis commands in
+parallel without locking — verify by sending a burst of N concurrent
+requests and checking the worker logs show interleaved consumer IDs.
+
+### 8. Verify the audit_log entry
+
+```bash
+docker compose exec postgres psql -U propfirm -d propfirm -c \
+  "SELECT occurred_at, action, account_id, metadata->>'decision_kind' AS decision, \
+   metadata->>'request_id' AS req_id FROM audit_log \
+   WHERE action = 'worker_evaluate' ORDER BY id DESC LIMIT 5;"
+```
+
 ## Throughput considerations
 
 Each `XREADGROUP` call has a `block_ms` latency floor (default 5s).
@@ -255,9 +325,18 @@ For high-throughput scenarios:
    is fine for most workloads; raise to 32-64 for very high QPS.
 3. **Run more workers**: each worker is independent; just deploy more
    replicas. The consumer group handles deduplication.
-4. **Use single-node Redis**: cluster mode serializes ops through a
-   Mutex in v0.2.0. For 100k+ RPS, prefer single-node Redis with a
-   replica for HA.
+4. **Use cluster-mode Redis with the bb8 pool**: the pool size
+   (`redis.pool_size`) should be at least `event_bus.concurrency` so
+   every concurrent task has its own connection. For 100k+ RPS,
+   prefer cluster-mode Redis with `pool_size = 32` and
+   `concurrency = 32` per worker replica, plus multiple worker replicas.
+5. **Keep audit_log writes off the hot path**: the worker writes one
+   `audit_log::worker_evaluate(...)` entry per consumed message, but
+   the write is fire-and-forget (`let audit = ...; audit.finish(...).await;`
+   has no error return path that fails the request). The audit_log
+   table is also append-only with two indexes — write throughput is
+   high but not infinite. For very high QPS, consider partitioning
+   the table by tenant_id.
 
 ## Failure modes
 
@@ -278,24 +357,43 @@ Redis is back, the worker resumes consuming.
 
 ### Worker can't deserialize a request
 
-The worker writes a response with `error: "decode payload: <reason>"`
+The worker writes a response with `error: "decode payload: <reason>"`,
+increments `propfirm_event_bus_errors_total{kind="decode"}`, writes
+an `audit_log::worker_error(...)` entry with `error_kind="decode"`,
 and XACKs the message so it leaves the PEL. The platform backend sees
 the error and can choose to investigate.
 
 ### Worker panics during evaluation
 
 The panic hook logs the panic. The worker writes a response with
-`error: "panic: <message>"` and XACKs. The process stays alive (panic
-hook + axum-style catch_unwind in the worker loop).
+`error: "panic: <message>"`, increments
+`propfirm_event_bus_errors_total{kind="panic"}`, writes an
+`audit_log::worker_error(...)` entry with `error_kind="panic"`, and
+XACKs. The process stays alive (panic hook + axum-style
+`catch_unwind` in the worker loop).
 
 ## Future work
 
-- **Idempotency short-circuit**: check the `IdempotencyBackend` before
-  evaluating. If we've already seen this `Idempotency-Key`, replay the
-  cached response instead of re-evaluating. Saves CPU on retries.
+- **Idempotency short-circuit on the worker**: the worker currently
+  does NOT call the `IdempotencyBackend` before evaluating — it relies
+  on the request_id for correlation and on `pure::evaluate` being
+  side-effect-free for re-evaluation safety. A future PR will check
+  the backend before evaluating, so duplicate `Idempotency-Key`
+  payloads short-circuit to the cached response instead of
+  re-evaluating. Saves CPU on retries.
+
 - **Bulk XADD responses**: instead of one XADD per response, batch N
   responses per XADD (Redis supports multi-entry XADD). Lower Redis
   round-trips.
-- **Producer-side idempotency**: the platform backend should include
-  an `Idempotency-Key` in the request so the worker can dedup at the
-  evaluation seam, not just at the HTTP seam.
+
+- **Producer-side idempotency** — this is the **platform backend's**
+  responsibility, not the engine's. The platform backend should
+  include an `Idempotency-Key` in the request payload so the worker
+  can dedup at the evaluation seam once the short-circuit above
+  lands. The HTTP path already supports `Idempotency-Key`; the
+  event-bus path will reuse the same `IdempotencyBackend` once the
+  short-circuit lands.
+
+- **bb8 pool tuning**: the current `pool_size` is a single global
+  setting. A future PR may introduce per-pool-size overrides for
+  idempotency vs event bus so they can scale independently.
