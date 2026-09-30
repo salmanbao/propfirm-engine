@@ -164,21 +164,13 @@ pub async fn build_state(
         .idempotency_ttl()
         .unwrap_or_else(|| Duration::from_secs(86_400));
 
-    // Postgres pool — needed when idempotency backend is postgres OR
-    // migrations are requested OR the event store should be durable.
-    let pg_pool = match settings.idempotency.backend.as_str() {
-        "postgres" | "redis" => Some(Arc::new(
+    let needs_postgres = matches!(settings.idempotency.backend.as_str(), "postgres" | "redis");
+    let pg_pool = if needs_postgres {
+        Some(Arc::new(
             crate::persistence::postgres::connect(&settings.postgres).await?,
-        )),
-        _ => {
-            if settings.postgres.run_migrations {
-                Some(Arc::new(
-                    crate::persistence::postgres::connect(&settings.postgres).await?,
-                ))
-            } else {
-                None
-            }
-        }
+        ))
+    } else {
+        None
     };
 
     if let Some(pool) = &pg_pool {

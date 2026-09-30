@@ -100,7 +100,12 @@ jobs:
             -p 8080:8080 \
             -e PROPFIRM_IDEMPOTENCY__BACKEND=memory \
             propfirm-server:latest
-          sleep 2
+          for i in 1 2 3 4 5; do
+            if curl -fsS http://localhost:8080/health; then
+              break
+            fi
+            sleep 2
+          done
           curl -fsS http://localhost:8080/health
           curl -fsS http://localhost:8080/ready
           docker rm -f propfirm-smoke
