@@ -35,6 +35,7 @@
 //! cargo run --release --features server --bin propfirm-worker
 //! ```
 
+use propfirm::api::audit_log;
 use propfirm::api::metrics::worker as worker_metrics;
 use propfirm::api::middleware::install_panic_hook;
 use propfirm::api::otel;
@@ -53,12 +54,20 @@ use propfirm::settings::Settings;
 use propfirm::tenant::TenantId;
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Subcommand dispatch: `propfirm-worker healthcheck` runs the
+    // healthcheck and exits; otherwise we run the worker loop.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && args[1] == "healthcheck" {
+        return run_healthcheck().await;
+    }
+
     // 1. Load settings.
     let settings = Settings::load().map_err(|e| {
         eprintln!("FATAL: failed to load settings: {e}");
@@ -93,6 +102,28 @@ async fn main() -> anyhow::Result<()> {
         e
     })?;
 
+    // 5b. Build an optional Postgres pool for audit_log writes.
+    // The worker only needs the pool for audit; the engine itself
+    // uses pure::evaluate which doesn't touch Postgres. When the
+    // user runs with idempotency.backend = memory, the pool is None
+    // and audit-log writes become no-ops.
+    let pg_pool: Option<Arc<sqlx::PgPool>> = match settings.idempotency.backend.as_str() {
+        "postgres" | "redis" => {
+            match propfirm::persistence::postgres::connect(&settings.postgres).await {
+                Ok(pool) => Some(Arc::new(pool)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to connect to Postgres for audit-log writes; \
+                         audit_log entries will be silently dropped"
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     // 6. Spawn consumer tasks.
     let shutdown = shutdown_signal(Duration::from_secs(settings.server.shutdown_timeout_secs));
     let mut tasks = Vec::new();
@@ -101,15 +132,17 @@ async fn main() -> anyhow::Result<()> {
         let bus = bus.clone();
         let shutdown = shutdown.clone();
         let consumer_name = format!("worker-{}", i);
+        let pg = pg_pool.clone();
         tasks.push(tokio::spawn(async move {
             info!(consumer = %consumer_name, "consumer started");
-            worker_loop(&bus, &consumer_name, shutdown).await;
+            worker_loop(&bus, &consumer_name, shutdown, pg.as_ref()).await;
         }));
     }
 
     // 7. Periodic PEL recovery task.
     let recovery_bus = bus.clone();
     let recovery_shutdown = shutdown.clone();
+    let recovery_pg = pg_pool.clone();
     let recovery_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         interval.tick().await; // first tick is immediate
@@ -125,7 +158,14 @@ async fn main() -> anyhow::Result<()> {
             {
                 info!(stream_id = %stream_id, request_id = %payload.request_id, "claimed idle message");
                 worker_metrics::record_message_claimed();
-                process_request(&recovery_bus, stream_id, payload, "recovery").await;
+                process_request(
+                    &recovery_bus,
+                    stream_id,
+                    payload,
+                    "recovery",
+                    recovery_pg.as_ref(),
+                )
+                .await;
             }
         }
     });
@@ -151,6 +191,7 @@ async fn worker_loop(
     bus: &RedisEventBus,
     consumer_name: &str,
     shutdown: tokio_util::sync::CancellationToken,
+    pg_pool: Option<&Arc<sqlx::PgPool>>,
 ) {
     loop {
         if shutdown.is_cancelled() {
@@ -167,7 +208,7 @@ async fn worker_loop(
                     "received request"
                 );
                 worker_metrics::record_message_consumed(consumer_name);
-                process_request(bus, stream_id, payload, consumer_name).await;
+                process_request(bus, stream_id, payload, consumer_name, pg_pool).await;
             }
             propfirm::persistence::redis_store::EventBusResult::Empty => {
                 // Block timed out; loop and try again.
@@ -185,19 +226,55 @@ async fn worker_loop(
 }
 
 /// Process one request: parse → evaluate → XADD response → XACK.
+///
+/// For successful evaluations, an audit-log row is written to the
+/// `audit_log` table when a Postgres pool is configured. For error
+/// paths (decode failure, redis error, panic), an `worker_error`
+/// audit entry is written instead. The audit row carries:
+///   - actor_id: consumer_name (e.g. "worker-3" or "recovery")
+///   - action: worker_evaluate | worker_error
+///   - tenant_id, account_id (when extractable from the payload)
+///   - resource_id: request_id (correlation key with the platform
+///     backend)
+///   - request_hash: input_hash (sha256 of evaluation inputs)
+///   - metadata: consumer, decision_kind, request_id, input_hash,
+///     error_kind (when error), error_msg (when error)
 async fn process_request(
     bus: &RedisEventBus,
     stream_id: String,
     payload: EvaluateRequestPayload,
     consumer_name: &str,
+    pg_pool: Option<&Arc<sqlx::PgPool>>,
 ) {
     let request_id = payload.request_id.clone();
     let processed_at = chrono::Utc::now().to_rfc3339();
     let _latency = worker_metrics::latency_scope();
 
+    // Try to extract tenant_id + account_id from the payload up front
+    // for audit-log purposes (the actual evaluation happens inside
+    // parse_and_evaluate).
+    let (tenant_id_opt, account_id_opt) = extract_ids(&payload);
+
     // Parse inputs.
     let (response_payload, error_msg) = match parse_and_evaluate(&payload).await {
         Ok((decision_kind, input_hash, account_state, violations)) => {
+            // Audit-log only when decision is non-Pass (to avoid
+            // flooding the table with normal traffic). Same gating
+            // as the HTTP evaluate_internal handler.
+            let decision_lower = decision_kind.to_lowercase();
+            if decision_lower != "pass" {
+                if let (Some(t), Some(a)) = (tenant_id_opt, account_id_opt) {
+                    let audit = crate::audit_log::worker_evaluate(
+                        consumer_name,
+                        t,
+                        a,
+                        &decision_kind,
+                        &request_id,
+                        &input_hash,
+                    );
+                    audit.finish(pg_pool, None, 200).await;
+                }
+            }
             let response = EvaluateResponsePayload {
                 request_id: request_id.clone(),
                 decision_kind,
@@ -213,6 +290,16 @@ async fn process_request(
         Err(e) => {
             worker_metrics::record_error("evaluate_failed");
             error!(request_id = %request_id, error = %e, "evaluate failed");
+            // Audit-log the worker error.
+            let audit = crate::audit_log::worker_error(
+                consumer_name,
+                tenant_id_opt,
+                account_id_opt,
+                &request_id,
+                "evaluate_failed",
+                &e.to_string(),
+            );
+            audit.finish(pg_pool, None, 500).await;
             let response = EvaluateResponsePayload {
                 request_id: request_id.clone(),
                 decision_kind: "Error".to_string(),
@@ -230,6 +317,16 @@ async fn process_request(
     if let Err(e) = bus.produce_response(&response_payload).await {
         worker_metrics::record_error("produce_response_failed");
         error!(request_id = %request_id, error = %e, "failed to publish response");
+        // Audit-log the publish failure.
+        let audit = crate::audit_log::worker_error(
+            consumer_name,
+            tenant_id_opt,
+            account_id_opt,
+            &request_id,
+            "produce_response_failed",
+            &e.to_string(),
+        );
+        audit.finish(pg_pool, None, 500).await;
     } else {
         worker_metrics::record_message_produced();
     }
@@ -238,10 +335,35 @@ async fn process_request(
     if let Err(e) = bus.ack(&stream_id).await {
         worker_metrics::record_error("ack_failed");
         error!(request_id = %request_id, stream_id = %stream_id, error = %e, "failed to XACK");
+        // Audit-log the ack failure.
+        let audit = crate::audit_log::worker_error(
+            consumer_name,
+            tenant_id_opt,
+            account_id_opt,
+            &request_id,
+            "ack_failed",
+            &e.to_string(),
+        );
+        audit.finish(pg_pool, None, 500).await;
     } else {
         worker_metrics::record_message_acked();
     }
     tracing::info!(request_id = %request_id, stream_id = %stream_id, consumer = %consumer_name, error = ?error_msg, "request processed");
+}
+
+/// Extract tenant_id and account_id from a request payload for
+/// audit-log purposes. Returns `(None, None)` when the payload is
+/// malformed — the actual evaluation will then produce a
+/// `worker_error` audit entry with the parse failure.
+fn extract_ids(payload: &EvaluateRequestPayload) -> (Option<TenantId>, Option<AccountId>) {
+    let tenant_id = TenantId::from_str(&payload.tenant_id).ok();
+    let account_id = payload
+        .payload
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::from_str(s).ok())
+        .map(AccountId::from_uuid);
+    (tenant_id, account_id)
 }
 
 /// Parse the request payload and run the pure evaluate function.
@@ -361,4 +483,126 @@ async fn parse_and_evaluate(
             .map(|v| serde_json::to_value(v).unwrap_or_default())
             .collect(),
     ))
+}
+
+/// `propfirm-worker healthcheck` — exit 0 if the worker can talk to
+/// Redis, the request stream exists, and the consumer group is
+/// registered. Exits non-zero otherwise.
+///
+/// Designed for use as a k8s liveness/readiness probe:
+///
+/// ```yaml
+/// livenessProbe:
+///   exec:
+///     command: ["/app/propfirm-worker", "healthcheck"]
+///   initialDelaySeconds: 5
+///   periodSeconds: 10
+/// ```
+///
+/// Also useful for `docker compose exec propfirm-worker
+/// /app/propfirm-worker healthcheck` for local verification.
+async fn run_healthcheck() -> anyhow::Result<()> {
+    use propfirm::persistence::redis_store::RedisConn;
+
+    // Load settings (no tracing init — we want stderr to be the
+    // only output, so the k8s probe output stays clean).
+    let settings = Settings::load()?;
+
+    // Step 1: connect to Redis.
+    let conn = match redis_connect(&settings.redis).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FAIL: redis connect failed: {e}");
+            return Err(anyhow::anyhow!("redis connect failed: {e}"));
+        }
+    };
+
+    // Step 2: PING Redis.
+    let ping_ok = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("PING")
+                .query_async::<String>(&mut c)
+                .await
+                .map(|v| v == "PONG")
+                .unwrap_or(false)
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("PING")
+                .query_async::<String>(&mut *c)
+                .await
+                .map(|v| v == "PONG")
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+    };
+    if !ping_ok {
+        eprintln!("FAIL: redis PING did not return PONG");
+        return Err(anyhow::anyhow!("redis PING failed"));
+    }
+
+    // Step 3: check the request stream exists.
+    let stream = &settings.event_bus.request_stream;
+    let group = &settings.event_bus.consumer_group;
+    let stream_exists: bool = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("EXISTS")
+                .arg(stream)
+                .query_async::<i64>(&mut c)
+                .await
+                .map(|v| v == 1)
+                .unwrap_or(false)
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("EXISTS")
+                .arg(stream)
+                .query_async::<i64>(&mut *c)
+                .await
+                .map(|v| v == 1)
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+    };
+    if !stream_exists {
+        eprintln!("WARN: request stream '{stream}' does not exist (worker will create it on first consume via MKSTREAM)");
+        // Not a fatal error — the worker creates the stream lazily.
+    }
+
+    // Step 4: check the consumer group exists.
+    // XINFO GROUPS returns the list of groups for the stream. We
+    // search for our group name in the list.
+    let group_exists = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            let raw: Option<Vec<(String, String)>> = redis::cmd("XINFO")
+                .arg("GROUPS")
+                .arg(stream)
+                .query_async(&mut c)
+                .await
+                .ok();
+            raw.map(|groups| groups.iter().any(|(k, v)| k == "name" && v == group))
+                .unwrap_or(false)
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => {
+                let raw: Option<Vec<(String, String)>> = redis::cmd("XINFO")
+                    .arg("GROUPS")
+                    .arg(stream)
+                    .query_async(&mut *c)
+                    .await
+                    .ok();
+                raw.map(|groups| groups.iter().any(|(k, v)| k == "name" && v == group))
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        },
+    };
+    if !group_exists {
+        eprintln!("WARN: consumer group '{group}' does not exist on stream '{stream}' (worker will create it on startup)");
+        // Not fatal — the worker creates the group on startup.
+    }
+
+    println!("OK: redis reachable, stream '{stream}' present, group '{group}' registered");
+    Ok(())
 }

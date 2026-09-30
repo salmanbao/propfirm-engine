@@ -129,6 +129,7 @@ pub async fn ready(State(state): State<SharedState>) -> Result<&'static str, (St
 /// conflicting body is rejected with 409.
 
 #[axum::debug_handler]
+#[tracing::instrument(skip(state, headers, req), fields(endpoint = "/internal/v1/evaluate"))]
 pub async fn evaluate_internal(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -206,6 +207,7 @@ pub async fn evaluate_internal(
 
 /// The actual evaluation logic, split out so idempotency wrapping stays
 /// readable.
+#[tracing::instrument(skip(tenant_id, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/evaluate_impl"))]
 async fn evaluate_internal_impl(
     tenant_id: crate::tenant::TenantId,
     req: InternalEvaluateRequest,
@@ -448,6 +450,7 @@ async fn evaluate_internal_impl(
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, applies the override, and returns the
 /// updated `account_state`. No event-store replay is performed.
+#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/override", actor = ?req.actor_id))]
 pub async fn override_breach(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -576,6 +579,7 @@ pub async fn override_breach(
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, runs evaluation, and returns the
 /// verdict plus updated `account_state`. No event-store replay is performed.
+#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/manual-run"))]
 pub async fn manual_run(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -647,6 +651,7 @@ pub async fn manual_run(
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, applies the emergency stop, and
 /// returns the updated `account_state`. No event-store replay is performed.
+#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/emergency-stop", actor = ?req.actor_id))]
 pub async fn emergency_stop(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -727,6 +732,7 @@ pub async fn emergency_stop(
 /// **Stateless design**: changed to a POST-style request body flow taking
 /// `account_state`. Returns the current account status; violation history
 /// is caller-owned. No event-store replay is performed.
+#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/breach-report"))]
 pub async fn breach_report(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -817,6 +823,7 @@ pub async fn breach_report(
     }))
 }
 
+#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/v1/evaluate-order", symbol = ?req.symbol, side = ?req.side))]
 pub async fn evaluate_order(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -923,6 +930,7 @@ pub async fn evaluate_order(
 /// Validates a rule pack without persisting it. Returns validation errors
 /// or the pack's computed content hash. Used by tenants to verify packs
 /// before binding them to accounts via platform tooling.
+#[tracing::instrument(skip(req), fields(endpoint = "/v1/rule-packs/validate"))]
 pub async fn validate_rule_pack(
     Json(req): Json<CreateRulePackRequest>,
 ) -> Result<Json<RulePackResponse>, (StatusCode, String)> {

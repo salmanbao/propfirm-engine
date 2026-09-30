@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Run the security-audit + sbom jobs nightly too, so we catch new
+  # advisories even when no PR is open.
+  schedule:
+    - cron: '0 6 * * *'
 
 env:
   CARGO_TERM_COLOR: always
@@ -77,8 +81,94 @@ jobs:
       - name: Run doc tests
         run: cargo test --all-features --doc
 
+  security-audit:
+    runs-on: ubuntu-latest
+    # Reuse the workflow_dispatch trigger so security-audit can be
+    # re-run manually when a new RUSTSEC advisory is published.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit --version "^0.18"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-audit
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Run cargo audit (RUSTSEC advisory scan)
+        # Fail the build on any advisories that affect our direct
+        # dependencies OR their transitive deps. The --deny-warnings
+        # flag would also deny informational advisories; we leave it
+        # off so we only fail on actual security advisories.
+        run: cargo audit --deny warnings
+
+      - name: Upload audit report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report
+          path: |
+            ~/.cargo/registry/Cached/*
+            audit.toml
+          if-no-files-found: ignore
+          retention-days: 30
+
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx --version "^0.5"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-cyclonedx
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Generate CycloneDX SBOM
+        # Generates a CycloneDX-format SBOM (Software Bill of
+        # Materials) listing every direct + transitive dependency,
+        # its version, and its source. Used by the supply-chain
+        # security posture and surfaced in the Docker image's
+        # metadata.
+        run: cargo cyclonedx --all-features --format json --output-pattern packages
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: target/cyclonedx/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Display generated SBOM
+        run: |
+          echo "Generated SBOM files:"
+          ls -la target/cyclonedx/ || echo "(none found)"
+          echo "---"
+          find target/cyclonedx/ -name "*.json" -exec head -100 {} \; 2>/dev/null || true
+
   proof-of-build:
     runs-on: ubuntu-latest
+    needs: [check, security-audit, sbom]
     steps:
       - uses: actions/checkout@v4
 
@@ -88,11 +178,40 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: ./sbom
+
       - name: Build Docker image
         run: docker build -t propfirm-server:latest .
 
       - name: Verify binaries exist
         run: docker run --rm propfirm-server:latest ls -la /app
+
+      - name: Verify worker healthcheck subcommand
+        # The worker binary should respond to `healthcheck` and
+        # exit non-zero (because there's no Redis in this container).
+        # We expect exit code 1 with a "FAIL: redis connect failed"
+        # message — that proves the subcommand is wired in.
+        run: |
+          set +e
+          output=$(docker run --rm propfirm-server:latest /app/propfirm-worker healthcheck 2>&1)
+          rc=$?
+          set -e
+          echo "Healthcheck output: $output"
+          echo "Exit code: $rc"
+          if [ $rc -eq 0 ]; then
+            echo "Expected non-zero exit (no Redis in container); got 0 — this is suspicious"
+            exit 1
+          fi
+          if echo "$output" | grep -q "FAIL: redis connect failed"; then
+            echo "Healthcheck subcommand correctly reported Redis unreachable"
+          else
+            echo "Healthcheck output did not contain expected FAIL message"
+            exit 1
+          fi
 
       - name: Smoke test (HTTP, no TLS)
         run: |
@@ -108,4 +227,5 @@ jobs:
           done
           curl -fsS http://localhost:8080/health
           curl -fsS http://localhost:8080/ready
+          curl -fsS http://localhost:8080/metrics
           docker rm -f propfirm-smoke

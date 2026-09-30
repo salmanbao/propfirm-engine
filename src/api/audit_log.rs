@@ -243,3 +243,59 @@ pub fn breach_report(
             "cleared_count": cleared_count,
         }))
 }
+
+/// Convenience: log an event-bus worker evaluation. Called by the
+/// `propfirm-worker` binary after each message is consumed + processed
+/// + ack'd. The `consumer_name` distinguishes which worker pod handled
+/// the message; `request_id` is the cross-correlation key with the
+/// platform backend.
+#[must_use]
+pub fn worker_evaluate(
+    consumer_name: &str,
+    tenant: TenantId,
+    account: AccountId,
+    decision_kind: &str,
+    request_id: &str,
+    input_hash: &str,
+) -> AuditEntry {
+    AuditEntry::start("worker_evaluate", consumer_name)
+        .with_tenant(tenant)
+        .with_account(account)
+        .with_request_hash(input_hash)
+        .with_resource("request", request_id.to_string())
+        .with_metadata(serde_json::json!({
+            "consumer": consumer_name,
+            "decision_kind": decision_kind,
+            "request_id": request_id,
+            "input_hash": input_hash,
+        }))
+}
+
+/// Convenience: log a worker error (decode failure, redis error, panic,
+/// etc.). The `consumer_name` is the actor; `request_id` is the
+/// correlation key with the platform backend.
+#[must_use]
+pub fn worker_error(
+    consumer_name: &str,
+    tenant_id: Option<TenantId>,
+    account_id: Option<AccountId>,
+    request_id: &str,
+    error_kind: &str,
+    error_msg: &str,
+) -> AuditEntry {
+    let mut entry = AuditEntry::start("worker_error", consumer_name)
+        .with_resource("request", request_id.to_string())
+        .with_metadata(serde_json::json!({
+            "consumer": consumer_name,
+            "request_id": request_id,
+            "error_kind": error_kind,
+            "error_msg": error_msg,
+        }));
+    if let Some(t) = tenant_id {
+        entry = entry.with_tenant(t);
+    }
+    if let Some(a) = account_id {
+        entry = entry.with_account(a);
+    }
+    entry
+}

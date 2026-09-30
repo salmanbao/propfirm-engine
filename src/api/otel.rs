@@ -96,33 +96,51 @@ pub fn init_tracing(settings: &ObservabilitySettings) -> anyhow::Result<()> {
             opentelemetry::global::set_tracer_provider(provider);
 
             if is_pretty {
-                tracing_subscriber::registry()
+                if let Err(e) = tracing_subscriber::registry()
                     .with(filter)
                     .with(fmt::layer().with_target(false))
                     .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                    .init();
+                    .try_init()
+                {
+                    // Global subscriber already set — this is fine,
+                    // it just means another caller initialized first
+                    // (e.g. in tests that run in parallel). We log
+                    // and continue.
+                    tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+                }
             } else {
-                tracing_subscriber::registry()
+                if let Err(e) = tracing_subscriber::registry()
                     .with(filter)
                     .with(fmt::layer().with_target(true).json())
                     .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                    .init();
+                    .try_init()
+                {
+                    tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+                }
             }
             return Ok(());
         }
     }
 
     // No OTLP layer — plain fmt subscriber only.
+    // Use try_init so we don't panic if the global is already set
+    // (e.g. by an earlier test in the same process).
     if is_pretty {
-        tracing_subscriber::registry()
+        if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(fmt::layer().with_target(false))
-            .init();
+            .try_init()
+        {
+            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+        }
     } else {
-        tracing_subscriber::registry()
+        if let Err(e) = tracing_subscriber::registry()
             .with(filter)
             .with(fmt::layer().with_target(true).json())
-            .init();
+            .try_init()
+        {
+            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+        }
     }
 
     Ok(())
