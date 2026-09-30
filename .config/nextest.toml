@@ -1,0 +1,69 @@
+# cargo-nextest configuration.
+#
+# nextest is a faster, more capable test runner for Rust. It runs
+# tests in parallel (default = num CPUs), retries flaky tests,
+# and produces JUnit XML for CI dashboards.
+#
+# Run locally:
+#   cargo nextest run --all-features
+#
+# CI runs this in the `check` job via:
+#   cargo nextest run --all-features --no-fail-fast --junit target/nextest/junit.xml
+#
+# See https://nexte.st/docs/configuration/ for full docs.
+
+[profile.default]
+# Don't fail-fast — run every test, even if some fail. We want the
+# full failure report, not just the first failing test.
+fail-fast = false
+# Parallelism = number of CPUs (nextest default).
+# Override with --test-threads=N.
+test-threads = "num-cpus"
+# Slow-test timeout (5 min) — for the e2e tests that wait for batch
+# flush. The default 30s is too short for the otlp_e2e test.
+slow-timeout = { period = "5m", terminate-after = 3 }
+# Retry flaky tests once before marking as failed. Catches transient
+# timing issues (especially in the otlp_integration tests where the
+# global subscriber can race).
+retries = 1
+# Don't run tests marked #[ignore] by default — they need external
+# infrastructure (Redis, OTLP collector). Run them explicitly:
+#   cargo nextest run --run-ignored all
+run-ignore = false
+# Leak sanitizer (LSAN) support — useful for catching memory leaks.
+# Disabled by default; enable with `--leak-timeout 10s`.
+leak-timeout = "0s"
+
+[profile.ci]
+# CI profile: same as default but with JUnit output for dashboards.
+# Use: `cargo nextest run --profile ci --all-features`
+fail-fast = false
+test-threads = "num-cpus"
+slow-timeout = { period = "10m", terminate-after = 3 }
+retries = 2  # CI runners can be flaky; retry twice
+run-ignore = false
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Test groups — nextest can run tests in parallel groups, useful
+# for serializing tests that share global state (like the global
+# tracing subscriber).
+[[test-groups]]
+name = "tracing-global"
+# Tests that touch the global tracing subscriber — they need to run
+# one at a time (the global can only be set once per process).
+serial = true
+
+[[test-groups]]
+name = "tracing-global-tests"
+# Match by substring (nextest uses regex; .* is allowed).
+test-group = "tracing-global"
+filter-expr = "test(otlp_)"
+
+# Skip these tests in CI — they require infrastructure not available
+# in the GitHub Actions runner (Redis on port 6380 for
+# event_bus_integration, etc.).
+[profile.default.filters]
+# Equivalent to `cargo test -- --skip event_bus`.
+skip-tests = ["event_bus_integration::"]

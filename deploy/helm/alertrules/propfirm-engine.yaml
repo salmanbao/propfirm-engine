@@ -1,0 +1,218 @@
+# Grafana alerting rules for the propfirm-engine.
+#
+# These rules are provisioned via the Grafana Helm chart's
+# `alertingProvisioning` ConfigMap — see
+# https://grafana.github.io/helm-charts for setup.
+#
+# All rules use the `${DS_PROMETHEUS}` datasource variable from
+# the dashboard template — operators configure the datasource
+# once at provisioning time.
+#
+# Severity hierarchy:
+#   - critical (page): immediate action required; production is broken
+#   - warning (ticket): investigate during business hours
+#   - info (notification): FYI; not actionable alone
+
+groups:
+  - name: propfirm-engine.api
+    interval: 30s
+    rules:
+      # ===========================================================
+      # CRITICAL: any 5xx response
+      # ===========================================================
+      - alert: PropfirmHighErrorRate
+        expr: |
+          sum(rate(propfirm_http_requests_total{status=~"5.."}[5m])) by (endpoint)
+            > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: {{ $labels.endpoint }} returning 5xx"
+          description: "{{ $labels.endpoint }} is returning 5xx responses at >0.01/sec for 2 minutes. Check the server logs: kubectl -n {{ $namespace }} logs -l app.kubernetes.io/component=server | grep ERROR"
+
+      # ===========================================================
+      # CRITICAL: p99 latency exceeds 200ms for 5 minutes
+      # ===========================================================
+      - alert: PropfirmHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, endpoint) (
+              rate(propfirm_request_duration_seconds_bucket[5m])
+            )
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: {{ $labels.endpoint }} p99 latency > 200ms"
+          description: "p99 latency for {{ $labels.endpoint }} has exceeded 200ms for 5 minutes. Spec is <50ms (in-memory) or <100ms (postgres). Check: (1) Postgres pool exhaustion, (2) Redis cluster slot reshuffling, (3) CPU saturation (kubectl top pod)."
+
+      # ===========================================================
+      # WARNING: idempotency conflict detected (test harness bug)
+      # ===========================================================
+      - alert: PropfirmIdempotencyConflicts
+        expr: |
+          sum(rate(propfirm_idempotency_outcomes_total{outcome="conflict"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: idempotency conflicts detected"
+          description: "The engine is rejecting retries with the same Idempotency-Key but a different body. This usually indicates a test-harness bug or a misbehaving client that's mutating request bodies between retries. Investigate: grep the server logs for 'Idempotency-Key was already used with a different request body'."
+
+      # ===========================================================
+      # WARNING: idempotency backend errors
+      # ===========================================================
+      - alert: PropfirmIdempotencyBackendErrors
+        expr: |
+          sum(rate(propfirm_idempotency_outcomes_total{outcome="error"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: idempotency backend errors"
+          description: "The idempotency backend (Redis or Postgres) is returning errors. Check connectivity: (1) kubectl exec deploy/propfirm-server -- /app/propfirm-worker healthcheck, (2) kubectl -n infrastructure get pods -l app.kubernetes.io/name=postgres, (3) kubectl -n infrastructure get pods -l app.kubernetes.io/name=redis."
+
+  - name: propfirm-engine.decisions
+    interval: 30s
+    rules:
+      # ===========================================================
+      # INFO: decision distribution — pass rate below 80%
+      # ===========================================================
+      - alert: PropfirmLowPassRate
+        expr: |
+          (
+            sum(rate(propfirm_evaluate_decisions_total{kind="Pass"}[15m]))
+            /
+            sum(rate(propfirm_evaluate_decisions_total[15m]))
+          ) < 0.80
+        for: 15m
+        labels:
+          severity: info
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: <80% of evaluations are Passing"
+          description: "Pass rate dropped below 80% over the last 15 minutes. Not necessarily a bug — could be a market event triggering real breaches — but worth a sanity check."
+
+      # ===========================================================
+      # CRITICAL: EmergencyStop decisions spiking
+      # ===========================================================
+      - alert: PropfirmEmergencyStopSpike
+        expr: |
+          sum(rate(propfirm_evaluate_decisions_total{kind="Emergency"}[5m])) > 1
+        for: 1m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: >1 EmergencyStop/sec for 1m"
+          description: "EmergencyStop decisions are spiking. Either: (1) operator is responding to a real incident (likely), or (2) a bug in the override flow is auto-triggering (investigate). Check audit_log table: SELECT * FROM audit_log WHERE action='emergency_stop' ORDER BY occurred_at DESC LIMIT 10."
+
+      # ===========================================================
+      # WARNING: Liquidate decisions exceeding 5/min sustained
+      # ===========================================================
+      - alert: PropfirmLiquidateRate
+        expr: |
+          sum(rate(propfirm_evaluate_decisions_total{kind="Liquidate"}[5m])) * 60 > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: >5 Liquidate decisions/min sustained"
+          description: "Liquidations are exceeding 5/min for 5 minutes. Each Liquidate means a trader's account was force-closed due to a rule breach. Investigate whether this is a market event or a rule regression."
+
+  - name: propfirm-engine.worker
+    interval: 30s
+    rules:
+      # ===========================================================
+      # CRITICAL: worker not consuming (consumed == 0 for 5m)
+      # ===========================================================
+      - alert: PropfirmWorkerNotConsuming
+        expr: |
+          sum(rate(propfirm_event_bus_messages_consumed_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: worker
+        annotations:
+          summary: "propfirm-engine: worker not consuming from event bus"
+          description: "No messages consumed in 5 minutes. Either: (1) no traffic (verify with kubectl exec -- /app/propfirm-worker status), (2) worker crashed (kubectl get pods), (3) Redis stream empty (verify with redis-cli XLEN propfirm:evaluate:requests)."
+
+      # ===========================================================
+      # WARNING: worker PEL backlog growing (consumed > acked)
+      # ===========================================================
+      - alert: PropfirmWorkerPelBacklog
+        expr: |
+          sum(rate(propfirm_event_bus_messages_consumed_total[5m]))
+            - sum(rate(propfirm_event_bus_messages_acked_total[5m]))
+            > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: propfirm-engine
+          component: worker
+        annotations:
+          summary: "propfirm-engine: worker PEL backlog growing"
+          description: "Consumed rate > Acked rate for 5m (backlog growing). Workers are picking up messages faster than they can ack them. Check: (1) XAUTOCLAIM idle threshold too low (workers re-claiming), (2) process_request slow (panic in rule?), (3) audit_log write blocking. Run: kubectl exec deploy/propfirm-worker -- /app/propfirm-worker status."
+
+      # ===========================================================
+      # CRITICAL: worker error rate spiking
+      # ===========================================================
+      - alert: PropfirmWorkerErrorRate
+        expr: |
+          sum(rate(propfirm_event_bus_errors_total[5m])) > 1
+        for: 2m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: worker
+        annotations:
+          summary: "propfirm-engine: worker errors >1/sec"
+          description: "Worker error counter is rising. Likely causes: (1) Redis unreachable (verify healthcheck), (2) Postgres unreachable (audit_log writes failing), (3) decode failures (platform backend sending malformed payloads)."
+
+  - name: propfirm-engine.health
+    interval: 60s
+    rules:
+      # ===========================================================
+      # CRITICAL: server pod unavailable
+      # ===========================================================
+      - alert: PropfirmServerDown
+        expr: |
+          up{job="propfirm-engine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: server unreachable"
+          description: "Prometheus can't scrape /metrics. Either: (1) pod crashed (kubectl get pods), (2) NetworkPolicy blocking, (3) service down. Run: kubectl -n {{ $namespace }} describe deploy/propfirm-server."
+
+      # ===========================================================
+      # CRITICAL: server pod restarted >3 times in 30m
+      # ===========================================================
+      - alert: PropfirmServerRestartLoop
+        expr: |
+          increase(kube_pod_container_status_restarts_total{container="propfirm-server"}[30m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: propfirm-engine
+          component: server
+        annotations:
+          summary: "propfirm-engine: server restart loop"
+          description: "Server pod restarted >3 times in 30m. Check pod events: kubectl -n {{ $namespace }} describe pod -l app.kubernetes.io/component=server. Common causes: OOMKill (resource limits too low), liveness probe failing (healthcheck broken), migration failures."

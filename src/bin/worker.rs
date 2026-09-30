@@ -64,12 +64,20 @@ async fn main() -> anyhow::Result<()> {
     // Subcommand dispatch:
     //   `propfirm-worker healthcheck` → run healthcheck + exit
     //   `propfirm-worker metrics`     → dump accumulated metrics + exit
+    //   `propfirm-worker status`      → print PEL stats + consumer list
+    //   `propfirm-worker drain`       → XACK all PEL entries idle > N secs
     //   (no subcommand)              → run the worker loop
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 {
         match args[1].as_str() {
             "healthcheck" => return run_healthcheck().await,
             "metrics" => return run_metrics_dump().await,
+            "status" => return run_status().await,
+            "drain" => {
+                // Parse optional idle-secs arg: `propfirm-worker drain 60`
+                let idle_secs: i64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
+                return run_drain(idle_secs).await;
+            }
             _ => {} // fall through to worker loop
         }
     }
@@ -193,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// One consumer's main loop: read → process → ack.
+#[tracing::instrument(skip(bus, consumer_name, shutdown, pg_pool), fields(consumer = %consumer_name))]
 async fn worker_loop(
     bus: &RedisEventBus,
     consumer_name: &str,
@@ -245,6 +254,7 @@ async fn worker_loop(
 ///   - request_hash: input_hash (sha256 of evaluation inputs)
 ///   - metadata: consumer, decision_kind, request_id, input_hash,
 ///     error_kind (when error), error_msg (when error)
+#[tracing::instrument(skip(bus, stream_id, payload, consumer_name, pg_pool), fields(consumer = %consumer_name, stream_id = %stream_id, request_id = %payload.request_id, account_id = ?extract_ids(&payload).1))]
 async fn process_request(
     bus: &RedisEventBus,
     stream_id: String,
@@ -373,6 +383,7 @@ fn extract_ids(payload: &EvaluateRequestPayload) -> (Option<TenantId>, Option<Ac
 }
 
 /// Parse the request payload and run the pure evaluate function.
+#[tracing::instrument(skip(payload), fields(account_id = ?payload.account_id, request_id = ?payload.request_id))]
 async fn parse_and_evaluate(
     payload: &EvaluateRequestPayload,
 ) -> anyhow::Result<(
@@ -651,4 +662,391 @@ async fn run_metrics_dump() -> anyhow::Result<()> {
     let rendered = handle.render();
     print!("{rendered}");
     Ok(())
+}
+
+/// `propfirm-worker status` — print Pending Entries List (PEL) stats
+/// and per-consumer information for the request stream + consumer
+/// group configured in settings.
+///
+/// This is a debugging aid: when the worker is backed up (consuming
+/// but not acking, or vice versa), running this subcommand shows
+/// exactly which messages are stuck + how long they've been idle.
+///
+/// Output (human-readable; one section per concept):
+///   ```text
+///   === Consumer group: propfirm-worker on stream propfirm:evaluate:requests ===
+///
+///   XPENDING summary:
+///     pending count:  42
+///     lowest pending: 1696123456789-0
+///     highest pending: 1696123999999-0
+///     consumers in group: 3
+///
+///   XINFO CONSUMERS (per-consumer pending):
+///     consumer=worker-0  pending=15  idle=12s
+///     consumer=worker-1  pending=20  idle=8s
+///     consumer=worker-2  pending=7   idle=4s
+///   ```
+///
+/// Usage:
+///   kubectl exec deploy/propfirm-worker -- /app/propfirm-worker status
+async fn run_status() -> anyhow::Result<()> {
+    use propfirm::persistence::redis_store::RedisConn;
+    let settings = Settings::load()?;
+    let conn = match redis_connect(&settings.redis).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FAIL: redis connect failed: {e}");
+            return Err(anyhow::anyhow!("redis connect failed: {e}"));
+        }
+    };
+    let stream = &settings.event_bus.request_stream;
+    let group = &settings.event_bus.consumer_group;
+
+    println!("=== Consumer group: {group} on stream {stream} ===");
+
+    // XPENDING summary: returns [pending_count, lowest_id, highest_id, consumer_count]
+    let xpending_summary: Option<Vec<redis::Value>> = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("XPENDING")
+                .arg(stream)
+                .arg(group)
+                .query_async(&mut c)
+                .await
+                .ok()
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("XPENDING")
+                .arg(stream)
+                .arg(group)
+                .query_async(&mut *c)
+                .await
+                .ok(),
+            Err(_) => None,
+        },
+    };
+
+    println!();
+    println!("XPENDING summary:");
+    if let Some(summary) = xpending_summary {
+        let pending_count = summary.get(0).and_then(|v| value_as_int(v)).unwrap_or(-1);
+        let lowest = summary
+            .get(1)
+            .and_then(|v| value_as_string(v))
+            .unwrap_or_else(|| "(none)".to_string());
+        let highest = summary
+            .get(2)
+            .and_then(|v| value_as_string(v))
+            .unwrap_or_else(|| "(none)".to_string());
+        let consumers = summary.get(3).and_then(|v| value_as_int(v)).unwrap_or(-1);
+        println!("  pending count:  {pending_count}");
+        println!("  lowest pending:  {lowest}");
+        println!("  highest pending: {highest}");
+        println!("  consumers in group: {consumers}");
+    } else {
+        println!("  (XPENDING failed — consumer group may not exist yet)");
+    }
+
+    // XINFO CONSUMERS: returns a list of {name, pending, idle, ...}
+    println!();
+    println!("XINFO CONSUMERS (per-consumer pending):");
+    let xinfo_consumers: Option<Vec<(String, redis::Value)>> = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("XINFO")
+                .arg("CONSUMERS")
+                .arg(stream)
+                .arg(group)
+                .query_async(&mut c)
+                .await
+                .ok()
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("XINFO")
+                .arg("CONSUMERS")
+                .arg(stream)
+                .arg(group)
+                .query_async(&mut *c)
+                .await
+                .ok(),
+            Err(_) => None,
+        },
+    };
+    if let Some(consumers) = xinfo_consumers {
+        // consumers is a flat list of alternating key/value pairs:
+        //   [("name", Value("worker-0")), ("pending", Int(15)), ("idle", Int(12000)), ...]
+        // We parse it as a list of consumer maps.
+        let mut current_name = String::new();
+        let mut current_pending: i64 = -1;
+        let mut current_idle_ms: i64 = -1;
+        let mut printed_any = false;
+        for (k, v) in &consumers {
+            match k.as_str() {
+                "name" => {
+                    // If we already have a pending consumer, print it.
+                    if !current_name.is_empty() {
+                        println!(
+                            "  consumer={:<20}  pending={:<5}  idle={}",
+                            current_name,
+                            current_pending,
+                            format_idle(current_idle_ms)
+                        );
+                        printed_any = true;
+                        current_name.clear();
+                        current_pending = -1;
+                        current_idle_ms = -1;
+                    }
+                    if let Some(s) = value_as_string(v) {
+                        current_name = s;
+                    }
+                }
+                "pending" => {
+                    current_pending = v.as_int_opt().unwrap_or(-1);
+                }
+                "idle" => {
+                    current_idle_ms = v.as_int_opt().unwrap_or(-1);
+                }
+                _ => {}
+            }
+        }
+        // Print the last consumer.
+        if !current_name.is_empty() {
+            println!(
+                "  consumer={:<20}  pending={:<5}  idle={}",
+                current_name,
+                current_pending,
+                format_idle(current_idle_ms)
+            );
+            printed_any = true;
+        }
+        if !printed_any {
+            println!("  (no consumers registered yet — workers haven't started?)");
+        }
+    } else {
+        println!("  (XINFO CONSUMERS failed — stream or group may not exist)");
+    }
+
+    Ok(())
+}
+
+/// Format idle ms as a human-readable duration ("12s", "3m", "1h").
+fn format_idle(ms: i64) -> String {
+    if ms < 0 {
+        return "?".to_string();
+    }
+    let secs = ms / 1000;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
+}
+
+/// `propfirm-worker drain [idle_secs]` — XACK all PEL entries that
+/// have been idle for more than `idle_secs` (default 60s). Useful
+/// for cleaning up the PEL when workers have crashed and the
+/// messages are stuck.
+///
+/// WARNING: draining is destructive — any in-flight work in those
+/// messages is lost. Use only when:
+/// - The worker pool is down (so no consumer is actively processing).
+/// - OR the messages are known to be already-processed-but-unacked
+///   (e.g. worker panicked after process but before ack).
+///
+/// Usage:
+///   kubectl exec deploy/propfirm-worker -- /app/propfirm-worker drain 60
+///
+/// Output:
+///   ```text
+///   Drain: scanning PEL for entries idle > 60s on stream
+///          propfirm:evaluate:requests (group: propfirm-worker)
+///   Drain: claimed 7 entries via XAUTOCLAIM
+///   Drain: XACK'd all 7 entries
+///   Drain: PEL cleaned; remaining pending = 0
+///   ```
+async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
+    use propfirm::persistence::redis_store::RedisConn;
+    let settings = Settings::load()?;
+    let conn = match redis_connect(&settings.redis).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FAIL: redis connect failed: {e}");
+            return Err(anyhow::anyhow!("redis connect failed: {e}"));
+        }
+    };
+    let stream = settings.event_bus.request_stream.clone();
+    let group = settings.event_bus.consumer_group.clone();
+    let consumer_name = format!("drain-{}", std::process::id());
+
+    eprintln!(
+        "Drain: scanning PEL for entries idle > {idle_secs}s on stream {stream} (group: {group})"
+    );
+
+    // Use XAUTOCLAIM with a high count + iterate until we get no more.
+    let mut total_claimed: usize = 0;
+    let mut start_id = "0-0".to_string();
+    let max_iterations = 100; // safety cap
+
+    for _ in 0..max_iterations {
+        let (next_id, claimed_ids): (String, Vec<String>) = match &conn {
+            RedisConn::Single(c) => {
+                let mut c = c.clone();
+                // XAUTOCLAIM stream group consumer min_idle start_id COUNT n
+                // returns (next-start-id, [(stream-id, fields), ...], deleted-ids)
+                // We just need the stream-ids.
+                let raw: Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)> =
+                    redis::cmd("XAUTOCLAIM")
+                        .arg(&stream)
+                        .arg(&group)
+                        .arg(&consumer_name)
+                        .arg(idle_secs * 1000)
+                        .arg(&start_id)
+                        .arg("COUNT")
+                        .arg(100i64)
+                        .query_async(&mut c)
+                        .await
+                        .ok();
+                match raw {
+                    Some((next, entries, _deleted)) => {
+                        let ids: Vec<String> = entries.into_iter().map(|(id, _)| id).collect();
+                        (next, ids)
+                    }
+                    None => break,
+                }
+            }
+            RedisConn::Cluster(pool) => match pool.get().await {
+                Ok(mut c) => {
+                    let raw: Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)> =
+                        redis::cmd("XAUTOCLAIM")
+                            .arg(&stream)
+                            .arg(&group)
+                            .arg(&consumer_name)
+                            .arg(idle_secs * 1000)
+                            .arg(&start_id)
+                            .arg("COUNT")
+                            .arg(100i64)
+                            .query_async(&mut *c)
+                            .await
+                            .ok();
+                    match raw {
+                        Some((next, entries, _deleted)) => {
+                            let ids: Vec<String> = entries.into_iter().map(|(id, _)| id).collect();
+                            (next, ids)
+                        }
+                        None => break,
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("pool acquire failed: {e}"));
+                }
+            },
+        };
+
+        if claimed_ids.is_empty() {
+            break;
+        }
+
+        total_claimed += claimed_ids.len();
+        eprintln!(
+            "Drain: claimed {} entries (total: {total_claimed})",
+            claimed_ids.len()
+        );
+
+        // XACK each claimed message — they leave the PEL.
+        // Use a single XACK call with multiple IDs (Redis supports
+        // XACK stream group id1 id2 id3 ...).
+        let ack_count: i64 = match &conn {
+            RedisConn::Single(c) => {
+                let mut c = c.clone();
+                let mut cmd = redis::cmd("XACK");
+                cmd.arg(&stream).arg(&group);
+                for id in &claimed_ids {
+                    cmd.arg(id);
+                }
+                cmd.query_async(&mut c).await.unwrap_or(0)
+            }
+            RedisConn::Cluster(pool) => match pool.get().await {
+                Ok(mut c) => {
+                    let mut cmd = redis::cmd("XACK");
+                    cmd.arg(&stream).arg(&group);
+                    for id in &claimed_ids {
+                        cmd.arg(id);
+                    }
+                    cmd.query_async(&mut *c).await.unwrap_or(0)
+                }
+                Err(_) => 0,
+            },
+        };
+        eprintln!("Drain: XACK'd {ack_count} entries");
+
+        // Move to the next cursor.
+        if next_id == start_id {
+            break;
+        }
+        start_id = next_id;
+    }
+
+    // Final XPENDING count.
+    let remaining: i64 = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("XPENDING")
+                .arg(&stream)
+                .arg(&group)
+                .query_async::<i64>(&mut c)
+                .await
+                .unwrap_or(-1)
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("XPENDING")
+                .arg(&stream)
+                .arg(&group)
+                .query_async::<i64>(&mut *c)
+                .await
+                .unwrap_or(-1),
+            Err(_) => -1,
+        },
+    };
+    eprintln!("Drain: PEL cleaned; remaining pending = {remaining}");
+    eprintln!("Drain: total messages drained = {total_claimed}");
+    println!("drained={total_claimed} remaining_pending={remaining}");
+    Ok(())
+}
+
+/// Extract an i64 from a redis::Value (Int or BulkString).
+fn value_as_int(v: &redis::Value) -> Option<i64> {
+    match v {
+        redis::Value::Int(i) => Some(*i),
+        redis::Value::BulkString(b) => String::from_utf8_lossy(b).parse().ok(),
+        redis::Value::SimpleString(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Extract a String from a redis::Value (BulkString or SimpleString).
+fn value_as_string(v: &redis::Value) -> Option<String> {
+    match v {
+        redis::Value::BulkString(b) => Some(String::from_utf8_lossy(b).to_string()),
+        redis::Value::SimpleString(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+trait ValueHelpers {
+    fn as_int_opt(&self) -> Option<i64>;
+    fn as_string_opt(&self) -> Option<String>;
+}
+
+impl ValueHelpers for redis::Value {
+    fn as_int_opt(&self) -> Option<i64> {
+        value_as_int(self)
+    }
+    fn as_string_opt(&self) -> Option<String> {
+        value_as_string(self)
+    }
 }

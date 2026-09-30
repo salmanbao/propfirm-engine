@@ -1,4 +1,26 @@
-//! CLI entry point: demonstrates a full evaluation cycle.
+//! CLI entry point.
+//!
+//! ## Modes
+//!
+//! - `propfirm-cli` (no args)  → run the built-in demo (start → order → tick → risk metrics).
+//! - `propfirm-cli repl`       → interactive REPL: paste JSON request bodies, get verdicts.
+//! - `propfirm-cli repl -f FILE` → read JSON requests from FILE, one per line, batch mode.
+//!
+//! ## REPL usage
+//!
+//! ```bash
+//! cargo run --release --features tokio-cli --bin propfirm-cli repl
+//! ```
+//!
+//! Then paste JSON request bodies (one per line):
+//!
+//! ```json
+//! {"account_id": "...", "account_state": {...}, "bridge_tick": {...}}
+//! ```
+//!
+//! The REPL responds with the decision kind, winning priority, input
+//! hash, and any violations. Useful for debugging rule behavior
+//! without running the full HTTP server.
 
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::order::{Order, OrderKind, OrderSide, OrderType, TimeInForce};
@@ -11,6 +33,20 @@ use propfirm::prelude::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Subcommand dispatch.
+    #[cfg(feature = "server")]
+    if args.len() >= 2 && args[1] == "repl" {
+        return run_repl(&args[2..]).await;
+    }
+
+    // Default: run the built-in demo.
+    run_demo().await
+}
+
+/// Default mode — the built-in end-to-end demo.
+async fn run_demo() -> anyhow::Result<()> {
     println!("=== Prop Firm Engine – CLI Demo ===\n");
 
     // 1. Build the challenge plan and account.
@@ -127,4 +163,228 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\nDone. Engine worked end-to-end. ✓");
     Ok(())
+}
+
+/// Interactive REPL mode — paste JSON request bodies, get verdicts.
+///
+/// Each line of input is one JSON request body — the same shape
+/// `/internal/v1/evaluate` accepts. The REPL parses it, calls
+/// `pure::evaluate`, and prints:
+/// - decision kind (Pass, Warn, Fail, Liquidate, Emergency, ...)
+/// - winning priority (numeric — shows which rule "won")
+/// - input_hash (sha256 — for reproducibility)
+/// - per-rule verdict table (so you can see why the engine
+///   decided what it decided)
+#[cfg(feature = "server")]
+async fn run_repl(args: &[String]) -> anyhow::Result<()> {
+    use std::io::{BufRead, BufReader};
+
+    // Parse optional `-f FILE` arg for batch mode.
+    let mut input: Box<dyn BufRead> = if let Some(path) = args.iter().nth(1) {
+        // Skip "-f"
+        let path = if path == "-f" {
+            args.iter().nth(2).map(String::as_str).unwrap_or("-")
+        } else {
+            path.as_str()
+        };
+        if path == "-" {
+            Box::new(BufReader::new(std::io::stdin()))
+        } else {
+            let f = std::fs::File::open(path)
+                .map_err(|e| anyhow::anyhow!("failed to open input file {path}: {e}"))?;
+            Box::new(BufReader::new(f))
+        }
+    } else {
+        Box::new(BufReader::new(std::io::stdin()))
+    };
+
+    eprintln!("propfirm-cli repl — type a JSON request body per line, then Enter.");
+    eprintln!("Each line is one `/internal/v1/evaluate` request.");
+    eprintln!("Press Ctrl+D (or empty line + Enter) to exit.\n");
+
+    let mut line = String::new();
+    let mut line_no = 0usize;
+    loop {
+        line.clear();
+        line_no += 1;
+        let n = input.read_line(&mut line)?;
+        if n == 0 {
+            // EOF — exit.
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if trimmed.starts_with('#') || trimmed.starts_with("//") {
+            // Comment line — skip.
+            continue;
+        }
+
+        match process_one_repl_line(trimmed).await {
+            Ok(pretty) => println!("{pretty}\n"),
+            Err(e) => eprintln!("line {line_no}: ERROR — {e}\n"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse one JSON request, run pure::evaluate, pretty-print the result.
+#[cfg(feature = "server")]
+async fn process_one_repl_line(json: &str) -> anyhow::Result<String> {
+    use propfirm::api::handlers::InternalEvaluateRequest;
+    use propfirm::core::ids::AccountId;
+    use propfirm::core::types::ServerTime;
+    use propfirm::pure::{self, EquitySource, EvaluateInputs};
+    use propfirm::rulepack::RulePack;
+    use propfirm::rules::context::RuleContextKind;
+    use propfirm::rules::registry::RuleRegistry;
+    use propfirm::tenant::TenantId;
+    use std::str::FromStr;
+    use uuid::Uuid;
+
+    let req: InternalEvaluateRequest =
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("failed to parse JSON: {e}"))?;
+
+    let account_id = AccountId::from_uuid(
+        Uuid::from_str(&req.account_id).map_err(|e| anyhow::anyhow!("invalid account_id: {e}"))?,
+    );
+    let tenant_id = TenantId::from_str(
+        req.account_state
+            .as_ref()
+            .map(|a| a.tenant_id.to_string())
+            .as_deref()
+            .unwrap_or("00000000-0000-0000-0000-000000000000"),
+    )
+    .map_err(|e| anyhow::anyhow!("invalid tenant_id: {e}"))?;
+
+    let mut acc = req
+        .account_state
+        .ok_or_else(|| anyhow::anyhow!("account_state is required"))?;
+
+    let (equity_source, _bridge_tick) = match req.bridge_tick {
+        Some(ref bt) => (EquitySource::BrokerReported, Some(bt)),
+        None => {
+            let src = match req.equity_source.as_deref() {
+                None | Some("estimated") => EquitySource::Estimated,
+                Some(other) => EquitySource::parse(other)
+                    .map_err(|e| anyhow::anyhow!("invalid equity_source: {e}"))?,
+            };
+            (src, None)
+        }
+    };
+
+    let pack = RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan);
+    let registry = RuleRegistry::with_default_rules_for_plan(&acc.plan);
+
+    // Parse positions + trades.
+    let mut positions = Vec::new();
+    for p in req.open_positions.unwrap_or_default() {
+        positions.push(
+            p.into_domain(account_id)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        );
+    }
+    let mut trades = Vec::new();
+    for t in req.today_trades.unwrap_or_default() {
+        trades.push(
+            t.into_domain(account_id)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        );
+    }
+
+    let server_time = if let Some(ref bt) = req.bridge_tick {
+        ServerTime(
+            chrono::DateTime::from_timestamp_millis(bt.payload.broker_time)
+                .ok_or_else(|| anyhow::anyhow!("invalid broker_time"))?,
+        )
+    } else if let Some(ref tick) = req.tick {
+        ServerTime(tick.quote.ts)
+    } else {
+        ServerTime(chrono::Utc::now())
+    };
+
+    let latest_tick = req.tick.clone();
+
+    let inputs = if let Some(ref tick) = latest_tick {
+        EvaluateInputs::for_tick(&positions, &trades, tick).with_equity_source(equity_source)
+    } else {
+        EvaluateInputs {
+            open_positions: &positions,
+            today_trades: &trades,
+            equity_source,
+            ..Default::default()
+        }
+    };
+
+    let verdict = pure::evaluate(
+        &acc,
+        &pack,
+        &registry,
+        RuleContextKind::OnTick,
+        server_time,
+        inputs,
+    )?;
+
+    let (new_state, _events) = propfirm::engine::pipeline::apply_decision(
+        propfirm::engine::state::AccountState::new(acc.clone()),
+        &verdict.decision,
+        server_time.0,
+        "repl",
+    )?;
+    acc = new_state.account;
+
+    // Pretty-print the verdict.
+    let mut out = String::new();
+    out.push_str("┌─ verdict ─────────────────────────────────────────────┐\n");
+    out.push_str(&format!(
+        "│ decision_kind:     {:<30}            │\n",
+        format!("{:?}", verdict.decision.kind)
+    ));
+    out.push_str(&format!(
+        "│ winning_priority:  {:<30}            │\n",
+        verdict.decision.winning_priority
+    ));
+    out.push_str(&format!("│ input_hash:        {}  │\n", verdict.input_hash));
+    out.push_str(&format!(
+        "│ pack_id:           {:<30}            │\n",
+        verdict.pack_id
+    ));
+    out.push_str(&format!(
+        "│ pack_version:      {:<30}            │\n",
+        verdict.pack_version
+    ));
+    out.push_str("├─ per-rule verdicts ─────────────────────────────────┤\n");
+    for report in &verdict.reports {
+        let verdict_str = format!("{:?}", report.verdict);
+        out.push_str(&format!(
+            "│ {:<25} → {:<20} (prio={:<4}) │\n",
+            report.rule_name, verdict_str, report.priority
+        ));
+    }
+    out.push_str("├─ account state (post-eval) ───────────────────────┤\n");
+    out.push_str(&format!(
+        "│ status:        {:?}                                 │\n",
+        acc.status
+    ));
+    out.push_str(&format!(
+        "│ balance:       {:<30}                │\n",
+        acc.balance
+    ));
+    out.push_str(&format!(
+        "│ equity:        {:<30}                │\n",
+        acc.equity
+    ));
+    out.push_str(&format!(
+        "│ peak_balance:  {:<30}                │\n",
+        acc.peak_balance
+    ));
+    out.push_str(&format!(
+        "│ daily_drawdown: {:<29}                │\n",
+        acc.daily_drawdown()
+    ));
+    out.push_str("└────────────────────────────────────────────────────┘");
+
+    Ok(out)
 }

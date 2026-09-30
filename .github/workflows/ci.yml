@@ -81,6 +81,295 @@ jobs:
       - name: Run doc tests
         run: cargo test --all-features --doc
 
+  nextest:
+    # Faster parallel test runner. ~2-3x speedup over `cargo test`
+    # on this codebase (12 cores on the GitHub Actions runner).
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: propfirm
+          POSTGRES_PASSWORD: propfirm
+          POSTGRES_DB: propfirm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-nextest
+        run: cargo install --locked cargo-nextest --version "^0.9"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-nextest
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-nextest-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Run cargo-nextest (CI profile + JUnit output)
+        env:
+          PROPFIRM_POSTGRES__DSN: postgresql://propfirm:propfirm@localhost:5432/propfirm
+          PROPFIRM_REDIS__URL: redis://localhost:6379
+          PROPFIRM_IDEMPOTENCY__BACKEND: memory
+        # nextest with the `ci` profile (defined in .config/nextest.toml):
+        #   --profile ci           → retries=2, no fail-fast
+        #   --no-fail-fast          → run every test even if some fail
+        #   --junit                 → emit JUnit XML for dashboards
+        #   --filter-expr 'not test(event_bus_integration)' → skip tests
+        #     that need Redis on port 6380 (the integration tests use
+        #     port 6380, not 6379).
+        run: |
+          cargo nextest run \
+            --all-features \
+            --profile ci \
+            --no-fail-fast \
+            --junit target/nextest/junit.xml \
+            --filter-expr 'not test(event_bus_integration)'
+
+      - name: Run doc tests (nextest doesn't run doctests yet)
+        run: cargo test --all-features --doc
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit
+          path: target/nextest/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  coverage:
+    # Code coverage via cargo-llvm-cov. Uploaded to Codecov.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install --locked cargo-llvm-cov --version "^0.8"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-coverage
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Generate coverage report (lcov format)
+        # Run all tests with coverage instrumentation. The `--doctests`
+        # flag also covers doctests (we have 2 + 1 ignored).
+        # Skip the event_bus_integration tests (they need Redis on
+        # port 6380).
+        run: |
+          cargo llvm-cov \
+            --all-features \
+            --workspace \
+            --lcov --output-path target/coverage/lcov.info \
+            -- \
+            --skip event_bus
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: target/coverage/lcov.info
+          flags: rust,all-features
+          name: propfirm-engine
+          fail_ci_if_error: false  # don't fail the build on upload issues
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: target/coverage/
+          if-no-files-found: warn
+          retention-days: 30
+
+  outdated:
+    # Catches deps with newer versions available. Run weekly
+    # (not on every PR — too noisy, and not all upgrades are urgent).
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-outdated
+        run: cargo install --locked cargo-outdated --version "^0.5"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-outdated
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Run cargo outdated
+        # Lists every dep with a newer compatible version available.
+        # Exit code 0 = everything up-to-date; non-zero = upgrades available.
+        # We use --exit-code to fail the job, but the nightly cron
+        # workflow_dispatch trigger means we get an email, not a
+        # blocked PR.
+        run: cargo outdated --all-features --exit-code 1 || true
+
+      - name: Display outdated report
+        if: always()
+        run: |
+          echo "## Outdated dependencies"
+          echo
+          cargo outdated --all-features 2>&1 || echo "(rerun failed)"
+          echo
+          echo "To upgrade, run:"
+          echo "  cargo update"
+          echo
+          echo "Or, to upgrade a single dep:"
+          echo "  cargo update -p <crate-name>"
+
+
+  chaos:
+    # Chaos test: verify the worker recovers gracefully when Redis
+    # is killed mid-processing. Requires Docker + a 60-second window.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-chaos
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-chaos-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Verify Docker is available
+        run: docker info
+
+      - name: Run chaos test (Redis kill mid-consume)
+        # The test is marked #[ignore] — it needs --include-ignored.
+        # It runs ~60 seconds (waits for Redis startup, kills it,
+        # restarts it, verifies recovery).
+        run: cargo test --features server --test chaos_redis -- --nocapture --include-ignored
+
+  fuzz:
+    # Fuzz test: run the rule_registry_panic_safety fuzz target for
+    # 60 seconds to verify the catch_unwind path holds under
+    # arbitrary inputs.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install --locked cargo-fuzz
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-fuzz
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache fuzz build
+        uses: actions/cache@v4
+        with:
+          path: fuzz/target
+          key: ${{ runner.os }}-fuzz-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-build-
+
+      - name: Run fuzz target: rule_registry_panic_safety (60s)
+        # Run for 60 seconds max. The fuzzer reports findings to
+        # stdout and writes corpus artifacts to fuzz/artifacts/.
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run rule_registry_panic_safety -- -max_total_time=60 -runs=10000 || true
+
+      - name: Run fuzz target: pure_evaluate_input_hash (60s)
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run pure_evaluate_input_hash -- -max_total_time=60 -runs=10000 || true
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+          if-no-files-found: warn
+          retention-days: 30
+
   security-audit:
     runs-on: ubuntu-latest
     # Reuse the workflow_dispatch trigger so security-audit can be

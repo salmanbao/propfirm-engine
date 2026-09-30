@@ -1,0 +1,24 @@
+[package]
+name = "propfirm-fuzz"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "Fuzz targets for the propfirm-engine, verifying the catch_unwind panic-safety path."
+
+[package.metadata]
+cargo-fuzz = { lib = "propfirm" }
+
+[dependencies]
+propfirm = { path = "..", features = ["serialization", "in-memory-store"] }
+libfuzzer-sys = "0.13"
+rust_decimal = "1.36"
+rust_decimal_macros = "1.36"
+chrono = "0.4"
+
+[[bin]]
+name = "rule_registry_panic_safety"
+path = "fuzz_targets/rule_registry_panic_safety.rs"
+
+[[bin]]
+name = "pure_evaluate_input_hash"
+path = "fuzz_targets/pure_evaluate_input_hash.rs"

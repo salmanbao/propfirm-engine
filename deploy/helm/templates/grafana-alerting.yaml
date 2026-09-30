@@ -1,0 +1,17 @@
+{{- if .Values.grafana.alerting.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana-alerting
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana-alerting
+    # The Grafana Helm chart's alerting sidecar watches ConfigMaps
+    # with this label and imports them as provisioning files.
+    grafana_alerting: "1"
+data:
+  {{- range $path, $_ := .Files.Glob "alertrules/*.yaml" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+{{- end -}}

@@ -225,6 +225,15 @@ grafana:
     folder: "Prop Firm Engine"
     # Disable to ship without the dashboard ConfigMap (the JSON still
     # lives under dashboards/ for direct manual import).
+  alerting:
+    # Provision Grafana-managed alert rules. Requires the Grafana
+    # Helm chart's alerting sidecar (or manual import via the
+    # provisioning API).
+    enabled: true
+    # Contact points (PagerDuty, Slack, etc.) are defined OUTSIDE
+    # this chart — they live in the Grafana instance's
+    # `alerting_provisioning` config. We only ship the rules
+    # themselves; operators wire up the contact points.
 
 # ---------------------------------------------------------------------------
 # Ingress — optional, only for HTTP server. Skip if using a gateway.
