@@ -14,7 +14,7 @@
   ],
   "nodes": [
     { "id": "external_caller", "type": "external", "label": "Platform Bridge", "stage": 0, "row": 1 },
-    { "id": "api_router", "type": "backend", "label": "API Router", "stage": 0, "row": 2 },
+    { "id": "api_router", "type": "backend", "label": "API Server", "stage": 0, "row": 2 },
     { "id": "auth_layer", "type": "security", "label": "Auth", "stage": 1, "row": 1 },
     { "id": "pipeline", "type": "backend", "label": "Pipeline", "stage": 2, "row": 1 },
     { "id": "evaluator", "type": "backend", "label": "Evaluator", "stage": 2, "row": 2 },

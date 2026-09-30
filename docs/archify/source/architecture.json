@@ -48,9 +48,8 @@
     { "id": "pipeline-to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis" },
     { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate registry", "variant": "default", "labelAt": [555, 130] },
     { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 186] },
-    { "id": "api-to-pure", "from": "api", "to": "pure", "label": "stateless evaluate", "variant": "emphasis", "via": [[220, 280], [400, 280]], "labelAt": [310, 300] },
-    { "id": "pure-to-rulepack", "from": "pure", "to": "rulepack", "label": "synthetic pack", "variant": "default", "labelAt": [555, 410] },
-    { "id": "pipeline-to-notifier", "from": "pipeline", "to": "notifications", "label": "violations?", "variant": "security", "via": [[400, 280], [760, 280]], "labelAt": [580, 300] }
+    { "id": "api-to-pure", "from": "api", "to": "pure", "label": "stateless evaluate", "variant": "emphasis" },
+    { "id": "pure-to-rulepack", "from": "pure", "to": "rulepack", "label": "pack", "variant": "default" }
   ],
   "cards": [
     { "dot": "cyan", "title": "Core Modules", "items": ["core: Account, Position, Trade, Tick, Violation", "config: ChallengePlan and presets", "rules: Rule trait, registry, 22 evaluators"] },

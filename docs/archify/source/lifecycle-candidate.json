@@ -4,84 +4,26 @@
   "meta": {
     "title": "Account Lifecycle",
     "output": "lifecycle-account.html",
-    "quality_profile": "showcase",
-    "viewBox": [
-      900,
-      600
-    ]
+    "quality_profile": "showcase"
   },
   "lanes": [
-    {
-      "id": "main",
-      "label": "Evaluation flow"
-    }
+    { "id": "main", "label": "Evaluation flow" },
+    { "id": "terminal", "label": "Terminal / ops" }
   ],
   "states": [
-    {
-      "id": "pending",
-      "type": "start",
-      "label": "Pending",
-      "lane": "main",
-      "col": 0
-    },
-    {
-      "id": "active",
-      "type": "active",
-      "label": "Active",
-      "lane": "main",
-      "col": 1
-    },
-    {
-      "id": "target_hit_pending",
-      "type": "waiting",
-      "label": "Target Hit",
-      "lane": "main",
-      "col": 2
-    },
-    {
-      "id": "passed",
-      "type": "success",
-      "label": "Passed",
-      "lane": "main",
-      "col": 3
-    }
+    { "id": "pending", "label": "Pending", "type": "waiting", "lane": "main", "col": 0 },
+    { "id": "active", "label": "Active", "type": "active", "lane": "main", "col": 1 },
+    { "id": "target_hit_pending", "label": "Target Hit", "type": "waiting", "lane": "main", "col": 2 },
+    { "id": "passed", "label": "Passed", "type": "success", "lane": "main", "col": 3 },
+    { "id": "failed", "label": "Failed", "type": "failure", "lane": "terminal", "col": 1, "yOffset": -40 },
+    { "id": "emergency_stopped", "label": "Emergency", "type": "failure", "lane": "terminal", "col": 2, "yOffset": -40 }
   ],
   "transitions": [
-    {
-      "id": "start",
-      "from": "pending",
-      "to": "active",
-      "label": "start"
-    },
-    {
-      "id": "evaluate",
-      "from": "active",
-      "to": "target_hit_pending",
-      "label": "profit target",
-      "labelAt": [325, 202]
-    },
-    {
-      "id": "target_hit",
-      "from": "target_hit_pending",
-      "to": "passed",
-      "label": "min days",
-      "labelAt": [479, 202]
-    }
+    { "id": "start", "from": "pending", "to": "active" },
+    { "id": "evaluate", "from": "active", "to": "target_hit_pending", "label": "target", "labelAt": [325, 202] },
+    { "id": "target_hit", "from": "target_hit_pending", "to": "passed", "label": "min days", "labelAt": [479, 220] },
+    { "id": "fail", "from": "active", "to": "failed", "label": "breach", "fromSide": "bottom", "toSide": "top", "channelY": 240, "labelAt": [180, 200] },
+    { "id": "emergency", "from": "active", "to": "emergency_stopped", "label": "stop", "fromSide": "bottom", "toSide": "top", "channelY": 240, "labelAt": [430, 200] }
   ],
-  "cards": [
-    {
-      "dot": "emerald",
-      "title": "Main Flow",
-      "items": [
-        "Pending → Active → Target Hit → Passed"
-      ]
-    },
-    {
-      "dot": "amber",
-      "title": "Other States",
-      "items": [
-        "Failed / EmergencyStopped reachable via override back to Active"
-      ]
-    }
-  ]
+  "cards": []
 }
