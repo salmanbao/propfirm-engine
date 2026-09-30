@@ -84,7 +84,7 @@ tokio-cli = ["dep:tokio"]
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 chrono = { version = "0.4", features = ["clock"] }
-chrono-tz = "0.9"
+chrono-tz = "0.10"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 rust_decimal = { version = "1.36", features = ["serde", "maths"] }
 rust_decimal_macros = "1.36"
