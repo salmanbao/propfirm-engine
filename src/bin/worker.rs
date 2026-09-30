@@ -37,6 +37,7 @@
 
 use propfirm::api::metrics::worker as worker_metrics;
 use propfirm::api::middleware::install_panic_hook;
+use propfirm::api::otel;
 use propfirm::api::shutdown::shutdown_signal;
 use propfirm::core::ids::AccountId;
 use propfirm::core::types::ServerTime;
@@ -64,8 +65,8 @@ async fn main() -> anyhow::Result<()> {
         e
     })?;
 
-    // 2. Tracing.
-    init_tracing(&settings);
+    // 2. Tracing (fmt layer + optional OTLP layer).
+    otel::init_tracing(&settings.observability)?;
 
     // 3. Panic hook.
     if settings.observability.panic_hook {
@@ -136,6 +137,10 @@ async fn main() -> anyhow::Result<()> {
         let _ = t.await;
     }
     recovery_handle.abort();
+
+    // Flush the OTLP provider so spans in flight are exported before
+    // process exit (best-effort).
+    otel::shutdown_otlp();
 
     info!("worker stopped cleanly");
     Ok(())
@@ -356,22 +361,4 @@ async fn parse_and_evaluate(
             .map(|v| serde_json::to_value(v).unwrap_or_default())
             .collect(),
     ))
-}
-
-fn init_tracing(settings: &Settings) {
-    use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_new(&settings.observability.log_filter)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    match settings.observability.log_format.as_str() {
-        "pretty" => {
-            fmt().with_env_filter(filter).with_target(false).init();
-        }
-        _ => {
-            fmt()
-                .with_env_filter(filter)
-                .with_target(true)
-                .json()
-                .init();
-        }
-    }
 }

@@ -1,0 +1,246 @@
+# Default values for propfirm-engine Helm chart.
+# Override via `helm install --values custom.yaml` or `--set key=value`.
+
+# ---------------------------------------------------------------------------
+# Image / deployment
+# ---------------------------------------------------------------------------
+
+image:
+  repository: ghcr.io/salmanbao/propfirm-engine
+  tag: ""             # empty = use chart appVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []     # [{ name: ghcr-pull-secret }]
+
+# ---------------------------------------------------------------------------
+# HTTP server (propfirm-server binary)
+# ---------------------------------------------------------------------------
+
+server:
+  enabled: true
+  replicaCount: 3
+  # Override the bind address — when running in k8s, the engine
+  # listens on all interfaces inside its pod.
+  bindAddr: "0.0.0.0:8080"
+  requestTimeoutSecs: 30
+  shutdownTimeoutSecs: 30
+  maxBodyBytes: 2097152  # 2 MiB
+
+  # Container-level resource limits. Tune for your cluster.
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+  # Liveness probe (used by k8s to restart unhealthy pods).
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+
+  # Readiness probe (used by k8s to route traffic only to ready pods).
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    failureThreshold: 2
+
+  # HorizontalPodAutoscaler — scales on CPU; enable metrics-server.
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+  # PodDisruptionBudget — keeps at least N pods alive during
+  # voluntary disruptions (node drains, upgrades).
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+  service:
+    type: ClusterIP   # use NodePort/LoadBalancer if exposing externally
+    port: 80
+    targetPort: 8080
+    annotations: {}
+
+  # TLS termination (in-process rustls). Leave `enabled: false` when
+  # behind an ingress that terminates TLS itself.
+  tls:
+    enabled: false
+    # When `enabled: true`, mount cert+key (and optional client CA for mTLS)
+    # from these secrets — created by `tls-cert-manager` or by hand:
+    #   kubectl create secret tls propfirm-tls \
+    #     --cert=cert.pem --key=key.pem
+    certSecret: propfirm-tls
+    clientCaSecret: ""        # leave empty for one-way TLS
+    certMountPath: /etc/propfirm/tls
+    clientCaMountPath: /etc/propfirm/tls/client-ca
+
+# ---------------------------------------------------------------------------
+# Event bus worker (propfirm-worker binary)
+# ---------------------------------------------------------------------------
+
+worker:
+  enabled: true
+  replicaCount: 3
+  # Number of concurrent consumer tasks per pod.
+  concurrency: 16
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "256Mi"
+    limits:
+      cpu: "2000m"
+      memory: "512Mi"
+
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 75
+
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+# ---------------------------------------------------------------------------
+# Persistence backends (Postgres + Redis)
+# ---------------------------------------------------------------------------
+
+postgres:
+  # Whether to deploy a Postgres StatefulSet alongside the engine
+  # (true) or use an external managed Postgres (false).
+  deploy: true
+  # Used when `deploy: false` — point at your external Postgres.
+  externalDsn: postgresql://propfirm:propfirm@postgres:5432/propfirm
+  maxConnections: 10
+  runMigrations: true
+  acquireTimeoutSecs: 5
+
+  # When `deploy: true`, these configure the StatefulSet.
+  image: postgres:16
+  storage: 10Gi
+  storageClassName: ""    # empty = use cluster default
+
+redis:
+  # Whether to deploy a Redis StatefulSet (true) or use external
+  # managed Redis (false).
+  deploy: true
+  # Used when `deploy: false`.
+  externalUrl: redis://redis:6379
+  cluster: false
+  connectTimeoutSecs: 3
+  poolSize: 8
+
+  # When `deploy: true`:
+  image: redis:7
+  storage: 5Gi
+  storageClassName: ""
+  appendOnly: "yes"
+
+# ---------------------------------------------------------------------------
+# Idempotency backend selection
+# ---------------------------------------------------------------------------
+
+idempotency:
+  backend: redis        # memory | postgres | redis
+  ttlSecs: 604800       # 7 days (recommended for financial systems)
+  maxEntries: 100000    # memory backend only
+
+# ---------------------------------------------------------------------------
+# Event bus settings (worker only)
+# ---------------------------------------------------------------------------
+
+eventBus:
+  requestStream: propfirm:evaluate:requests
+  responseStream: propfirm:evaluate:responses
+  consumerGroup: propfirm-worker
+  consumerName: ""      # auto-generated UUID per pod
+  blockMs: 5000
+  idleClaimMs: 60000
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+
+observability:
+  logFilter: "info,propfirm=debug,sqlx=warn,redis=warn"
+  logFormat: json       # json | pretty
+  metricsEnabled: true
+  metricsPath: /metrics
+  panicHook: true
+
+  # OpenTelemetry OTLP exporter — only used when the `otel` cargo
+  # feature is compiled into the image. Leave endpoint empty to disable.
+  otlp:
+    endpoint: ""        # e.g. http://otel-collector:4317 (gRPC)
+    protocol: grpc      # grpc | http
+    serviceName: propfirm-engine
+    stdout: false
+    sampleRatio: 1.0
+
+  # When `serviceMonitor` is enabled, create a ServiceMonitor CRD for
+  # the Prometheus Operator. Requires `prometheus-operator` installed.
+  serviceMonitor:
+    enabled: false
+    namespace: ""       # empty = release namespace
+    interval: 15s
+    scrapeTimeout: 10s
+
+# ---------------------------------------------------------------------------
+# Network policy — restrict ingress/egress to known namespaces/services.
+# Disable if you don't have the NetworkPolicy CRD installed.
+# ---------------------------------------------------------------------------
+
+networkPolicy:
+  enabled: true
+  # Allow ingress from any pod in the listed namespaces. Use this to
+  # restrict ingress to just the platform backend namespace.
+  ingressFromNamespaces:
+    - platform-backend
+  # Allow egress to any pod in the listed namespaces (typically just
+  # your infra namespace where Postgres/Redis/OTLP live).
+  egressToNamespaces:
+    - infrastructure
+
+# ---------------------------------------------------------------------------
+# Ingress — optional, only for HTTP server. Skip if using a gateway.
+# ---------------------------------------------------------------------------
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: propfirm.internal.example.com
+  tls:
+    enabled: false
+    secretName: propfirm-ingress-tls
+
+# ---------------------------------------------------------------------------
+# Pod-level defaults
+# ---------------------------------------------------------------------------
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

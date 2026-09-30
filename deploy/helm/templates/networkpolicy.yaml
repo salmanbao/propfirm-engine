@@ -1,0 +1,87 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-server
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow inbound from any pod in the listed namespaces (e.g.
+    # platform-backend). When this list is empty, no inbound traffic
+    # is allowed — the service is unreachable.
+    {{- range .Values.networkPolicy.ingressFromNamespaces }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+    {{- end }}
+    # Always allow the kube-system namespace (probes).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+  egress:
+    # DNS to kube-system (CoreDNS).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow outbound to any pod in the listed namespaces (typically
+    # infrastructure where Postgres/Redis/OTLP live).
+    {{- range .Values.networkPolicy.egressToNamespaces }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+    {{- end }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []  # no inbound traffic — the worker only consumes from Redis
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Outbound to infrastructure (Postgres, Redis, OTLP collector)
+    {{- range .Values.networkPolicy.egressToNamespaces }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+    {{- end }}
+{{- end -}}

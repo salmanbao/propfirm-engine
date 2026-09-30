@@ -48,8 +48,7 @@ impl RedisIdempotencyBackend {
         RedisIdempotencyBackend { conn, ttl }
     }
 
-    /// Get a clone of the underlying connection for mutation.
-    /// `MultiplexedConnection` is `Clone`, so this is cheap.
+    /// Clone the underlying connection.
     #[must_use]
     fn conn(&self) -> RedisConn {
         self.conn.clone()
@@ -120,12 +119,17 @@ impl RedisIdempotencyBackend {
         val_key: &str,
         body_hash: &str,
     ) -> redis::RedisResult<IdempotencyOutcome> {
-        let conn = self.conn();
-        let stored_hash: Option<String> = match conn {
+        let stored_hash: Option<String> = match self.conn() {
             RedisConn::Single(mut c) => redis::cmd("GET").arg(hash_key).query_async(&mut c).await?,
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
-                redis::cmd("GET").arg(hash_key).query_async(&mut *c).await?
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(super::io_error_to_redis(e)))?;
+                redis::cmd("GET")
+                    .arg(hash_key)
+                    .query_async(&mut *conn)
+                    .await?
             }
         };
         match stored_hash {
@@ -136,9 +140,14 @@ impl RedisIdempotencyBackend {
                         RedisConn::Single(mut c) => {
                             redis::cmd("GET").arg(val_key).query_async(&mut c).await?
                         }
-                        RedisConn::Cluster(arc) => {
-                            let mut c = arc.lock().await;
-                            redis::cmd("GET").arg(val_key).query_async(&mut *c).await?
+                        RedisConn::Cluster(pool) => {
+                            let mut conn = pool.get().await.map_err(|e| {
+                                redis::RedisError::from(super::io_error_to_redis(e))
+                            })?;
+                            redis::cmd("GET")
+                                .arg(val_key)
+                                .query_async(&mut *conn)
+                                .await?
                         }
                     };
                     match response {
@@ -189,8 +198,11 @@ impl RedisIdempotencyBackend {
                     .query_async(&mut c)
                     .await?
             }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(super::io_error_to_redis(e)))?;
                 redis::cmd("EVAL")
                     .arg(script)
                     .arg(2)
@@ -199,7 +211,7 @@ impl RedisIdempotencyBackend {
                     .arg(body_hash)
                     .arg(response)
                     .arg(ttl_secs)
-                    .query_async(&mut *c)
+                    .query_async(&mut *conn)
                     .await?
             }
         };

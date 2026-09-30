@@ -184,3 +184,62 @@ pub fn manual_run(actor_id: &str, tenant: TenantId, account: AccountId) -> Audit
         .with_tenant(tenant)
         .with_account(account)
 }
+
+/// Convenience: log an evaluate action. Called from the
+/// `/internal/v1/evaluate` handler — but only when the decision is
+/// non-Pass (so the audit log doesn't drown in normal traffic).
+#[must_use]
+pub fn evaluate(
+    tenant: TenantId,
+    account: AccountId,
+    decision_kind: &str,
+    input_hash: &str,
+) -> AuditEntry {
+    AuditEntry::start("evaluate", "evaluate_internal")
+        .with_tenant(tenant)
+        .with_account(account)
+        .with_request_hash(input_hash)
+        .with_metadata(serde_json::json!({
+            "decision_kind": decision_kind,
+            "input_hash": input_hash,
+        }))
+}
+
+/// Convenience: log an evaluate-order action (pre-trade order check).
+#[must_use]
+pub fn evaluate_order(
+    tenant: TenantId,
+    account: AccountId,
+    symbol: &str,
+    side: &str,
+    decision: &str,
+) -> AuditEntry {
+    AuditEntry::start("evaluate_order", "evaluate_order")
+        .with_tenant(tenant)
+        .with_account(account)
+        .with_resource("order", format!("{symbol}:{side}"))
+        .with_metadata(serde_json::json!({
+            "symbol": symbol,
+            "side": side,
+            "decision": decision,
+        }))
+}
+
+/// Convenience: log a breach-report query (trader-facing read of
+/// violations). Read-only but audited so the platform can see who
+/// queried breach reports when.
+#[must_use]
+pub fn breach_report(
+    tenant: TenantId,
+    account: AccountId,
+    violation_count: usize,
+    cleared_count: usize,
+) -> AuditEntry {
+    AuditEntry::start("breach_report", "breach_report")
+        .with_tenant(tenant)
+        .with_account(account)
+        .with_metadata(serde_json::json!({
+            "violation_count": violation_count,
+            "cleared_count": cleared_count,
+        }))
+}

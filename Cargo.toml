@@ -44,6 +44,8 @@ server = [
     "dep:tracing-subscriber",
     "dep:sqlx",
     "dep:redis",
+    "dep:bb8",
+    "dep:bb8-redis",
     "dep:rustls",
     "dep:rustls-pemfile",
     "dep:tokio-util",
@@ -52,6 +54,17 @@ server = [
     "dep:metrics-exporter-prometheus",
     "dep:figment",
     "dep:dotenvy",
+]
+# `otel` enables the OpenTelemetry OTLP exporter for distributed tracing.
+# When enabled, the binary installs an OTLP layer alongside the JSON log
+# layer, so spans are exported to a collector (e.g. Tempo / Jaeger) in
+# addition to being written to stdout.
+otel = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-stdout",
 ]
 in-memory-store = []
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
@@ -87,6 +100,9 @@ tokio-util = { version = "0.7", optional = true }
 # Durable persistence
 sqlx = { version = "0.7", optional = true, default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "macros"] }
 redis = { version = "0.27", optional = true, features = ["tokio-comp", "connection-manager", "cluster-async", "streams"] }
+# bb8-redis for true cluster pooling (replaces tokio::sync::Mutex<ClusterConnection>).
+bb8 = { version = "0.9", optional = true }
+bb8-redis = { version = "0.18", optional = true }
 
 # TLS termination
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
@@ -96,6 +112,14 @@ rustls-pemfile = { version = "2", optional = true }
 prometheus = { version = "0.13", optional = true }
 metrics = { version = "0.23", optional = true }
 metrics-exporter-prometheus = { version = "0.15", optional = true, default-features = false, features = ["http-listener"] }
+
+# OpenTelemetry (feature-gated behind `otel`)
+# Pin everything to 0.29 — tracing-opentelemetry 0.30 internally requires opentelemetry_sdk 0.29.
+tracing-opentelemetry = { version = "0.30", optional = true, default-features = false, features = ["tracing-log"] }
+opentelemetry = { version = "0.29", optional = true, default-features = false, features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.29", optional = true, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.29", optional = true, default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-client"] }
+opentelemetry-stdout = { version = "0.29", optional = true, features = ["trace"] }
 
 # Configuration
 figment = { version = "0.10", optional = true, features = ["env", "toml"] }

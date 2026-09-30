@@ -2,18 +2,21 @@
 //!
 //! Initializes:
 //! 1. `.env` loading (handled by `Settings::load`)
-//! 2. `tracing_subscriber` with `EnvFilter` (JSON or pretty format)
+//! 2. `tracing_subscriber` with `EnvFilter` (JSON or pretty format) +
+//!    optional OTLP exporter when `otel` feature is enabled AND
+//!    `observability.otlp.endpoint` is set
 //! 3. Prometheus metrics recorder (idempotent; the actual install
 //!    happens in `propfirm::api::server::default_metrics_handle()`)
 //! 4. Panic hook (routes panics through `tracing::error`)
 //! 5. Settings load + Postgres migrations (if enabled)
 //! 6. Optional TLS (rustls, in-process)
-//! 7. Graceful shutdown (SIGINT/SIGTERM, drain in-flight requests)
+//! 7. Graceful shutdown (SIGINT/SIGTERM, drain in-flight requests,
+//!    flush OTLP provider)
 
 use propfirm::api::middleware::install_panic_hook;
+use propfirm::api::otel;
 use propfirm::api::server::{default_metrics_handle, run_server};
 use propfirm::settings::Settings;
-use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,14 +26,15 @@ async fn main() -> anyhow::Result<()> {
         e
     })?;
 
-    // 2. Initialize tracing subscriber.
-    init_tracing(&settings);
+    // 2. Initialize tracing subscriber — fmt layer + optional OTLP layer.
+    otel::init_tracing(&settings.observability)?;
 
     tracing::info!(
         bind_addr = %settings.server.bind_addr,
         tls_enabled = %settings.server.tls.enabled,
         idempotency_backend = %settings.idempotency.backend,
         metrics_enabled = %settings.observability.metrics_enabled,
+        otlp_enabled = !settings.observability.otlp.endpoint.is_empty(),
         "propfirm-server starting"
     );
 
@@ -51,27 +55,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 5. Run the server (handles TLS, graceful shutdown, state building).
-    run_server(settings).await?;
+    let result = run_server(settings).await;
 
-    Ok(())
-}
+    // 6. Flush the OTLP provider so spans in flight are exported before
+    //    process exit (best-effort).
+    otel::shutdown_otlp();
 
-/// Initialize the `tracing_subscriber` global default.
-fn init_tracing(settings: &Settings) {
-    let filter = EnvFilter::try_new(&settings.observability.log_filter)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-
-    match settings.observability.log_format.as_str() {
-        "pretty" => {
-            fmt().with_env_filter(filter).with_target(false).init();
-        }
-        // default to json for production
-        _ => {
-            fmt()
-                .with_env_filter(filter)
-                .with_target(true)
-                .json()
-                .init();
-        }
-    }
+    result
 }

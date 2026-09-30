@@ -1,0 +1,70 @@
+{{- if .Values.server.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "propfirm.configMapName" . }}
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+data:
+  # Server bind + middleware
+  PROPFIRM_SERVER__BIND_ADDR: {{ .Values.server.bindAddr | quote }}
+  PROPFIRM_SERVER__REQUEST_TIMEOUT_SECS: {{ .Values.server.requestTimeoutSecs | quote }}
+  PROPFIRM_SERVER__SHUTDOWN_TIMEOUT_SECS: {{ .Values.server.shutdownTimeoutSecs | quote }}
+  PROPFIRM_SERVER__MAX_BODY_BYTES: {{ .Values.server.maxBodyBytes | quote }}
+
+  # TLS flags (cert/key paths are mounted from Secrets, not ConfigMap)
+  PROPFIRM_SERVER__TLS__ENABLED: {{ .Values.server.tls.enabled | quote }}
+  PROPFIRM_SERVER__TLS__CERT_PATH: "{{ .Values.server.tls.certMountPath }}/tls.crt"
+  PROPFIRM_SERVER__TLS__KEY_PATH: "{{ .Values.server.tls.certMountPath }}/tls.key"
+  {{- if .Values.server.tls.clientCaSecret }}
+  PROPFIRM_SERVER__TLS__CLIENT_CA_PATH: "{{ .Values.server.tls.clientCaMountPath }}/ca.crt"
+  {{- end }}
+
+  # Postgres
+  {{- if .Values.postgres.deploy }}
+  PROPFIRM_POSTGRES__DSN: "postgresql://propfirm:propfirm@{{ .Release.Name }}-postgres:5432/propfirm"
+  {{- else }}
+  PROPFIRM_POSTGRES__DSN: {{ .Values.postgres.externalDsn | quote }}
+  {{- end }}
+  PROPFIRM_POSTGRES__MAX_CONNECTIONS: {{ .Values.postgres.maxConnections | quote }}
+  PROPFIRM_POSTGRES__RUN_MIGRATIONS: {{ .Values.postgres.runMigrations | quote }}
+  PROPFIRM_POSTGRES__ACQUIRE_TIMEOUT_SECS: {{ .Values.postgres.acquireTimeoutSecs | quote }}
+
+  # Redis
+  {{- if .Values.redis.deploy }}
+  PROPFIRM_REDIS__URL: "redis://{{ .Release.Name }}-redis:6379"
+  {{- else }}
+  PROPFIRM_REDIS__URL: {{ .Values.redis.externalUrl | quote }}
+  {{- end }}
+  PROPFIRM_REDIS__CLUSTER: {{ .Values.redis.cluster | quote }}
+  PROPFIRM_REDIS__CONNECT_TIMEOUT_SECS: {{ .Values.redis.connectTimeoutSecs | quote }}
+  PROPFIRM_REDIS__POOL_SIZE: {{ .Values.redis.poolSize | quote }}
+
+  # Idempotency backend
+  PROPFIRM_IDEMPOTENCY__BACKEND: {{ .Values.idempotency.backend | quote }}
+  PROPFIRM_IDEMPOTENCY__TTL_SECS: {{ .Values.idempotency.ttlSecs | quote }}
+  PROPFIRM_IDEMPOTENCY__MAX_ENTRIES: {{ .Values.idempotency.maxEntries | quote }}
+
+  # Event bus
+  PROPFIRM_EVENT_BUS__REQUEST_STREAM: {{ .Values.eventBus.requestStream | quote }}
+  PROPFIRM_EVENT_BUS__RESPONSE_STREAM: {{ .Values.eventBus.responseStream | quote }}
+  PROPFIRM_EVENT_BUS__CONSUMER_GROUP: {{ .Values.eventBus.consumerGroup | quote }}
+  PROPFIRM_EVENT_BUS__CONSUMER_NAME: {{ .Values.eventBus.consumerName | quote }}
+  PROPFIRM_EVENT_BUS__BLOCK_MS: {{ .Values.eventBus.blockMs | quote }}
+  PROPFIRM_EVENT_BUS__CONCURRENCY: {{ .Values.worker.concurrency | quote }}
+  PROPFIRM_EVENT_BUS__IDLE_CLAIM_MS: {{ .Values.eventBus.idleClaimMs | quote }}
+
+  # Observability
+  PROPFIRM_OBSERVABILITY__LOG_FILTER: {{ .Values.observability.logFilter | quote }}
+  PROPFIRM_OBSERVABILITY__LOG_FORMAT: {{ .Values.observability.logFormat | quote }}
+  PROPFIRM_OBSERVABILITY__METRICS_ENABLED: {{ .Values.observability.metricsEnabled | quote }}
+  PROPFIRM_OBSERVABILITY__METRICS_PATH: {{ .Values.observability.metricsPath | quote }}
+  PROPFIRM_OBSERVABILITY__PANIC_HOOK: {{ .Values.observability.panicHook | quote }}
+
+  # OTLP
+  PROPFIRM_OBSERVABILITY__OTLP__ENDPOINT: {{ .Values.observability.otlp.endpoint | quote }}
+  PROPFIRM_OBSERVABILITY__OTLP__PROTOCOL: {{ .Values.observability.otlp.protocol | quote }}
+  PROPFIRM_OBSERVABILITY__OTLP__SERVICE_NAME: {{ .Values.observability.otlp.serviceName | quote }}
+  PROPFIRM_OBSERVABILITY__OTLP__STDOUT: {{ .Values.observability.otlp.stdout | quote }}
+  PROPFIRM_OBSERVABILITY__OTLP__SAMPLE_RATIO: {{ .Values.observability.otlp.sampleRatio | quote }}
+{{- end -}}

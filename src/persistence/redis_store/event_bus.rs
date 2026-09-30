@@ -25,12 +25,8 @@
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::persistence::redis_store::RedisConn;
+use crate::persistence::redis_store::{io_error_to_redis, RedisConn};
 use crate::settings::EventBusSettings;
-
-type StreamEntry = (String, Vec<(String, String)>);
-type StreamGroup = (String, Vec<StreamEntry>);
-type XReadRaw = redis::RedisResult<Option<Vec<StreamGroup>>>;
 
 /// Wire shape for an evaluation request on the bus.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -85,7 +81,7 @@ impl RedisEventBus {
         RedisEventBus { conn, settings }
     }
 
-    /// Clone the underlying connection (cheap for MultiplexedConnection).
+    /// Clone the underlying connection.
     #[must_use]
     fn conn(&self) -> RedisConn {
         self.conn.clone()
@@ -97,8 +93,7 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
         let group = self.settings.consumer_group.clone();
         let start_id = "$";
-        let conn = self.conn();
-        match conn {
+        match self.conn() {
             RedisConn::Single(mut c) => {
                 let _: () = redis::cmd("XGROUP")
                     .arg("CREATE")
@@ -110,15 +105,18 @@ impl RedisEventBus {
                     .await
                     .unwrap_or(());
             }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
                 let _: () = redis::cmd("XGROUP")
                     .arg("CREATE")
                     .arg(&stream)
                     .arg(&group)
                     .arg(start_id)
                     .arg("MKSTREAM")
-                    .query_async(&mut *c)
+                    .query_async(&mut *conn)
                     .await
                     .unwrap_or(());
             }
@@ -133,8 +131,7 @@ impl RedisEventBus {
     ) -> Result<String, redis::RedisError> {
         let stream = self.settings.request_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
-        let conn = self.conn();
-        match conn {
+        match self.conn() {
             RedisConn::Single(mut c) => {
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
@@ -147,8 +144,11 @@ impl RedisEventBus {
                     .await?;
                 Ok(id)
             }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -156,7 +156,7 @@ impl RedisEventBus {
                     .arg(&payload.request_id)
                     .arg("payload")
                     .arg(&serialized)
-                    .query_async(&mut *c)
+                    .query_async(&mut *conn)
                     .await?;
                 Ok(id)
             }
@@ -170,8 +170,7 @@ impl RedisEventBus {
     ) -> Result<String, redis::RedisError> {
         let stream = self.settings.response_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
-        let conn = self.conn();
-        match conn {
+        match self.conn() {
             RedisConn::Single(mut c) => {
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
@@ -184,8 +183,11 @@ impl RedisEventBus {
                     .await?;
                 Ok(id)
             }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -193,7 +195,7 @@ impl RedisEventBus {
                     .arg(&payload.request_id)
                     .arg("payload")
                     .arg(&serialized)
-                    .query_async(&mut *c)
+                    .query_async(&mut *conn)
                     .await?;
                 Ok(id)
             }
@@ -212,40 +214,43 @@ impl RedisEventBus {
         let group = self.settings.consumer_group.clone();
         let stream = self.settings.request_stream.clone();
 
-        let conn = self.conn();
-        let raw: XReadRaw = match conn {
-            RedisConn::Single(mut c) => {
-                redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(&group)
-                    .arg(&consumer)
-                    .arg("COUNT")
-                    .arg(1i64)
-                    .arg("BLOCK")
-                    .arg(block_ms as i64)
-                    .arg("STREAMS")
-                    .arg(&stream)
-                    .arg(">")
-                    .query_async(&mut c)
-                    .await
-            }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
-                redis::cmd("XREADGROUP")
-                    .arg("GROUP")
-                    .arg(&group)
-                    .arg(&consumer)
-                    .arg("COUNT")
-                    .arg(1i64)
-                    .arg("BLOCK")
-                    .arg(block_ms as i64)
-                    .arg("STREAMS")
-                    .arg(&stream)
-                    .arg(">")
-                    .query_async(&mut *c)
-                    .await
-            }
-        };
+        let raw: redis::RedisResult<Option<Vec<(String, Vec<(String, Vec<(String, String)>)>)>>> =
+            match self.conn() {
+                RedisConn::Single(mut c) => {
+                    redis::cmd("XREADGROUP")
+                        .arg("GROUP")
+                        .arg(&group)
+                        .arg(&consumer)
+                        .arg("COUNT")
+                        .arg(1i64)
+                        .arg("BLOCK")
+                        .arg(block_ms as i64)
+                        .arg("STREAMS")
+                        .arg(&stream)
+                        .arg(">")
+                        .query_async(&mut c)
+                        .await
+                }
+                RedisConn::Cluster(pool) => {
+                    let mut conn = match pool.get().await {
+                        Ok(c) => c,
+                        Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                    };
+                    redis::cmd("XREADGROUP")
+                        .arg("GROUP")
+                        .arg(&group)
+                        .arg(&consumer)
+                        .arg("COUNT")
+                        .arg(1i64)
+                        .arg("BLOCK")
+                        .arg(block_ms as i64)
+                        .arg("STREAMS")
+                        .arg(&stream)
+                        .arg(">")
+                        .query_async(&mut *conn)
+                        .await
+                }
+            };
 
         let raw = match raw {
             Ok(v) => v,
@@ -282,8 +287,7 @@ impl RedisEventBus {
     pub async fn ack(&self, stream_id: &str) -> Result<(), redis::RedisError> {
         let stream = self.settings.request_stream.clone();
         let group = self.settings.consumer_group.clone();
-        let conn = self.conn();
-        match conn {
+        match self.conn() {
             RedisConn::Single(mut c) => {
                 let _: i64 = redis::cmd("XACK")
                     .arg(&stream)
@@ -292,13 +296,16 @@ impl RedisEventBus {
                     .query_async(&mut c)
                     .await?;
             }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
+            RedisConn::Cluster(pool) => {
+                let mut conn = pool
+                    .get()
+                    .await
+                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
                 let _: i64 = redis::cmd("XACK")
                     .arg(&stream)
                     .arg(&group)
                     .arg(stream_id)
-                    .query_async(&mut *c)
+                    .query_async(&mut *conn)
                     .await?;
             }
         }
@@ -316,34 +323,37 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
         let group = self.settings.consumer_group.clone();
 
-        let conn = self.conn();
-        let raw: XReadRaw = match conn {
-            RedisConn::Single(mut c) => {
-                redis::cmd("XAUTOCLAIM")
-                    .arg(&stream)
-                    .arg(&group)
-                    .arg(&consumer)
-                    .arg(min_idle)
-                    .arg("0-0")
-                    .arg("COUNT")
-                    .arg(1i64)
-                    .query_async(&mut c)
-                    .await
-            }
-            RedisConn::Cluster(arc) => {
-                let mut c = arc.lock().await;
-                redis::cmd("XAUTOCLAIM")
-                    .arg(&stream)
-                    .arg(&group)
-                    .arg(&consumer)
-                    .arg(min_idle)
-                    .arg("0-0")
-                    .arg("COUNT")
-                    .arg(1i64)
-                    .query_async(&mut *c)
-                    .await
-            }
-        };
+        let raw: redis::RedisResult<Option<Vec<(String, Vec<(String, Vec<(String, String)>)>)>>> =
+            match self.conn() {
+                RedisConn::Single(mut c) => {
+                    redis::cmd("XAUTOCLAIM")
+                        .arg(&stream)
+                        .arg(&group)
+                        .arg(&consumer)
+                        .arg(min_idle)
+                        .arg("0-0")
+                        .arg("COUNT")
+                        .arg(1i64)
+                        .query_async(&mut c)
+                        .await
+                }
+                RedisConn::Cluster(pool) => {
+                    let mut conn = match pool.get().await {
+                        Ok(c) => c,
+                        Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                    };
+                    redis::cmd("XAUTOCLAIM")
+                        .arg(&stream)
+                        .arg(&group)
+                        .arg(&consumer)
+                        .arg(min_idle)
+                        .arg("0-0")
+                        .arg("COUNT")
+                        .arg(1i64)
+                        .query_async(&mut *conn)
+                        .await
+                }
+            };
         let raw = match raw {
             Ok(v) => v,
             Err(e) => return EventBusResult::Error(e.to_string()),

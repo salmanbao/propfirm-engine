@@ -1,0 +1,63 @@
+{{- if .Values.worker.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  {{- if not .Values.worker.hpa.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "propfirm.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: propfirm-worker
+          image: {{ include "propfirm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["/app/propfirm-worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "propfirm.configMapName" . }}
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.observability.logFilter | quote }}
+          # The worker has no HTTP port — it only consumes from Redis.
+          # Liveness/readiness via /metrics is N/A. Use a custom TCP
+          # check on Redis instead.
+          # TODO: add a `worker healthcheck` subcommand that pings
+          # Redis and returns 0 if the consumer group is healthy.
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

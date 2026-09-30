@@ -184,6 +184,9 @@ pub struct ObservabilitySettings {
     pub metrics_path: String,
     /// Whether to install a panic hook that logs panics via `tracing::error`.
     pub panic_hook: bool,
+    /// OpenTelemetry OTLP exporter settings. Only used when the `otel`
+    /// cargo feature is enabled AND `otlp.endpoint` is set.
+    pub otlp: OtlpSettings,
 }
 
 impl Default for ObservabilitySettings {
@@ -194,6 +197,38 @@ impl Default for ObservabilitySettings {
             metrics_enabled: true,
             metrics_path: "/metrics".to_string(),
             panic_hook: true,
+            otlp: OtlpSettings::default(),
+        }
+    }
+}
+
+/// OpenTelemetry OTLP exporter settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtlpSettings {
+    /// OTLP endpoint URL, e.g. `http://otel-collector:4317` (gRPC) or
+    /// `http://otel-collector:4318` (HTTP). When empty, the OTLP
+    /// exporter is disabled (no spans exported).
+    pub endpoint: String,
+    /// Protocol: `grpc` (default, recommended) or `http`.
+    pub protocol: String,
+    /// Service name reported to the collector.
+    pub service_name: String,
+    /// Whether to also export to stdout (useful for dev when no
+    /// collector is available).
+    pub stdout: bool,
+    /// Sample ratio (0.0 to 1.0). 1.0 = sample all spans.
+    pub sample_ratio: f64,
+}
+
+impl Default for OtlpSettings {
+    fn default() -> Self {
+        OtlpSettings {
+            endpoint: String::new(),
+            protocol: "grpc".to_string(),
+            service_name: "propfirm-engine".to_string(),
+            stdout: false,
+            sample_ratio: 1.0,
         }
     }
 }
@@ -338,6 +373,13 @@ log_format = "json"
 metrics_enabled = true
 metrics_path = "/metrics"
 panic_hook = true
+
+[observability.otlp]
+endpoint = ""
+protocol = "grpc"
+service_name = "propfirm-engine"
+stdout = false
+sample_ratio = 1.0
 
 [idempotency]
 backend = "memory"

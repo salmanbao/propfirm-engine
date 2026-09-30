@@ -1,0 +1,18 @@
+apiVersion: v2
+name: propfirm-engine
+description: Prop Firm Risk & Rule Evaluation Engine — internal service for the Prop Firm as a Service Platform.
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+home: https://github.com/salmanbao/propfirm-engine
+sources:
+  - https://github.com/salmanbao/propfirm-engine
+maintainers:
+  - name: Salman Bajwa
+    email: salman.bajwa@propfirm.example
+keywords:
+  - trading
+  - risk
+  - prop-firm
+  - fintech
+  - rules-engine

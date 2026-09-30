@@ -186,6 +186,21 @@ pub async fn evaluate_internal(
     };
     // Record the decision kind metric.
     record_decision(&response.decision_kind);
+
+    // Audit log: only write when the decision is non-Pass to avoid
+    // drowning the audit_log table in normal traffic. Pass verdicts
+    // are still observable via the evaluate_decisions_total metric.
+    let decision_lower = response.decision_kind.to_lowercase();
+    if decision_lower != "pass" {
+        let audit = crate::api::audit_log::evaluate(
+            tenant_id,
+            response.account_state.id,
+            &response.decision_kind,
+            &response.input_hash,
+        );
+        let pg_pool = s.pg_pool.clone();
+        audit.finish(pg_pool.as_ref(), None, 200).await;
+    }
     Ok(Json(response))
 }
 
@@ -562,10 +577,11 @@ pub async fn override_breach(
 /// evaluator from that account's plan, runs evaluation, and returns the
 /// verdict plus updated `account_state`. No event-store replay is performed.
 pub async fn manual_run(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/internal/v1/manual-run");
     let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
@@ -584,15 +600,32 @@ pub async fn manual_run(
             account_state: acc,
         }));
     }
+
+    // Audit log entry — manual runs are operator-triggered (low
+    // volume), so we always write to the audit_log table.
+    let audit = crate::api::audit_log::manual_run("manual_run", tenant_id, account_id);
+    let pg_pool = state.read().await.pg_pool.clone();
+
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
     let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
-    let result = pipeline
-        .process(acc.clone(), PipelineEvent::OnDemand)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let pipeline_result = pipeline.process(acc.clone(), PipelineEvent::OnDemand).await;
+
+    let result = match pipeline_result {
+        Ok(r) => {
+            audit.finish(pg_pool.as_ref(), None, 200).await;
+            r
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            audit.finish(pg_pool.as_ref(), None, 500).await;
+            record_error("/internal/v1/manual-run", "internal_error");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+        }
+    };
+
     Ok(Json(ManualRunResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
         violations: result
@@ -615,10 +648,11 @@ pub async fn manual_run(
 /// evaluator from that account's plan, applies the emergency stop, and
 /// returns the updated `account_state`. No event-store replay is performed.
 pub async fn emergency_stop(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/internal/v1/emergency-stop");
     let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
@@ -642,13 +676,20 @@ pub async fn emergency_stop(
             account_state: acc,
         }));
     }
+
+    // Audit log entry — emergency stops are sensitive operator actions,
+    // always audit (with reason + actor_id).
+    let audit =
+        crate::api::audit_log::emergency_stop(&req.actor_id, tenant_id, account_id, &req.reason);
+    let pg_pool = state.read().await.pg_pool.clone();
+
     let at = chrono::Utc::now();
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
     let mut pipeline = crate::engine::pipeline::Pipeline::new(evaluator, notifier);
-    let result = pipeline
+    let pipeline_result = pipeline
         .process(
             acc.clone(),
             PipelineEvent::EmergencyStop {
@@ -657,8 +698,21 @@ pub async fn emergency_stop(
                 at,
             },
         )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .await;
+
+    let result = match pipeline_result {
+        Ok(r) => {
+            audit.finish(pg_pool.as_ref(), None, 200).await;
+            r
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            audit.finish(pg_pool.as_ref(), None, 500).await;
+            record_error("/internal/v1/emergency-stop", "internal_error");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
+        }
+    };
+
     Ok(Json(EmergencyStopResponse {
         decision_kind: format!("{:?}", result.snapshot.decision.kind),
         stopped_at: at.to_rfc3339(),
@@ -674,10 +728,11 @@ pub async fn emergency_stop(
 /// `account_state`. Returns the current account status; violation history
 /// is caller-owned. No event-store replay is performed.
 pub async fn breach_report(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<BreachReportRequest>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/internal/v1/breach-report");
     let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
@@ -692,7 +747,7 @@ pub async fn breach_report(
             return Err((
                 StatusCode::FORBIDDEN,
                 format!(
-                    "violation.tenant_id {} does not match authenticated tenant {}",
+                    "violation.tenant_id {} does not match request tenant {}",
                     v.tenant_id, tenant_id
                 ),
             ));
@@ -717,6 +772,17 @@ pub async fn breach_report(
             cleared: cleared_violation_ids.contains(&v.id),
         })
         .collect();
+
+    // Audit log entry — breach-report queries are reads, but we still
+    // audit them so the platform can see who queried breach reports when.
+    let audit = crate::api::audit_log::breach_report(
+        tenant_id,
+        account_id,
+        violations.len(),
+        cleared_violation_ids.len(),
+    );
+    let pg_pool = state.read().await.pg_pool.clone();
+
     let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
@@ -739,6 +805,10 @@ pub async fn breach_report(
             cleared: false,
         })
         .collect();
+
+    // Persist the audit entry (read-only action, status 200).
+    audit.finish(pg_pool.as_ref(), None, 200).await;
+
     Ok(Json(BreachReportResponse {
         account_id: req.account_id,
         account_status: format!("{:?}", result.account.status),
@@ -748,10 +818,11 @@ pub async fn breach_report(
 }
 
 pub async fn evaluate_order(
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/v1/evaluate-order");
     let tenant_id = extract_tenant_id(&headers)?;
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
@@ -775,6 +846,8 @@ pub async fn evaluate_order(
         "sell" => OrderSide::Sell,
         other => return Err((StatusCode::BAD_REQUEST, format!("invalid side {other}"))),
     };
+    let symbol_str = req.symbol.clone();
+    let side_str = req.side.clone();
     let order = Order {
         id: crate::core::ids::OrderId::new(),
         account_id,
@@ -819,8 +892,23 @@ pub async fn evaluate_order(
         .iter()
         .map(|v| format!("{}: {}", v.kind, v.message))
         .collect();
+
+    let decision_kind = format!("{:?}", result.snapshot.decision.kind);
+
+    // Audit log entry — pre-trade order evaluations are operator-driven,
+    // always audit (with symbol/side/decision).
+    let audit = crate::api::audit_log::evaluate_order(
+        tenant_id,
+        account_id,
+        &symbol_str,
+        &side_str,
+        &decision_kind,
+    );
+    let pg_pool = state.read().await.pg_pool.clone();
+    audit.finish(pg_pool.as_ref(), None, 200).await;
+
     Ok(Json(EvaluateOrderResponse {
-        decision: format!("{:?}", result.snapshot.decision.kind),
+        decision: decision_kind,
         passed: result.passed(),
         violations,
         violation_details: result.result.decision.all_violations.clone(),

@@ -1,0 +1,100 @@
+{{- if .Values.server.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-server
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.server.hpa.enabled }}
+  replicas: {{ .Values.server.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "propfirm.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      annotations:
+        # Roll the deployment when the configmap changes (helm
+        # doesn't auto-restart on configmap edits).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: propfirm-server
+          image: {{ include "propfirm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["/app/propfirm-server"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "propfirm.configMapName" . }}
+          env:
+            # Stash the OTLP endpoint (it's safe in configmap; secrets
+            # should use the secretRef pattern instead).
+            - name: RUST_LOG
+              value: {{ .Values.observability.logFilter | quote }}
+          {{- if .Values.server.tls.enabled }}
+          volumeMounts:
+            - name: tls-cert
+              mountPath: {{ .Values.server.tls.certMountPath }}
+              readOnly: true
+            {{- if .Values.server.tls.clientCaSecret }}
+            - name: client-ca
+              mountPath: {{ .Values.server.tls.clientCaMountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.server.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.server.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- if .Values.server.tls.enabled }}
+      volumes:
+        - name: tls-cert
+          secret:
+            secretName: {{ include "propfirm.tlsSecretName" . }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- if .Values.server.tls.clientCaSecret }}
+        - name: client-ca
+          secret:
+            secretName: {{ include "propfirm.clientCaSecretName" . }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

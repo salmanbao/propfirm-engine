@@ -21,6 +21,7 @@ pub mod handlers;
 pub mod idempotency;
 pub mod metrics;
 pub mod middleware;
+pub mod otel;
 pub mod routes;
 pub mod server;
 pub mod shutdown;

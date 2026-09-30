@@ -1,0 +1,69 @@
+Prop Firm Engine deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+## Components
+
+{{- if .Values.server.enabled }}
+- **HTTP Server** ({{ .Release.Name }}-server):
+    - Service: {{ .Release.Name }}-server.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.server.service.port }}
+    - Replicas: {{ .Values.server.replicaCount }}{{- if .Values.server.hpa.enabled }} (autoscaled {{ .Values.server.hpa.minReplicas }}-{{ .Values.server.hpa.maxReplicas }}){{- end }}
+    - TLS: {{- if .Values.server.tls.enabled }}enabled (in-process rustls){{- else }}disabled (behind-proxy){{- end }}
+{{- end }}
+
+{{- if .Values.worker.enabled }}
+- **Event Bus Worker** ({{ .Release.Name }}-worker):
+    - Replicas: {{ .Values.worker.replicaCount }}{{- if .Values.worker.hpa.enabled }} (autoscaled {{ .Values.worker.hpa.minReplicas }}-{{ .Values.worker.hpa.maxReplicas }}){{- end }}
+    - Concurrency per pod: {{ .Values.worker.concurrency }}
+{{- end }}
+
+{{- if .Values.postgres.deploy }}
+- **PostgreSQL** ({{ .Release.Name }}-postgres):
+    - Service: {{ .Release.Name }}-postgres.{{ .Release.Namespace }}.svc.cluster.local:5432
+    - Storage: {{ .Values.postgres.storage }}
+{{- end }}
+
+{{- if .Values.redis.deploy }}
+- **Redis** ({{ .Release.Name }}-redis):
+    - Service: {{ .Release.Name }}-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+    - Storage: {{ .Values.redis.storage }}
+{{- end }}
+
+## Verify the deployment
+
+```bash
+# Wait for pods to be ready:
+kubectl -n {{ .Release.Namespace }} wait --for=condition=ready pod -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=120s
+
+# Hit the health endpoint:
+kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-server 8080:{{ .Values.server.service.port }}
+curl http://localhost:8080/health  # → ok
+curl http://localhost:8080/ready   # → ready
+curl http://localhost:8080/metrics  # → Prometheus format
+
+# Tail the server logs:
+kubectl -n {{ .Release.Namespace }} logs -f -l app.kubernetes.io/component=server
+
+# Tail the worker logs:
+kubectl -n {{ .Release.Namespace }} logs -f -l app.kubernetes.io/component=worker
+```
+
+## Notes
+
+- The engine is **unauthenticated** (internal-only). The NetworkPolicy
+  restricts ingress to the namespaces listed in
+  `networkPolicy.ingressFromNamespaces`. Update that list before
+  deploying to production.
+
+- The idempotency backend is `{{ .Values.idempotency.backend }}`.
+  For high-QPS production, use `redis` (recommended) or `postgres`.
+  Avoid `memory` in production — it loses dedup state on every deploy.
+
+- Migrations are run automatically on first server startup when
+  `postgres.runMigrations` is true (the default). To disable:
+  `helm upgrade {{ .Release.Name }} . --set postgres.runMigrations=false`.
+
+- OTLP exporter is configured but only active when the binary is
+  built with the `otel` cargo feature AND
+  `observability.otlp.endpoint` is non-empty. Point it at your
+  OpenTelemetry Collector (e.g. `http://otel-collector.observability:4317`).
+
+For more details: https://github.com/salmanbao/propfirm-engine/tree/main/docs

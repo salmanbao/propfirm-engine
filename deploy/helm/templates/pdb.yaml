@@ -1,0 +1,36 @@
+{{- if .Values.server.enabled -}}
+{{- if .Values.server.pdb.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-server
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: {{ .Values.server.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+{{- end -}}
+{{- end -}}
+
+---
+{{- if .Values.worker.enabled -}}
+{{- if .Values.worker.pdb.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end -}}
+{{- end -}}
