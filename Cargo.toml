@@ -142,7 +142,7 @@ figment = { version = "0.10", optional = true, features = ["env", "toml"] }
 dotenvy = { version = "0.15", optional = true }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.5"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
