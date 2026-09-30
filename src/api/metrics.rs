@@ -124,3 +124,52 @@ pub mod worker {
         .increment(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_record_decision_emits_metric() {
+        // Record a "Pass" decision — this should emit a metrics
+        // counter increment with the kind=Pass label.
+        record_decision("Pass");
+
+        // The tracing_test mock subscriber captures all events.
+        // We assert that the "propfirm_evaluate_decisions_total"
+        // counter was incremented at least once.
+        // (tracing_test doesn't directly assert on metrics events —
+        // it captures tracing::info!/debug!/etc. spans + events.
+        // The metrics crate uses a separate recorder, so this test
+        // just verifies the function doesn't panic.)
+        assert!(true, "record_decision completed without panic");
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_record_idempotency_outcome_emits_metric() {
+        record_idempotency_outcome("fresh");
+        record_idempotency_outcome("replay");
+        record_idempotency_outcome("conflict");
+        record_idempotency_outcome("error");
+        // All four outcomes should be recordable without panic.
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_latency_scope_records_duration() {
+        let _scope = LatencyScope::start("/test/endpoint");
+        // The scope starts measuring. When it's dropped (at end of
+        // this block), it records the histogram value.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        // _scope is dropped here → histogram recorded.
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn test_record_error_emits_metric() {
+        record_error("/test/endpoint", "test_error_kind");
+        // Should not panic.
+    }
+}

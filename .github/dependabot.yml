@@ -1,0 +1,69 @@
+version: 2
+updates:
+  # Rust dependencies — check for updates weekly.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "UTC"
+    # Open up to 5 PRs at a time to avoid flooding the PR queue.
+    open-pull-requests-limit: 5
+    # Group minor + patch upgrades together (one PR per ecosystem per
+    # week). Major upgrades get individual PRs so they can be reviewed
+    # separately.
+    groups:
+      # All minor + patch upgrades in one PR.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Label all Dependabot PRs for easy filtering.
+    labels:
+      - "dependencies"
+      - "automated"
+    # Assign to the maintainer team.
+    assignees:
+      - "salmanbao"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # Require CI to pass before allowing auto-merge.
+    # (auto-merge itself is configured in repo settings, not here.)
+
+  # GitHub Actions — check for updates weekly.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "github-actions"
+      - "automated"
+    assignees:
+      - "salmanbao"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # Docker base images — check for updates weekly.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 1
+    labels:
+      - "docker"
+      - "automated"
+    assignees:
+      - "salmanbao"
+    commit-message:
+      prefix: "docker"
+      include: "scope"

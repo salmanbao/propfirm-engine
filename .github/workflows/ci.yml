@@ -575,9 +575,49 @@ jobs:
         if: failure()
         run: docker logs otelcol 2>&1 | tail -50
 
+  machete:
+    # cargo-machete detects unused dependencies in Cargo.toml.
+    # A dep can be listed in [dependencies] but never actually imported
+    # in any source file — this catches that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install cargo-machete
+        run: cargo install --locked cargo-machete --version "^0.7"
+      - name: Run cargo-machete
+        # Exits non-zero if any unused deps are found. The output lists
+        # each unused dep + the Cargo.toml line where it's declared.
+        run: cargo machete --with-metadata
+
+  careful:
+    # cargo-careful runs tests with extra undefined-behavior detection
+    # (MIRI-style checks without requiring MIRI). Only runs on nightly
+    # + only on the nightly cron schedule (too slow for every PR).
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: miri
+      - name: Install cargo-careful
+        run: cargo +nightly install --locked cargo-careful
+      - name: Run cargo-careful
+        env:
+          PROPFIRM_IDEMPOTENCY__BACKEND: memory
+        # Skip event_bus tests (need Redis) + otlp tests (global
+        # subscriber race) — those are covered by dedicated jobs.
+        run: cargo careful test --features server -- --skip event_bus --skip otlp
+
   proof-of-build:
     runs-on: ubuntu-latest
-    needs: [check, security-audit, sbom, cargo-deny, otel-e2e]
+    needs: [check, nextest, coverage, security-audit, sbom, cargo-deny, otel-e2e, machete]
     steps:
       - uses: actions/checkout@v4
 

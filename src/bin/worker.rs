@@ -62,11 +62,12 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Subcommand dispatch:
-    //   `propfirm-worker healthcheck` → run healthcheck + exit
-    //   `propfirm-worker metrics`     → dump accumulated metrics + exit
-    //   `propfirm-worker status`      → print PEL stats + consumer list
-    //   `propfirm-worker drain`       → XACK all PEL entries idle > N secs
-    //   (no subcommand)              → run the worker loop
+    //   `propfirm-worker healthcheck`    → run healthcheck + exit
+    //   `propfirm-worker metrics`       → dump accumulated metrics + exit
+    //   `propfirm-worker status`        → print PEL stats + consumer list
+    //   `propfirm-worker drain [secs]`  → XACK all PEL entries idle > N secs
+    //   `propfirm-worker reset-group`   → delete + recreate consumer group
+    //   (no subcommand)                 → run the worker loop
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 {
         match args[1].as_str() {
@@ -74,10 +75,10 @@ async fn main() -> anyhow::Result<()> {
             "metrics" => return run_metrics_dump().await,
             "status" => return run_status().await,
             "drain" => {
-                // Parse optional idle-secs arg: `propfirm-worker drain 60`
                 let idle_secs: i64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60);
                 return run_drain(idle_secs).await;
             }
+            "reset-group" => return run_reset_group().await,
             _ => {} // fall through to worker loop
         }
     }
@@ -1049,4 +1050,118 @@ impl ValueHelpers for redis::Value {
     fn as_string_opt(&self) -> Option<String> {
         value_as_string(self)
     }
+}
+
+/// `propfirm-worker reset-group` — delete and recreate the consumer
+/// group on the request stream.
+///
+/// This is a maintenance tool: when the consumer group gets into a bad
+/// state (e.g. corrupted PEL after a Redis failover, or stale entries
+/// from crashed workers that won't go away), resetting the group clears
+/// the PEL and gives workers a fresh start.
+///
+/// ## Behavior
+///
+/// 1. `XGROUP DESTROY stream group` — deletes the group + all its PEL.
+/// 2. `XGROUP CREATE stream group $ MKSTREAM` — recreates the group
+///    from the latest message forward.
+/// 3. All previously-pending entries are lost (they're now unacked +
+///    untracked).
+///
+/// ## Usage
+///
+/// ```bash
+/// kubectl exec deploy/propfirm-worker -- /app/propfirm-worker reset-group
+/// ```
+///
+/// ## Safety
+///
+/// **Destructive** — any in-flight messages are lost. Use only when:
+/// - The worker pool is stopped (so no consumer is actively processing).
+/// - OR the PEL is known to contain only already-processed-but-unacked
+///   messages (e.g. after a crash where the worker already published
+///   responses but didn't get to XACK).
+async fn run_reset_group() -> anyhow::Result<()> {
+    use propfirm::persistence::redis_store::RedisConn;
+
+    let settings = Settings::load()?;
+    let conn = match redis_connect(&settings.redis).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FAIL: redis connect failed: {e}");
+            return Err(anyhow::anyhow!("redis connect failed: {e}"));
+        }
+    };
+    let stream = settings.event_bus.request_stream.clone();
+    let group = settings.event_bus.consumer_group.clone();
+
+    // Step 1: XGROUP DESTROY — deletes the group + its PEL.
+    let destroy_ok: bool = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("XGROUP")
+                .arg("DESTROY")
+                .arg(&stream)
+                .arg(&group)
+                .query_async::<i64>(&mut c)
+                .await
+                .map(|n| n == 1)
+                .unwrap_or(false)
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("XGROUP")
+                .arg("DESTROY")
+                .arg(&stream)
+                .arg(&group)
+                .query_async::<i64>(&mut *c)
+                .await
+                .map(|n| n == 1)
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+    };
+
+    if !destroy_ok {
+        eprintln!("WARN: XGROUP DESTROY returned 0 (group may not have existed)");
+    } else {
+        eprintln!("OK: destroyed consumer group '{group}' on stream '{stream}'");
+    }
+
+    // Step 2: XGROUP CREATE — recreate with MKSTREAM + start-from-$.
+    let create_ok: bool = match &conn {
+        RedisConn::Single(c) => {
+            let mut c = c.clone();
+            redis::cmd("XGROUP")
+                .arg("CREATE")
+                .arg(&stream)
+                .arg(&group)
+                .arg("$")
+                .arg("MKSTREAM")
+                .query_async::<()>(&mut c)
+                .await
+                .is_ok()
+        }
+        RedisConn::Cluster(pool) => match pool.get().await {
+            Ok(mut c) => redis::cmd("XGROUP")
+                .arg("CREATE")
+                .arg(&stream)
+                .arg(&group)
+                .arg("$")
+                .arg("MKSTREAM")
+                .query_async::<()>(&mut *c)
+                .await
+                .is_ok(),
+            Err(_) => false,
+        },
+    };
+
+    if create_ok {
+        eprintln!("OK: recreated consumer group '{group}' on stream '{stream}' (start from $)");
+        println!("reset_group=ok stream={stream} group={group}");
+    } else {
+        eprintln!("FAIL: XGROUP CREATE failed (group may already exist — try reset-group again)");
+        println!("reset_group=fail stream={stream} group={group}");
+    }
+
+    Ok(())
 }

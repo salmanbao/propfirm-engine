@@ -21,6 +21,8 @@ pub mod handlers;
 pub mod idempotency;
 pub mod metrics;
 pub mod middleware;
+#[cfg(feature = "openapi")]
+pub mod openapi;
 pub mod otel;
 pub mod routes;
 pub mod server;

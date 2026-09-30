@@ -122,6 +122,52 @@ pub fn init_tracing(settings: &ObservabilitySettings) -> anyhow::Result<()> {
         }
     }
 
+    // Flame graph profiling path — only when the `flame` cargo feature
+    // is enabled AND `flame_output_path` is non-empty.
+    #[cfg(feature = "flame")]
+    {
+        if !settings.flame_output_path.is_empty() {
+            use std::sync::OnceLock;
+            use tracing_flame::FlameLayer;
+
+            static FLAME_GUARD: OnceLock<
+                tracing_flame::FlushGuard<std::io::BufWriter<std::fs::File>>,
+            > = OnceLock::new();
+
+            match FlameLayer::with_file(&settings.flame_output_path) {
+                Ok((flame_layer, guard)) => {
+                    let _ = FLAME_GUARD.set(guard);
+                    if is_pretty {
+                        if let Err(e) = tracing_subscriber::registry()
+                            .with(filter)
+                            .with(fmt::layer().with_target(false))
+                            .with(flame_layer)
+                            .try_init()
+                        {
+                            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+                        }
+                    } else {
+                        if let Err(e) = tracing_subscriber::registry()
+                            .with(filter)
+                            .with(fmt::layer().with_target(true).json())
+                            .with(flame_layer)
+                            .try_init()
+                        {
+                            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
+                        }
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "WARN: failed to create flame layer at {}: {} — falling back to plain fmt",
+                        settings.flame_output_path, e
+                    );
+                }
+            }
+        }
+    }
+
     // No OTLP layer — plain fmt subscriber only.
     // Use try_init so we don't panic if the global is already set
     // (e.g. by an earlier test in the same process).

@@ -49,7 +49,7 @@ pub async fn router(state: SharedState) -> Router {
     let body_limit_bytes = 2 * 1024 * 1024; // 2 MiB default
     let request_timeout = Duration::from_secs(30);
 
-    Router::new()
+    let r = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/internal/v1/evaluate", post(evaluate_internal))
@@ -59,15 +59,23 @@ pub async fn router(state: SharedState) -> Router {
         .route("/internal/v1/breach-report", post(breach_report))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/rule-packs/validate", post(validate_rule_pack))
-        .route("/metrics", get(metrics_handler))
-        // Layer order (outermost first):
-        //   1. SetRequestIdLayer        — generates x-request-id if absent
-        //   2. TraceLayer               — per-request span with method/uri/request_id
-        //   3. TimeoutLayer             — per-request timeout
-        //   4. CompressionLayer         — response compression
-        //   5. RequestBodyLimitLayer    — request body cap
-        //   6. PropagateRequestIdLayer  — echoes x-request-id in response
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+        .route("/metrics", get(metrics_handler));
+
+    // OpenAPI spec + Swagger UI (only when the `openapi` cargo feature is enabled).
+    #[cfg(feature = "openapi")]
+    let r = r
+        .route("/openapi.json", get(openapi_json_handler))
+        .route("/swagger-ui", get(swagger_ui_handler))
+        .route("/swagger-ui/", get(swagger_ui_handler));
+
+    // Layer order (outermost first):
+    //   1. SetRequestIdLayer        — generates x-request-id if absent
+    //   2. TraceLayer               — per-request span with method/uri/request_id
+    //   3. TimeoutLayer             — per-request timeout
+    //   4. CompressionLayer         — response compression
+    //   5. RequestBodyLimitLayer    — request body cap
+    //   6. PropagateRequestIdLayer  — echoes x-request-id in response
+    r.layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
             TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
                 let req_id = req
@@ -106,3 +114,39 @@ pub async fn metrics_handler(
     let s = state.read().await;
     Ok(s.metrics_handle.render())
 }
+
+/// `GET /openapi.json` — serves the OpenAPI 3.0 spec.
+#[cfg(feature = "openapi")]
+pub async fn openapi_json_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(crate::api::openapi::openapi_json())
+}
+
+/// `GET /swagger-ui/` — serves the Swagger UI HTML page.
+#[cfg(feature = "openapi")]
+pub async fn swagger_ui_handler() -> axum::response::Html<&'static str> {
+    axum::response::Html(SWAGGER_UI_HTML)
+}
+
+#[cfg(feature = "openapi")]
+const SWAGGER_UI_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+  <title>Prop Firm Engine — Swagger UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function() {
+      SwaggerUIBundle({
+        url: '/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout',
+      });
+    };
+  </script>
+</body>
+</html>"#;

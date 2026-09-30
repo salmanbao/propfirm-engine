@@ -179,15 +179,26 @@ async fn run_demo() -> anyhow::Result<()> {
 async fn run_repl(args: &[String]) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader};
 
+    // Parse args: --json for JSON output, -f FILE for batch mode.
+    let json_mode = args.iter().any(|a| a == "--json" || a == "-j");
+
     // Parse optional `-f FILE` arg for batch mode.
     let mut input: Box<dyn BufRead> = if let Some(path) = args.iter().nth(1) {
-        // Skip "-f"
+        // Skip "-f" or "--json"
         let path = if path == "-f" {
             args.iter().nth(2).map(String::as_str).unwrap_or("-")
+        } else if path == "--json" || path == "-j" {
+            // Look for -f after --json
+            if let Some(idx) = args.iter().position(|a| a == "-f") {
+                args.iter().nth(idx + 1).map(String::as_str).unwrap_or("-")
+            } else {
+                // No -f, read from stdin.
+                "stdin-marker"
+            }
         } else {
             path.as_str()
         };
-        if path == "-" {
+        if path == "stdin-marker" || path == "-" {
             Box::new(BufReader::new(std::io::stdin()))
         } else {
             let f = std::fs::File::open(path)
@@ -198,9 +209,12 @@ async fn run_repl(args: &[String]) -> anyhow::Result<()> {
         Box::new(BufReader::new(std::io::stdin()))
     };
 
-    eprintln!("propfirm-cli repl — type a JSON request body per line, then Enter.");
-    eprintln!("Each line is one `/internal/v1/evaluate` request.");
-    eprintln!("Press Ctrl+D (or empty line + Enter) to exit.\n");
+    if !json_mode {
+        eprintln!("propfirm-cli repl — type a JSON request body per line, then Enter.");
+        eprintln!("Each line is one `/internal/v1/evaluate` request.");
+        eprintln!("Use --json / -j for JSON output (pipe to jq).");
+        eprintln!("Press Ctrl+D (or empty line + Enter) to exit.\n");
+    }
 
     let mut line = String::new();
     let mut line_no = 0usize;
@@ -221,9 +235,15 @@ async fn run_repl(args: &[String]) -> anyhow::Result<()> {
             continue;
         }
 
-        match process_one_repl_line(trimmed).await {
-            Ok(pretty) => println!("{pretty}\n"),
-            Err(e) => eprintln!("line {line_no}: ERROR — {e}\n"),
+        match process_one_repl_line(trimmed, json_mode).await {
+            Ok(output) => println!("{output}"),
+            Err(e) => {
+                if json_mode {
+                    eprintln!(r#"{{"error":"line {line_no}: {e}"}}"#);
+                } else {
+                    eprintln!("line {line_no}: ERROR — {e}\n");
+                }
+            }
         }
     }
 
@@ -232,7 +252,7 @@ async fn run_repl(args: &[String]) -> anyhow::Result<()> {
 
 /// Parse one JSON request, run pure::evaluate, pretty-print the result.
 #[cfg(feature = "server")]
-async fn process_one_repl_line(json: &str) -> anyhow::Result<String> {
+async fn process_one_repl_line(json: &str, json_mode: bool) -> anyhow::Result<String> {
     use propfirm::api::handlers::InternalEvaluateRequest;
     use propfirm::core::ids::AccountId;
     use propfirm::core::types::ServerTime;
@@ -335,56 +355,86 @@ async fn process_one_repl_line(json: &str) -> anyhow::Result<String> {
     )?;
     acc = new_state.account;
 
-    // Pretty-print the verdict.
-    let mut out = String::new();
-    out.push_str("┌─ verdict ─────────────────────────────────────────────┐\n");
-    out.push_str(&format!(
-        "│ decision_kind:     {:<30}            │\n",
-        format!("{:?}", verdict.decision.kind)
-    ));
-    out.push_str(&format!(
-        "│ winning_priority:  {:<30}            │\n",
-        verdict.decision.winning_priority
-    ));
-    out.push_str(&format!("│ input_hash:        {}  │\n", verdict.input_hash));
-    out.push_str(&format!(
-        "│ pack_id:           {:<30}            │\n",
-        verdict.pack_id
-    ));
-    out.push_str(&format!(
-        "│ pack_version:      {:<30}            │\n",
-        verdict.pack_version
-    ));
-    out.push_str("├─ per-rule verdicts ─────────────────────────────────┤\n");
-    for report in &verdict.reports {
-        let verdict_str = format!("{:?}", report.verdict);
+    // Output: JSON or pretty table depending on json_mode flag.
+    if json_mode {
+        let reports_json: Vec<serde_json::Value> = verdict
+            .reports
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "rule_name": r.rule_name,
+                    "verdict": format!("{:?}", r.verdict),
+                    "priority": r.priority,
+                })
+            })
+            .collect();
+        let json_output = serde_json::json!({
+            "decision_kind": format!("{:?}", verdict.decision.kind),
+            "winning_priority": verdict.decision.winning_priority,
+            "input_hash": verdict.input_hash,
+            "pack_id": verdict.pack_id,
+            "pack_version": verdict.pack_version,
+            "reports": reports_json,
+            "account_state": {
+                "status": format!("{:?}", acc.status),
+                "balance": acc.balance.to_string(),
+                "equity": acc.equity.to_string(),
+                "peak_balance": acc.peak_balance.to_string(),
+                "daily_drawdown": acc.daily_drawdown().to_string(),
+            },
+        });
+        Ok(serde_json::to_string_pretty(&json_output)?)
+    } else {
+        // Pretty-print the verdict.
+        let mut out = String::new();
+        out.push_str("┌─ verdict ─────────────────────────────────────────────┐\n");
         out.push_str(&format!(
-            "│ {:<25} → {:<20} (prio={:<4}) │\n",
-            report.rule_name, verdict_str, report.priority
+            "│ decision_kind:     {:<30}            │\n",
+            format!("{:?}", verdict.decision.kind)
         ));
+        out.push_str(&format!(
+            "│ winning_priority:  {:<30}            │\n",
+            verdict.decision.winning_priority
+        ));
+        out.push_str(&format!("│ input_hash:        {}  │\n", verdict.input_hash));
+        out.push_str(&format!(
+            "│ pack_id:           {:<30}            │\n",
+            verdict.pack_id
+        ));
+        out.push_str(&format!(
+            "│ pack_version:      {:<30}            │\n",
+            verdict.pack_version
+        ));
+        out.push_str("├─ per-rule verdicts ─────────────────────────────────┤\n");
+        for report in &verdict.reports {
+            let verdict_str = format!("{:?}", report.verdict);
+            out.push_str(&format!(
+                "│ {:<25} → {:<20} (prio={:<4}) │\n",
+                report.rule_name, verdict_str, report.priority
+            ));
+        }
+        out.push_str("├─ account state (post-eval) ───────────────────────┤\n");
+        out.push_str(&format!(
+            "│ status:        {:?}                                 │\n",
+            acc.status
+        ));
+        out.push_str(&format!(
+            "│ balance:       {:<30}                │\n",
+            acc.balance
+        ));
+        out.push_str(&format!(
+            "│ equity:        {:<30}                │\n",
+            acc.equity
+        ));
+        out.push_str(&format!(
+            "│ peak_balance:  {:<30}                │\n",
+            acc.peak_balance
+        ));
+        out.push_str(&format!(
+            "│ daily_drawdown: {:<29}                │\n",
+            acc.daily_drawdown()
+        ));
+        out.push_str("└────────────────────────────────────────────────────┘");
+        Ok(out)
     }
-    out.push_str("├─ account state (post-eval) ───────────────────────┤\n");
-    out.push_str(&format!(
-        "│ status:        {:?}                                 │\n",
-        acc.status
-    ));
-    out.push_str(&format!(
-        "│ balance:       {:<30}                │\n",
-        acc.balance
-    ));
-    out.push_str(&format!(
-        "│ equity:        {:<30}                │\n",
-        acc.equity
-    ));
-    out.push_str(&format!(
-        "│ peak_balance:  {:<30}                │\n",
-        acc.peak_balance
-    ));
-    out.push_str(&format!(
-        "│ daily_drawdown: {:<29}                │\n",
-        acc.daily_drawdown()
-    ));
-    out.push_str("└────────────────────────────────────────────────────┘");
-
-    Ok(out)
 }

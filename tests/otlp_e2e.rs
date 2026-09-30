@@ -168,6 +168,7 @@ async fn otlp_e2e_spans_reach_collector() {
             stdout: false,
             sample_ratio: 1.0,
         },
+        flame_output_path: String::new(),
     };
     propfirm::api::otel::init_tracing(&settings).expect("init_tracing");
 

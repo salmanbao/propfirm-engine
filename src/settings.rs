@@ -187,6 +187,11 @@ pub struct ObservabilitySettings {
     /// OpenTelemetry OTLP exporter settings. Only used when the `otel`
     /// cargo feature is enabled AND `otlp.endpoint` is set.
     pub otlp: OtlpSettings,
+    /// When non-empty, the binary installs a tracing-flame layer
+    /// that writes a flame-graph-compatible trace to this path.
+    /// Requires the `flame` cargo feature. Convert to SVG with:
+    ///   `flamegraph <path> > flamegraph.svg`
+    pub flame_output_path: String,
 }
 
 impl Default for ObservabilitySettings {
@@ -198,6 +203,7 @@ impl Default for ObservabilitySettings {
             metrics_path: "/metrics".to_string(),
             panic_hook: true,
             otlp: OtlpSettings::default(),
+            flame_output_path: String::new(),
         }
     }
 }
