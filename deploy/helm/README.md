@@ -154,6 +154,7 @@ curl http://localhost:8080/metrics   # → Prometheus scrape
 
 Before deploying to production, verify:
 
+### Infrastructure
 - [ ] `postgres.deploy=false` pointing at your managed Postgres (RDS,
       Cloud SQL, Aurora) — don't run Postgres in a StatefulSet.
 - [ ] `redis.deploy=false` pointing at your managed Redis (ElastiCache,
@@ -171,3 +172,41 @@ Before deploying to production, verify:
 - [ ] Resource requests match your actual workload (run the k6 load
       test in `bench/load/` against staging first).
 - [ ] The image is built with `--features server,otel` if you need OTLP.
+
+### Worker health
+- [ ] `worker` livenessProbe + readinessProbe wired to
+      `/app/propfirm-worker healthcheck` (default in the chart since v0.3).
+      Verify with: `kubectl -n propfirm exec deploy/propfirm-worker --
+      /app/propfirm-worker healthcheck` — should print "OK: redis
+      reachable, stream '...' present, group '...' registered".
+
+### Supply-chain security
+- [ ] `cargo audit` passes in CI (the `security-audit` job). The
+      latest run's advisory count is visible at the top of the
+      workflow run page on GitHub Actions. Any RUSTSEC advisory on a
+      direct or transitive dep blocks the merge.
+- [ ] `cargo deny check advisories` passes in CI (the `cargo-deny`
+      job). This catches the same advisories as `cargo audit` plus
+      yanked crates.
+- [ ] `cargo deny check bans` passes — no banned crates (e.g.
+      copybara-fork, openssl pre-1.1.1k).
+- [ ] `cargo deny check licenses` passes — every direct + transitive
+      dep is on the allowlist (default: MIT, Apache-2.0, BSD-3-Clause,
+      BSD-2-Clause, ISC, MPL-2.0).
+- [ ] The Docker image carries a CycloneDX SBOM at `/app/sbom/`. Verify
+      with: `docker run --rm ghcr.io/salmanbao/propfirm-engine:latest
+      cat /app/sbom/*.json | jq .metadata`.
+- [ ] The image's OCI labels include `io.propfirm.sbom.location` —
+      `syft` / `trivy` / `grype` can read this to discover the SBOM
+      without rescanning the filesystem.
+
+### Observability
+- [ ] The Grafana dashboard at `deploy/helm/dashboards/propfirm-overview.json`
+      is imported into your Grafana instance (or use the
+      `grafana_dashboard` ConfigMap annotation for auto-import with the
+      Grafana Helm chart's sidecar).
+- [ ] The OTLP collector (Tempo / Jaeger / Honeycomb / Datadog) is
+      receiving spans from `propfirm-engine` — verify by emitting a
+      test span: `kubectl -n propfirm exec deploy/propfirm-server --
+      /app/propfirm-server` and watching the collector's `/metrics`
+      endpoint for `otelcol_receiver_accepted_spans` increments.

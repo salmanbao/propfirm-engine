@@ -1,0 +1,46 @@
+# OpenTelemetry Collector config for the propfirm-engine e2e test job.
+#
+# - Receives OTLP gRPC spans on :4317 (the standard OTLP/gRPC port).
+# - Exposes its own Prometheus-format metrics on :8888/metrics.
+# - Logs every received span to stdout (so the CI job's logs show
+#   what spans arrived, useful for debugging).
+#
+# Used by the `otel-e2e` job in `.github/workflows/ci.yml` via:
+#
+#   docker run -d --name otelcol \
+#     -p 4317:4317 -p 8888:8888 \
+#     -v .github/otel-collector/config.yaml:/etc/otelcol/config.yaml \
+#     otel/opentelemetry-collector
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1   # flush immediately (don't accumulate)
+
+exporters:
+  # Export to stdout so the CI logs show every span received.
+  debug:
+    verbosity: detailed
+    sampling_initial: 1
+    sampling_thereafter: 1
+  # Expose internal collector metrics for the test to scrape.
+  prometheus:
+    endpoint: 0.0.0.0:8888
+
+service:
+  telemetry:
+    logs:
+      level: info
+  metrics:
+    address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

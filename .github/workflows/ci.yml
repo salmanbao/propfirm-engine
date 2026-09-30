@@ -166,9 +166,129 @@ jobs:
           echo "---"
           find target/cyclonedx/ -name "*.json" -exec head -100 {} \; 2>/dev/null || true
 
+  cargo-deny:
+    runs-on: ubuntu-latest
+    # cargo-deny does in one tool what cargo-audit + cargo-license
+    # do separately: scans for RUSTSEC advisories, yanked crates,
+    # unmaintained crates, license violations, and duplicate versions.
+    # Run alongside security-audit; cargo-deny is the more powerful
+    # tool, cargo-audit is the legacy baseline. Both must pass.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny --version "^0.16"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-deny
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Check advisories (RUSTSEC + yanked + unmaintained)
+        # Reads deny.toml [advisories] section. Fails on medium+
+        # severity advisories, yanked crates, and unmaintained
+        # transitive deps.
+        run: cargo deny check advisories
+
+      - name: Check license compliance
+        # Reads deny.toml [licenses] section. Fails on any dep
+        # licensed under anything not in the allow list (MIT,
+        # Apache-2.0, BSD-*, ISC, MPL-2.0, Zlib, Unicode-*).
+        run: cargo deny check licenses
+
+      - name: Check banned crates
+        # Reads deny.toml [bans] section. Fails on wildcard deps
+        # (`dep = "*"`) and any explicit bans in deny.toml.
+        run: cargo deny check bans
+
+      - name: Check source registries
+        # Reads deny.toml [sources] section. Fails on crates pulled
+        # from anywhere but crates.io.
+        run: cargo deny check sources
+
+  otel-e2e:
+    runs-on: ubuntu-latest
+    needs: [check, security-audit, cargo-deny]
+    # End-to-end OTLP test: brings up an OpenTelemetry Collector as a
+    # service container, points the engine at it, emits a span, and
+    # verifies the collector received it via its /metrics endpoint.
+    services:
+      otelcol:
+        image: otel/opentelemetry-collector:latest
+        ports:
+          - 4317:4317   # OTLP gRPC
+          - 8888:8888   # Prometheus metrics
+        volumes:
+          # Mount our custom collector config (debug exporter +
+          # prometheus metrics exporter + immediate batch flush).
+          - ${{ github.workspace }}/.github/otel-collector/config.yaml:/etc/otelcol/config.yaml
+        options: >-
+          --name otelcol
+          --health-cmd "curl -fsS http://localhost:8888/metrics || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-otel-e2e
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-otel-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Verify collector is up
+        run: |
+          # The collector exposes /metrics on :8888. Poll until it's
+          # ready (or fail after 30s).
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8888/metrics > /dev/null; then
+              echo "collector is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8888/metrics | head -5
+
+      - name: Run OTLP e2e test
+        env:
+          OTLP_COLLECTOR_ENDPOINT: http://localhost:4317
+          OTLP_COLLECTOR_METRICS: http://localhost:8888/metrics
+        # The test is marked #[ignore] so it doesn't run on every
+        # `cargo test` invocation — only when --include-ignored is
+        # passed OR via this CI job.
+        run: cargo test --features server,otel --test otlp_e2e -- --nocapture --include-ignored
+
+      - name: Collector logs (on failure)
+        if: failure()
+        run: docker logs otelcol 2>&1 | tail -50
+
   proof-of-build:
     runs-on: ubuntu-latest
-    needs: [check, security-audit, sbom]
+    needs: [check, security-audit, sbom, cargo-deny, otel-e2e]
     steps:
       - uses: actions/checkout@v4
 

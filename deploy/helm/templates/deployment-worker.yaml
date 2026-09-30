@@ -40,10 +40,34 @@ spec:
             - name: RUST_LOG
               value: {{ .Values.observability.logFilter | quote }}
           # The worker has no HTTP port — it only consumes from Redis.
-          # Liveness/readiness via /metrics is N/A. Use a custom TCP
-          # check on Redis instead.
-          # TODO: add a `worker healthcheck` subcommand that pings
-          # Redis and returns 0 if the consumer group is healthy.
+          # Liveness + readiness probes use the `propfirm-worker
+          # healthcheck` subcommand, which pings Redis + verifies the
+          # consumer group is registered on the request stream.
+          #
+          # Readiness: a not-ready worker can't consume messages, so the
+          # platform backend shouldn't route traffic to it (well, the
+          # worker has no inbound HTTP, but a not-ready worker also
+          # can't be assumed to be making progress on the PEL).
+          # Liveness: if Redis goes down hard, the worker's
+          # `consume_request` loop logs an error + sleeps 1s. The
+          # healthcheck will start failing ~30s after the issue starts
+          # (default period=10s, retries=3) and k8s will restart the
+          # pod — which is what we want, because a fresh worker
+          # bootstraps a fresh bb8 pool.
+          livenessProbe:
+            exec:
+              command: ["/app/propfirm-worker", "healthcheck"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["/app/propfirm-worker", "healthcheck"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           securityContext:

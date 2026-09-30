@@ -213,6 +213,20 @@ networkPolicy:
     - infrastructure
 
 # ---------------------------------------------------------------------------
+# Grafana dashboards — auto-imported by the Grafana Helm chart's
+# sidecar (https://grafana.github.io/helm-charts) when ConfigMaps
+# with the `grafana_dashboard: "1"` label exist in the cluster.
+# ---------------------------------------------------------------------------
+
+grafana:
+  dashboards:
+    enabled: true
+    # The Grafana folder to import dashboards into. Created if missing.
+    folder: "Prop Firm Engine"
+    # Disable to ship without the dashboard ConfigMap (the JSON still
+    # lives under dashboards/ for direct manual import).
+
+# ---------------------------------------------------------------------------
 # Ingress — optional, only for HTTP server. Skip if using a gateway.
 # ---------------------------------------------------------------------------
 

@@ -61,11 +61,17 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Subcommand dispatch: `propfirm-worker healthcheck` runs the
-    // healthcheck and exits; otherwise we run the worker loop.
+    // Subcommand dispatch:
+    //   `propfirm-worker healthcheck` → run healthcheck + exit
+    //   `propfirm-worker metrics`     → dump accumulated metrics + exit
+    //   (no subcommand)              → run the worker loop
     let args: Vec<String> = std::env::args().collect();
-    if args.len() >= 2 && args[1] == "healthcheck" {
-        return run_healthcheck().await;
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "healthcheck" => return run_healthcheck().await,
+            "metrics" => return run_metrics_dump().await,
+            _ => {} // fall through to worker loop
+        }
     }
 
     // 1. Load settings.
@@ -604,5 +610,45 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     }
 
     println!("OK: redis reachable, stream '{stream}' present, group '{group}' registered");
+    Ok(())
+}
+
+/// `propfirm-worker metrics` — dump the global Prometheus metrics
+/// recorder's accumulated values to stdout. Exits 0 on success.
+///
+/// This is a debugging aid — when the worker is behaving oddly (e.g.
+/// message consumed but not acked, or sudden spike in errors),
+/// running this subcommand lets you see the current counter /
+/// histogram values without scraping the `/metrics` endpoint
+/// (which is on the server, not the worker).
+///
+/// The output is Prometheus text format, compatible with `curl
+/// http://server:8080/metrics`:
+///
+///   ```text
+///   # HELP propfirm_event_bus_messages_consumed_total ...
+///   # TYPE propfirm_event_bus_messages_consumed_total counter
+///   propfirm_event_bus_messages_consumed_total{consumer="worker-0"} 1234
+///   ...
+///   ```
+///
+/// Usage:
+///   kubectl exec deploy/propfirm-worker -- /app/propfirm-worker metrics
+///
+/// Note: this calls `default_metrics_handle()` which installs the
+/// global Prometheus recorder. If the recorder is already installed
+/// (which it is, in any binary that has called `init_metrics`), this
+/// is a no-op; otherwise it installs a fresh recorder (which will
+/// have all-zero counters — useful for verifying the recorder is
+/// reachable from the worker binary).
+async fn run_metrics_dump() -> anyhow::Result<()> {
+    // Touch the handle so the recorder is installed (idempotent via
+    // OnceLock in api::server::default_metrics_handle).
+    let handle = propfirm::api::server::default_metrics_handle();
+
+    // Render + print. The output is the same format as the /metrics
+    // endpoint on the server.
+    let rendered = handle.render();
+    print!("{rendered}");
     Ok(())
 }

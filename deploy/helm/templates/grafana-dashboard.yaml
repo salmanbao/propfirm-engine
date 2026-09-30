@@ -1,0 +1,24 @@
+{{- if .Values.grafana.dashboards.enabled -}}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-grafana-dashboard-{{ base $path }}
+  labels:
+    {{- include "propfirm.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: grafana-dashboard
+    # Grafana sidecar auto-import: the grafana Helm chart's
+    # `dashboards-sidecar` container watches ConfigMaps with this
+    # label and imports any *.json file inside the `data` map.
+    grafana_dashboard: "1"
+  annotations:
+    # Pin the dashboard to a specific Grafana folder (created if
+    # missing). When this is omitted, the dashboard lands in the
+    # "General" folder.
+    grafana_folder: {{ $.Values.grafana.dashboards.folder | default "Prop Firm Engine" | quote }}
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+---
+{{- end }}
+{{- end -}}
