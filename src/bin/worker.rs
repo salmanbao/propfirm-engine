@@ -233,7 +233,40 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // 8. Wait for shutdown.
+    // 8. Optional: start a minimal HTTP server for /metrics scraping.
+    //    The worker has no inbound HTTP traffic, but Prometheus needs
+    //    to scrape metrics. This starts a tiny axum server on port 8081
+    //    (configurable via PROPFIRM_WORKER_METRICS_PORT) that serves
+    //    just /metrics and /health.
+    let worker_metrics_port: u16 = std::env::var("PROPFIRM_WORKER_METRICS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8081);
+    let metrics_handle = propfirm::api::server::default_metrics_handle();
+    let worker_shutdown = shutdown.clone();
+    let _metrics_server = tokio::spawn(async move {
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                axum::routing::get(move || {
+                    let h = metrics_handle.clone();
+                    async move { h.render() }
+                }),
+            )
+            .route("/health", axum::routing::get(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{worker_metrics_port}"))
+            .await
+            .expect("worker metrics bind");
+        info!(port = worker_metrics_port, "worker metrics server started");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                worker_shutdown.cancelled().await;
+            })
+            .await
+            .ok();
+    });
+
+    // 9. Wait for shutdown.
     shutdown.cancelled().await;
     info!("shutdown signal received, waiting for in-flight tasks");
     for t in tasks {

@@ -208,10 +208,31 @@ pub struct Account {
     /// `target_hit_pending` → `passed` state transition.
     pub target_reached_on_day: Option<u32>,
 
-    /// Optimistic-concurrency version (P1-8 fix). A caller-owned token
-    /// serialized with `account_state` and hashed into `input_hash`, so
-    /// any change is visible in the verdict fingerprint. Server-side
-    /// version checking was removed with ADR-11's account persistence.
+    /// Optimistic-concurrency version (P1-8 fix). A **caller-managed**
+    /// token serialized with `account_state` and hashed into `input_hash`,
+    /// so any change is visible in the verdict fingerprint.
+    ///
+    /// ## Contract (multi-instance safe)
+    ///
+    /// The engine does NOT increment `version` — it echoes it back
+    /// unchanged in the response's `account_state`. The caller MUST:
+    ///
+    /// 1. Increment `version` before sending the next request for
+    ///    this account (e.g., `version += 1`).
+    /// 2. If two concurrent requests for the same account are in
+    ///    flight (on different engine pods), both will receive the
+    ///    same `version` in the response (the one the caller sent).
+    ///    The caller MUST detect this by checking that the response's
+    ///    `version` matches what it expected.
+    /// 3. If the `input_hash` differs between two responses for the
+    ///    same request, the caller can detect that the evaluation
+    ///    inputs diverged (e.g., different `account_state.version`
+    ///    was sent to each pod).
+    ///
+    /// The engine does NOT enforce monotonicity — this is the
+    /// caller's responsibility. `Error::StateConflict` exists in
+    /// the `Error` enum for API compatibility but is never produced
+    /// by the stateless contract.
     pub version: u64,
 
     /// Last-evaluated tick timestamp (P1-14 fix). Used by the

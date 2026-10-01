@@ -360,7 +360,7 @@ impl RedisEventBus {
                     .arg(min_idle)
                     .arg("0-0")
                     .arg("COUNT")
-                    .arg(1i64)
+                    .arg(10i64)
                     .query_async(&mut c)
                     .await
             }
@@ -376,7 +376,7 @@ impl RedisEventBus {
                     .arg(min_idle)
                     .arg("0-0")
                     .arg("COUNT")
-                    .arg(1i64)
+                    .arg(10i64)
                     .query_async(&mut *conn)
                     .await
             }

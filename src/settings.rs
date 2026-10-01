@@ -126,7 +126,11 @@ impl Default for TlsSettings {
 pub struct PostgresSettings {
     /// `postgresql://user:pass@host:5432/dbname`
     pub dsn: String,
-    /// Connection pool size.
+    /// Connection pool size. For multi-instance deployments with N
+    /// server pods + M worker pods, set this to approximately
+    /// `(postgres_max_connections / (N + M)) + 20%_headroom`.
+    /// E.g., for 5 server pods + 5 worker pods against a Postgres
+    /// with `max_connections=100`, set this to ~12 per pod.
     pub max_connections: u32,
     /// Run pending migrations on startup.
     pub run_migrations: bool,
@@ -271,13 +275,21 @@ pub struct EventBusSettings {
     pub response_stream: String,
     /// Consumer group name (worker pool).
     pub consumer_group: String,
-    /// Consumer name (auto-generated UUID if empty).
+    /// Consumer name (auto-generated UUID if empty). For multi-instance
+    /// deployments, set this to the pod name via env var so each pod
+    /// has a stable consumer identity for PEL tracking.
     pub consumer_name: String,
-    /// Block timeout for XREADGROUP (milliseconds).
+    /// Block timeout for XREADGROUP (milliseconds). Lower values
+    /// (1000-2000) reduce shutdown latency; higher values (5000+)
+    /// reduce Redis round-trips. Default: 5000.
     pub block_ms: usize,
-    /// Number of in-flight messages per worker.
+    /// Number of concurrent consumer tasks per worker pod.
     pub concurrency: usize,
     /// Idle timeout before claiming pending messages (milliseconds).
+    /// Set this to ~5× your p99 evaluation latency. If set too low
+    /// (e.g., 5000ms for a 10s evaluation), XAUTOCLAIM will steal
+    /// messages from healthy-but-slow consumers, causing duplicate
+    /// processing. Default: 60000 (60s).
     pub idle_claim_ms: usize,
 }
 

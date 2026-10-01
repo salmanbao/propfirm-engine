@@ -137,22 +137,21 @@ pub async fn evaluate_internal(
 ) -> Result<Json<InternalEvaluateResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/evaluate");
     // P0.8: idempotency — key → first response, conflicting bodies 409.
+    //
+    // Restructured to check BEFORE evaluating: avoids wasting CPU on
+    // replays (the most common idempotency hit). The TOCTOU window
+    // between `check` returning Fresh and `remember` storing the
+    // response is handled by `remember`'s atomic upsert — if another
+    // pod stored a response in between, `remember` returns Replay
+    // and we return the other pod's cached response.
     let tenant_id = extract_tenant_id(&headers)?;
     let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let s = state.read().await.clone();
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        let response = evaluate_internal_impl(tenant_id, req).await?;
-        let response_str = serde_json::to_string(&response)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        // Step 1: Check first — if Replay, return cached without evaluating.
         match s
             .idempotency
-            .check_and_remember(
-                tenant_id,
-                "POST /internal/v1/evaluate",
-                key,
-                &body,
-                &response_str,
-            )
+            .check(tenant_id, "POST /internal/v1/evaluate", key, &body)
             .await
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
@@ -179,8 +178,44 @@ pub async fn evaluate_internal(
             }
             crate::api::idempotency::IdempotencyOutcome::Fresh => {
                 record_idempotency_outcome("fresh");
-                response
+                // Not seen yet — proceed to evaluate.
             }
+        }
+
+        // Step 2: Evaluate (CPU cost).
+        let response = evaluate_internal_impl(tenant_id, req).await?;
+        let response_str = serde_json::to_string(&response)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Step 3: Remember — atomic upsert. If another pod stored
+        // a response between our check and remember, we get Replay
+        // and return the other pod's cached response instead.
+        match s
+            .idempotency
+            .remember(
+                tenant_id,
+                "POST /internal/v1/evaluate",
+                key,
+                &body,
+                &response_str,
+            )
+            .await
+        {
+            crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
+                // Another pod won the race — return their response.
+                let cached = serde_json::from_str(&cached)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                cached
+            }
+            crate::api::idempotency::IdempotencyOutcome::Conflict => {
+                // Another pod stored with a different body — 409.
+                return Err((
+                    StatusCode::CONFLICT,
+                    "Idempotency-Key was already used with a different request body".into(),
+                ));
+            }
+            crate::api::idempotency::IdempotencyOutcome::Fresh => response,
+            crate::api::idempotency::IdempotencyOutcome::Error => response,
         }
     } else {
         evaluate_internal_impl(tenant_id, req).await?
@@ -386,6 +421,23 @@ async fn evaluate_internal_impl(
 
         (positions, trades, server_time, Some(tick))
     };
+
+    // Staleness check: reject ticks older than 10 minutes from
+    // the pod's wall clock. This prevents processing stale data
+    // that could produce incorrect verdicts. The threshold is
+    // generous (10 min) to tolerate clock skew between pods.
+    let STALE_THRESHOLD_SECS: i64 = 10 * 60;
+    let now = chrono::Utc::now();
+    let staleness_secs = (now - server_time.0).num_seconds();
+    if staleness_secs > STALE_THRESHOLD_SECS {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "tick rejected: server_time is {} seconds old (threshold: {}s)",
+                staleness_secs, STALE_THRESHOLD_SECS
+            ),
+        ));
+    }
 
     // P1-5 parity with AccountState::update_equity: broker-reported
     // equity/balance raise the drawdown baselines; estimates must not.
