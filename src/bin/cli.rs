@@ -183,14 +183,14 @@ async fn run_repl(args: &[String]) -> anyhow::Result<()> {
     let json_mode = args.iter().any(|a| a == "--json" || a == "-j");
 
     // Parse optional `-f FILE` arg for batch mode.
-    let mut input: Box<dyn BufRead> = if let Some(path) = args.iter().nth(1) {
+    let mut input: Box<dyn BufRead> = if let Some(path) = args.get(1) {
         // Skip "-f" or "--json"
         let path = if path == "-f" {
-            args.iter().nth(2).map(String::as_str).unwrap_or("-")
+            args.get(2).map(String::as_str).unwrap_or("-")
         } else if path == "--json" || path == "-j" {
             // Look for -f after --json
             if let Some(idx) = args.iter().position(|a| a == "-f") {
-                args.iter().nth(idx + 1).map(String::as_str).unwrap_or("-")
+                args.get(idx + 1).map(String::as_str).unwrap_or("-")
             } else {
                 // No -f, read from stdin.
                 "stdin-marker"

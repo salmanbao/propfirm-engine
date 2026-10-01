@@ -61,7 +61,7 @@ pub async fn connect(settings: &RedisSettings) -> Result<RedisConn, redis::Redis
             .unwrap_or(&settings.url);
         let manager = RedisConnectionManager::new(first_url)?;
         let pool = Pool::builder()
-            .max_size(settings.pool_size as u32)
+            .max_size(settings.pool_size)
             .build(manager)
             .await?;
         Ok(RedisConn::Cluster(pool))

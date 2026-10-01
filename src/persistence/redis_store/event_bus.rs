@@ -106,10 +106,7 @@ impl RedisEventBus {
                     .unwrap_or(());
             }
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(io_error_to_redis)?;
                 let _: () = redis::cmd("XGROUP")
                     .arg("CREATE")
                     .arg(&stream)
@@ -145,10 +142,7 @@ impl RedisEventBus {
                 Ok(id)
             }
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(io_error_to_redis)?;
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -184,10 +178,7 @@ impl RedisEventBus {
                 Ok(id)
             }
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(io_error_to_redis)?;
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -214,72 +205,86 @@ impl RedisEventBus {
         let group = self.settings.consumer_group.clone();
         let stream = self.settings.request_stream.clone();
 
-        let raw: redis::RedisResult<Option<Vec<(String, Vec<(String, Vec<(String, String)>)>)>>> =
-            match self.conn() {
-                RedisConn::Single(mut c) => {
-                    redis::cmd("XREADGROUP")
-                        .arg("GROUP")
-                        .arg(&group)
-                        .arg(&consumer)
-                        .arg("COUNT")
-                        .arg(1i64)
-                        .arg("BLOCK")
-                        .arg(block_ms as i64)
-                        .arg("STREAMS")
-                        .arg(&stream)
-                        .arg(">")
-                        .query_async(&mut c)
-                        .await
-                }
-                RedisConn::Cluster(pool) => {
-                    let mut conn = match pool.get().await {
-                        Ok(c) => c,
-                        Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
-                    };
-                    redis::cmd("XREADGROUP")
-                        .arg("GROUP")
-                        .arg(&group)
-                        .arg(&consumer)
-                        .arg("COUNT")
-                        .arg(1i64)
-                        .arg("BLOCK")
-                        .arg(block_ms as i64)
-                        .arg("STREAMS")
-                        .arg(&stream)
-                        .arg(">")
-                        .query_async(&mut *conn)
-                        .await
-                }
-            };
+        let raw: redis::RedisResult<Option<redis::Value>> = match self.conn() {
+            RedisConn::Single(mut c) => {
+                redis::cmd("XREADGROUP")
+                    .arg("GROUP")
+                    .arg(&group)
+                    .arg(&consumer)
+                    .arg("COUNT")
+                    .arg(1i64)
+                    .arg("BLOCK")
+                    .arg(block_ms as i64)
+                    .arg("STREAMS")
+                    .arg(&stream)
+                    .arg(">")
+                    .query_async(&mut c)
+                    .await
+            }
+            RedisConn::Cluster(pool) => {
+                let mut conn = match pool.get().await {
+                    Ok(c) => c,
+                    Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                };
+                redis::cmd("XREADGROUP")
+                    .arg("GROUP")
+                    .arg(&group)
+                    .arg(&consumer)
+                    .arg("COUNT")
+                    .arg(1i64)
+                    .arg("BLOCK")
+                    .arg(block_ms as i64)
+                    .arg("STREAMS")
+                    .arg(&stream)
+                    .arg(">")
+                    .query_async(&mut *conn)
+                    .await
+            }
+        };
 
         let raw = match raw {
             Ok(v) => v,
             Err(e) => return EventBusResult::Error(e.to_string()),
         };
-        match raw {
-            None => EventBusResult::Empty,
-            Some(groups) => {
-                let Some((_stream, entries)) = groups.into_iter().next() else {
-                    return EventBusResult::Empty;
-                };
-                let Some((stream_id, fields)) = entries.into_iter().next() else {
-                    return EventBusResult::Empty;
-                };
-                let mut payload_str: Option<String> = None;
-                for (k, v) in fields {
-                    if k == "payload" {
-                        payload_str = Some(v);
-                        break;
-                    }
-                }
-                let Some(payload_str) = payload_str else {
-                    return EventBusResult::Error("missing payload field".into());
-                };
-                match serde_json::from_str::<EvaluateRequestPayload>(&payload_str) {
-                    Ok(payload) => EventBusResult::Consumed { stream_id, payload },
-                    Err(e) => EventBusResult::Error(format!("decode payload: {e}")),
+        let Some(redis::Value::Array(streams)) = raw else {
+            return EventBusResult::Empty;
+        };
+        let Some(redis::Value::Array(first_stream)) = streams.into_iter().next() else {
+            return EventBusResult::Empty;
+        };
+        let mut stream_iter = first_stream.into_iter();
+        let Some(_stream_name) = stream_iter.next().and_then(value_as_string) else {
+            return EventBusResult::Empty;
+        };
+        let Some(redis::Value::Array(entries)) = stream_iter.next() else {
+            return EventBusResult::Empty;
+        };
+        let Some(redis::Value::Array(first_entry)) = entries.into_iter().next() else {
+            return EventBusResult::Empty;
+        };
+        let mut entry_iter = first_entry.into_iter();
+        let Some(stream_id) = entry_iter.next().and_then(value_as_string) else {
+            return EventBusResult::Empty;
+        };
+        let Some(redis::Value::Array(fields)) = entry_iter.next() else {
+            return EventBusResult::Empty;
+        };
+        let mut payload_str: Option<String> = None;
+        let mut field_iter = fields.into_iter();
+        while let Some(k) = field_iter.next().and_then(value_as_string) {
+            if let Some(v) = field_iter.next() {
+                if k == "payload" {
+                    payload_str = value_as_string(v);
+                    break;
                 }
             }
+        }
+        let Some(payload_str) = payload_str else {
+            return EventBusResult::Error("missing payload field".into());
+        };
+        match serde_json::from_str::<EvaluateRequestPayload>(&payload_str) {
+            Ok(payload) => EventBusResult::Consumed { stream_id, payload },
+            Err(e) => EventBusResult::Error(format!("decode payload: {e}")),
         }
     }
 
@@ -297,10 +302,7 @@ impl RedisEventBus {
                     .await?;
             }
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(io_error_to_redis)?;
                 let _: i64 = redis::cmd("XACK")
                     .arg(&stream)
                     .arg(&group)
@@ -323,47 +325,46 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
         let group = self.settings.consumer_group.clone();
 
-        let raw: redis::RedisResult<Option<Vec<(String, Vec<(String, Vec<(String, String)>)>)>>> =
-            match self.conn() {
-                RedisConn::Single(mut c) => {
-                    redis::cmd("XAUTOCLAIM")
-                        .arg(&stream)
-                        .arg(&group)
-                        .arg(&consumer)
-                        .arg(min_idle)
-                        .arg("0-0")
-                        .arg("COUNT")
-                        .arg(1i64)
-                        .query_async(&mut c)
-                        .await
-                }
-                RedisConn::Cluster(pool) => {
-                    let mut conn = match pool.get().await {
-                        Ok(c) => c,
-                        Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
-                    };
-                    redis::cmd("XAUTOCLAIM")
-                        .arg(&stream)
-                        .arg(&group)
-                        .arg(&consumer)
-                        .arg(min_idle)
-                        .arg("0-0")
-                        .arg("COUNT")
-                        .arg(1i64)
-                        .query_async(&mut *conn)
-                        .await
-                }
-            };
+        #[allow(clippy::type_complexity)]
+        let raw: redis::RedisResult<
+            Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)>,
+        > = match self.conn() {
+            RedisConn::Single(mut c) => {
+                redis::cmd("XAUTOCLAIM")
+                    .arg(&stream)
+                    .arg(&group)
+                    .arg(&consumer)
+                    .arg(min_idle)
+                    .arg("0-0")
+                    .arg("COUNT")
+                    .arg(1i64)
+                    .query_async(&mut c)
+                    .await
+            }
+            RedisConn::Cluster(pool) => {
+                let mut conn = match pool.get().await {
+                    Ok(c) => c,
+                    Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                };
+                redis::cmd("XAUTOCLAIM")
+                    .arg(&stream)
+                    .arg(&group)
+                    .arg(&consumer)
+                    .arg(min_idle)
+                    .arg("0-0")
+                    .arg("COUNT")
+                    .arg(1i64)
+                    .query_async(&mut *conn)
+                    .await
+            }
+        };
         let raw = match raw {
             Ok(v) => v,
             Err(e) => return EventBusResult::Error(e.to_string()),
         };
         match raw {
             None => EventBusResult::Empty,
-            Some(groups) => {
-                let Some((_stream, entries)) = groups.into_iter().next() else {
-                    return EventBusResult::Empty;
-                };
+            Some((_next_id, entries, _deleted)) => {
                 let Some((stream_id, fields)) = entries.into_iter().next() else {
                     return EventBusResult::Empty;
                 };
@@ -389,5 +390,14 @@ impl RedisEventBus {
     #[must_use]
     pub fn block_duration(&self) -> Duration {
         Duration::from_millis(self.settings.block_ms as u64)
+    }
+}
+
+/// Extract a String from a redis::Value (BulkString or SimpleString).
+fn value_as_string(v: redis::Value) -> Option<String> {
+    match v {
+        redis::Value::BulkString(b) => Some(String::from_utf8_lossy(&b).to_string()),
+        redis::Value::SimpleString(s) => Some(s),
+        _ => None,
     }
 }

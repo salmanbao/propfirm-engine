@@ -127,7 +127,7 @@ pub struct Account {
     pub id: AccountId,
     pub account_type: AccountType,
     pub status: AccountStatus,
-    pub challenge_id: ChallengeId,
+    pub challenge_id: Option<ChallengeId>,
     pub plan: ChallengePlan,
 
     /// **P1-9 fix**: tenant this account belongs to. Required for the
@@ -272,7 +272,7 @@ impl Account {
                 crate::config::plan::ChallengePhase::Funded => AccountType::Funded,
             },
             status: AccountStatus::Pending,
-            challenge_id: plan.id,
+            challenge_id: Some(plan.id),
             plan,
             tenant_id: crate::tenant::TenantId::new(),
             initial_balance: initial,
@@ -556,7 +556,7 @@ pub struct AccountSnapshot {
     pub trading_day_index: u32,
     pub started_at: Option<Timestamp>,
     pub deadline: Option<Timestamp>,
-    pub challenge_id: ChallengeId,
+    pub challenge_id: Option<ChallengeId>,
     /// **P0-2 fix**: timestamp the profit target was first reached
     /// (sticky; never cleared once set). Null until target is hit.
     pub target_reached_at: Option<Timestamp>,

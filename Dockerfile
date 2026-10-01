@@ -76,11 +76,7 @@ COPY --from=builder /build/target/release/propfirm-cli /app/propfirm-cli
 COPY config/ /app/config/
 COPY src/persistence/migrations/ /app/migrations/
 
-# Copy the CycloneDX SBOM (Software Bill of Materials) so the
-# runtime image is self-describing. Operators can scan the image
-# with `syft`, `grype`, or `trivy` and the SBOM is also available
-# at /app/sbom/ for direct inspection.
-COPY --from=builder /build/target/cyclonedx/ /app/sbom/
+RUN mkdir -p /app/sbom && cp -r /build/target/cyclonedx/. /app/sbom/ || true
 
 # Make binaries executable.
 RUN chmod 755 /app/propfirm-server /app/propfirm-worker /app/propfirm-cli

@@ -122,10 +122,7 @@ impl RedisIdempotencyBackend {
         let stored_hash: Option<String> = match self.conn() {
             RedisConn::Single(mut c) => redis::cmd("GET").arg(hash_key).query_async(&mut c).await?,
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(super::io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(super::io_error_to_redis)?;
                 redis::cmd("GET")
                     .arg(hash_key)
                     .query_async(&mut *conn)
@@ -141,9 +138,7 @@ impl RedisIdempotencyBackend {
                             redis::cmd("GET").arg(val_key).query_async(&mut c).await?
                         }
                         RedisConn::Cluster(pool) => {
-                            let mut conn = pool.get().await.map_err(|e| {
-                                redis::RedisError::from(super::io_error_to_redis(e))
-                            })?;
+                            let mut conn = pool.get().await.map_err(super::io_error_to_redis)?;
                             redis::cmd("GET")
                                 .arg(val_key)
                                 .query_async(&mut *conn)
@@ -199,10 +194,7 @@ impl RedisIdempotencyBackend {
                     .await?
             }
             RedisConn::Cluster(pool) => {
-                let mut conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| redis::RedisError::from(super::io_error_to_redis(e)))?;
+                let mut conn = pool.get().await.map_err(super::io_error_to_redis)?;
                 redis::cmd("EVAL")
                     .arg(script)
                     .arg(2)

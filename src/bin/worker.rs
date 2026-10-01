@@ -588,30 +588,43 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     }
 
     // Step 4: check the consumer group exists.
-    // XINFO GROUPS returns the list of groups for the stream. We
-    // search for our group name in the list.
+    // XINFO GROUPS returns a nested array: each group is an array of
+    // [field_name, field_value] pairs. We search for our group name
+    // in the nested structure.
     let group_exists = match &conn {
         RedisConn::Single(c) => {
             let mut c = c.clone();
-            let raw: Option<Vec<(String, String)>> = redis::cmd("XINFO")
+            let raw: Option<Vec<Vec<(String, redis::Value)>>> = redis::cmd("XINFO")
                 .arg("GROUPS")
                 .arg(stream)
                 .query_async(&mut c)
                 .await
                 .ok();
-            raw.map(|groups| groups.iter().any(|(k, v)| k == "name" && v == group))
-                .unwrap_or(false)
+            raw.map(|groups| {
+                groups.iter().any(|group_fields| {
+                    group_fields
+                        .iter()
+                        .any(|(k, v)| k == "name" && value_as_string(v) == Some(group.clone()))
+                })
+            })
+            .unwrap_or(false)
         }
         RedisConn::Cluster(pool) => match pool.get().await {
             Ok(mut c) => {
-                let raw: Option<Vec<(String, String)>> = redis::cmd("XINFO")
+                let raw: Option<Vec<Vec<(String, redis::Value)>>> = redis::cmd("XINFO")
                     .arg("GROUPS")
                     .arg(stream)
                     .query_async(&mut *c)
                     .await
                     .ok();
-                raw.map(|groups| groups.iter().any(|(k, v)| k == "name" && v == group))
-                    .unwrap_or(false)
+                raw.map(|groups| {
+                    groups.iter().any(|group_fields| {
+                        group_fields
+                            .iter()
+                            .any(|(k, v)| k == "name" && value_as_string(v) == Some(group.clone()))
+                    })
+                })
+                .unwrap_or(false)
             }
             Err(_) => false,
         },
@@ -731,16 +744,16 @@ async fn run_status() -> anyhow::Result<()> {
     println!();
     println!("XPENDING summary:");
     if let Some(summary) = xpending_summary {
-        let pending_count = summary.get(0).and_then(|v| value_as_int(v)).unwrap_or(-1);
+        let pending_count = summary.first().and_then(value_as_int).unwrap_or(-1);
         let lowest = summary
             .get(1)
-            .and_then(|v| value_as_string(v))
+            .and_then(value_as_string)
             .unwrap_or_else(|| "(none)".to_string());
         let highest = summary
             .get(2)
-            .and_then(|v| value_as_string(v))
+            .and_then(value_as_string)
             .unwrap_or_else(|| "(none)".to_string());
-        let consumers = summary.get(3).and_then(|v| value_as_int(v)).unwrap_or(-1);
+        let consumers = summary.get(3).and_then(value_as_int).unwrap_or(-1);
         println!("  pending count:  {pending_count}");
         println!("  lowest pending:  {lowest}");
         println!("  highest pending: {highest}");
@@ -749,10 +762,11 @@ async fn run_status() -> anyhow::Result<()> {
         println!("  (XPENDING failed — consumer group may not exist yet)");
     }
 
-    // XINFO CONSUMERS: returns a list of {name, pending, idle, ...}
+    // XINFO CONSUMERS: returns nested arrays of [field_name, value]
+    // pairs for each consumer. Parse as nested structure.
     println!();
     println!("XINFO CONSUMERS (per-consumer pending):");
-    let xinfo_consumers: Option<Vec<(String, redis::Value)>> = match &conn {
+    let xinfo_consumers: Option<Vec<Vec<(String, redis::Value)>>> = match &conn {
         RedisConn::Single(c) => {
             let mut c = c.clone();
             redis::cmd("XINFO")
@@ -775,51 +789,38 @@ async fn run_status() -> anyhow::Result<()> {
         },
     };
     if let Some(consumers) = xinfo_consumers {
-        // consumers is a flat list of alternating key/value pairs:
-        //   [("name", Value("worker-0")), ("pending", Int(15)), ("idle", Int(12000)), ...]
-        // We parse it as a list of consumer maps.
-        let mut current_name = String::new();
-        let mut current_pending: i64 = -1;
-        let mut current_idle_ms: i64 = -1;
+        // consumers is a nested list: each consumer is a list of
+        // [field_name, value] pairs.
         let mut printed_any = false;
-        for (k, v) in &consumers {
-            match k.as_str() {
-                "name" => {
-                    // If we already have a pending consumer, print it.
-                    if !current_name.is_empty() {
-                        println!(
-                            "  consumer={:<20}  pending={:<5}  idle={}",
-                            current_name,
-                            current_pending,
-                            format_idle(current_idle_ms)
-                        );
-                        printed_any = true;
-                        current_name.clear();
-                        current_pending = -1;
-                        current_idle_ms = -1;
+        for consumer_fields in &consumers {
+            let mut current_name = String::new();
+            let mut current_pending: i64 = -1;
+            let mut current_idle_ms: i64 = -1;
+            for (k, v) in consumer_fields {
+                match k.as_str() {
+                    "name" => {
+                        if let Some(s) = value_as_string(v) {
+                            current_name = s;
+                        }
                     }
-                    if let Some(s) = value_as_string(v) {
-                        current_name = s;
+                    "pending" => {
+                        current_pending = v.as_int_opt().unwrap_or(-1);
                     }
+                    "idle" => {
+                        current_idle_ms = v.as_int_opt().unwrap_or(-1);
+                    }
+                    _ => {}
                 }
-                "pending" => {
-                    current_pending = v.as_int_opt().unwrap_or(-1);
-                }
-                "idle" => {
-                    current_idle_ms = v.as_int_opt().unwrap_or(-1);
-                }
-                _ => {}
             }
-        }
-        // Print the last consumer.
-        if !current_name.is_empty() {
-            println!(
-                "  consumer={:<20}  pending={:<5}  idle={}",
-                current_name,
-                current_pending,
-                format_idle(current_idle_ms)
-            );
-            printed_any = true;
+            if !current_name.is_empty() {
+                println!(
+                    "  consumer={:<20}  pending={:<5}  idle={}",
+                    current_name,
+                    current_pending,
+                    format_idle(current_idle_ms)
+                );
+                printed_any = true;
+            }
         }
         if !printed_any {
             println!("  (no consumers registered yet — workers haven't started?)");
@@ -900,18 +901,22 @@ async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
                 // XAUTOCLAIM stream group consumer min_idle start_id COUNT n
                 // returns (next-start-id, [(stream-id, fields), ...], deleted-ids)
                 // We just need the stream-ids.
-                let raw: Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)> =
-                    redis::cmd("XAUTOCLAIM")
-                        .arg(&stream)
-                        .arg(&group)
-                        .arg(&consumer_name)
-                        .arg(idle_secs * 1000)
-                        .arg(&start_id)
-                        .arg("COUNT")
-                        .arg(100i64)
-                        .query_async(&mut c)
-                        .await
-                        .ok();
+                #[allow(clippy::type_complexity)]
+                let raw: Option<(
+                    String,
+                    Vec<(String, Vec<(String, String)>)>,
+                    Vec<String>,
+                )> = redis::cmd("XAUTOCLAIM")
+                    .arg(&stream)
+                    .arg(&group)
+                    .arg(&consumer_name)
+                    .arg(idle_secs * 1000)
+                    .arg(&start_id)
+                    .arg("COUNT")
+                    .arg(100i64)
+                    .query_async(&mut c)
+                    .await
+                    .ok();
                 match raw {
                     Some((next, entries, _deleted)) => {
                         let ids: Vec<String> = entries.into_iter().map(|(id, _)| id).collect();
@@ -922,18 +927,22 @@ async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
             }
             RedisConn::Cluster(pool) => match pool.get().await {
                 Ok(mut c) => {
-                    let raw: Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)> =
-                        redis::cmd("XAUTOCLAIM")
-                            .arg(&stream)
-                            .arg(&group)
-                            .arg(&consumer_name)
-                            .arg(idle_secs * 1000)
-                            .arg(&start_id)
-                            .arg("COUNT")
-                            .arg(100i64)
-                            .query_async(&mut *c)
-                            .await
-                            .ok();
+                    #[allow(clippy::type_complexity)]
+                    let raw: Option<(
+                        String,
+                        Vec<(String, Vec<(String, String)>)>,
+                        Vec<String>,
+                    )> = redis::cmd("XAUTOCLAIM")
+                        .arg(&stream)
+                        .arg(&group)
+                        .arg(&consumer_name)
+                        .arg(idle_secs * 1000)
+                        .arg(&start_id)
+                        .arg("COUNT")
+                        .arg(100i64)
+                        .query_async(&mut *c)
+                        .await
+                        .ok();
                     match raw {
                         Some((next, entries, _deleted)) => {
                             let ids: Vec<String> = entries.into_iter().map(|(id, _)| id).collect();
@@ -1040,15 +1049,11 @@ fn value_as_string(v: &redis::Value) -> Option<String> {
 
 trait ValueHelpers {
     fn as_int_opt(&self) -> Option<i64>;
-    fn as_string_opt(&self) -> Option<String>;
 }
 
 impl ValueHelpers for redis::Value {
     fn as_int_opt(&self) -> Option<i64> {
         value_as_int(self)
-    }
-    fn as_string_opt(&self) -> Option<String> {
-        value_as_string(self)
     }
 }
 

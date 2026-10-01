@@ -93,7 +93,6 @@ pub fn init_tracing(settings: &ObservabilitySettings) -> anyhow::Result<()> {
             };
 
             let tracer = provider.tracer("propfirm-engine");
-            opentelemetry::global::set_tracer_provider(provider);
 
             if is_pretty {
                 if let Err(e) = tracing_subscriber::registry()
@@ -137,24 +136,13 @@ pub fn init_tracing(settings: &ObservabilitySettings) -> anyhow::Result<()> {
             match FlameLayer::with_file(&settings.flame_output_path) {
                 Ok((flame_layer, guard)) => {
                     let _ = FLAME_GUARD.set(guard);
-                    if is_pretty {
-                        if let Err(e) = tracing_subscriber::registry()
-                            .with(filter)
-                            .with(fmt::layer().with_target(false))
-                            .with(flame_layer)
-                            .try_init()
-                        {
-                            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
-                        }
-                    } else {
-                        if let Err(e) = tracing_subscriber::registry()
-                            .with(filter)
-                            .with(fmt::layer().with_target(true).json())
-                            .with(flame_layer)
-                            .try_init()
-                        {
-                            tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
-                        }
+                    if let Err(e) = tracing_subscriber::registry()
+                        .with(filter)
+                        .with(fmt::layer().with_target(false))
+                        .with(flame_layer)
+                        .try_init()
+                    {
+                        tracing::warn!(error = %e, "failed to set global subscriber (already set?)");
                     }
                     return Ok(());
                 }

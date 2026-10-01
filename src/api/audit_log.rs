@@ -246,8 +246,10 @@ pub fn breach_report(
 
 /// Convenience: log an event-bus worker evaluation. Called by the
 /// `propfirm-worker` binary after each message is consumed + processed
-/// + ack'd. The `consumer_name` distinguishes which worker pod handled
-/// the message; `request_id` is the cross-correlation key with the
+/// + ack'd.
+///
+/// The `consumer_name` distinguishes which worker pod handled the
+/// message; `request_id` is the cross-correlation key with the
 /// platform backend.
 #[must_use]
 pub fn worker_evaluate(

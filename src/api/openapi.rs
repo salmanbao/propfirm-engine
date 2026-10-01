@@ -53,9 +53,9 @@ pub struct ApiDoc;
 
 /// Get the OpenAPI spec as a serde_json::Value (for the /openapi.json route).
 pub fn openapi_json() -> serde_json::Value {
-    ApiDoc::openapi().to_json().unwrap_or_else(|_| {
-        serde_json::json!({
-            "error": "failed to serialize OpenAPI spec"
-        })
-    })
+    match ApiDoc::openapi().to_json() {
+        Ok(s) => serde_json::from_str(&s)
+            .unwrap_or_else(|_| serde_json::json!({"error": "failed to serialize OpenAPI spec"})),
+        Err(_) => serde_json::json!({"error": "failed to serialize OpenAPI spec"}),
+    }
 }
