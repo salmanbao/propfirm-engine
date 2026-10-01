@@ -182,7 +182,7 @@ async fn chaos_redis_kill_mid_consume_does_not_panic() {
     container.kill();
 
     // Verify consume_request returns Error (not panic).
-    let outcome = bus.consume_request().await;
+    let outcome = bus.consume_request("test-consumer").await;
     match outcome {
         propfirm::persistence::redis_store::EventBusResult::Error(_) => {
             eprintln!("OK: consume_request returned Error (not panic)");
@@ -201,7 +201,7 @@ async fn chaos_redis_kill_mid_consume_does_not_panic() {
 
     // Verify consume_request recovers (returns Empty because we
     // didn't reproduce the request after restart).
-    let outcome = bus.consume_request().await;
+    let outcome = bus.consume_request("test-consumer").await;
     match outcome {
         propfirm::persistence::redis_store::EventBusResult::Empty => {
             eprintln!("OK: consume_request recovered (Empty after Redis restart)");

@@ -223,7 +223,11 @@ fn build_keys(tenant: TenantId, endpoint: &str, key: &str) -> (String, String) {
     endpoint.hash(&mut h);
     let endpoint_hash = format!("{:x}", h.finish());
     let key_trunc = if key.len() > 256 { &key[..256] } else { key };
-    let base = format!("propfirm:idem:{tenant}:{endpoint_hash}:{key_trunc}");
+    // Use Redis Cluster hash tags ({...}) on the tenant UUID so
+    // both the hash key and the val key hash to the same cluster
+    // slot. Without this, the Lua script that touches both keys
+    // will fail with CROSSSLOT on Redis Cluster deployments.
+    let base = format!("propfirm:idem:{{{tenant}}}:{endpoint_hash}:{key_trunc}");
     let val = format!("{base}:val");
     (base, val)
 }

@@ -36,6 +36,7 @@
 //! ```
 
 use propfirm::api::audit_log;
+use propfirm::api::idempotency::{IdempotencyBackend, IdempotencyStore};
 use propfirm::api::metrics::worker as worker_metrics;
 use propfirm::api::middleware::install_panic_hook;
 use propfirm::api::otel;
@@ -139,6 +140,50 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    // 5c. Build an idempotency backend for worker-side deduplication.
+    // This prevents duplicate processing when XAUTOCLAIM picks up
+    // a message that was already processed by a crashed worker.
+    let idem_ttl = settings
+        .idempotency_ttl()
+        .unwrap_or_else(|| Duration::from_secs(86_400));
+    let idempotency_backend: Arc<dyn IdempotencyBackend> =
+        match settings.idempotency.backend.as_str() {
+            "postgres" => {
+                let pool = pg_pool
+                    .clone()
+                    .expect("postgres pool required for postgres idempotency backend");
+                Arc::new(
+                    propfirm::persistence::postgres::PostgresIdempotencyBackend::new(
+                        pool, idem_ttl,
+                    ),
+                )
+            }
+            "redis" => {
+                let redis_conn_for_idem = redis_connect(&settings.redis).await.map_err(|e| {
+                    error!(error = %e, "failed to connect to Redis for idempotency backend");
+                    e
+                })?;
+                Arc::new(
+                    propfirm::persistence::redis_store::RedisIdempotencyBackend::new(
+                        redis_conn_for_idem,
+                        idem_ttl,
+                    ),
+                )
+            }
+            _ => {
+                // Memory backend — provides no cross-instance deduplication.
+                // The worker docstring must be honest about this.
+                tracing::warn!(
+                "using memory idempotency backend — worker will NOT deduplicate across instances; \
+                 use redis or postgres backend for multi-instance deployments"
+            );
+                Arc::new(IdempotencyStore::with_capacity_ttl(
+                    settings.idempotency.max_entries,
+                    idem_ttl,
+                ))
+            }
+        };
+
     // 6. Spawn consumer tasks.
     let shutdown = shutdown_signal(Duration::from_secs(settings.server.shutdown_timeout_secs));
     let mut tasks = Vec::new();
@@ -148,9 +193,10 @@ async fn main() -> anyhow::Result<()> {
         let shutdown = shutdown.clone();
         let consumer_name = format!("worker-{}", i);
         let pg = pg_pool.clone();
+        let idem = idempotency_backend.clone();
         tasks.push(tokio::spawn(async move {
             info!(consumer = %consumer_name, "consumer started");
-            worker_loop(&bus, &consumer_name, shutdown, pg.as_ref()).await;
+            worker_loop(&bus, &consumer_name, shutdown, pg.as_ref(), idem.as_ref()).await;
         }));
     }
 
@@ -158,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
     let recovery_bus = bus.clone();
     let recovery_shutdown = shutdown.clone();
     let recovery_pg = pg_pool.clone();
+    let recovery_idem = idempotency_backend.clone();
     let recovery_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         interval.tick().await; // first tick is immediate
@@ -169,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
             if let propfirm::persistence::redis_store::EventBusResult::Consumed {
                 stream_id,
                 payload,
-            } = recovery_bus.claim_idle().await
+            } = recovery_bus.claim_idle("recovery").await
             {
                 info!(stream_id = %stream_id, request_id = %payload.request_id, "claimed idle message");
                 worker_metrics::record_message_claimed();
@@ -179,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
                     payload,
                     "recovery",
                     recovery_pg.as_ref(),
+                    recovery_idem.as_ref(),
                 )
                 .await;
             }
@@ -202,19 +250,20 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// One consumer's main loop: read → process → ack.
-#[tracing::instrument(skip(bus, consumer_name, shutdown, pg_pool), fields(consumer = %consumer_name))]
+#[tracing::instrument(skip(bus, consumer_name, shutdown, pg_pool, idem), fields(consumer = %consumer_name))]
 async fn worker_loop(
     bus: &RedisEventBus,
     consumer_name: &str,
     shutdown: tokio_util::sync::CancellationToken,
     pg_pool: Option<&Arc<sqlx::PgPool>>,
+    idem: &dyn IdempotencyBackend,
 ) {
     loop {
         if shutdown.is_cancelled() {
             info!(consumer = %consumer_name, "consumer received shutdown");
             break;
         }
-        let outcome = bus.consume_request().await;
+        let outcome = bus.consume_request(consumer_name).await;
         match outcome {
             propfirm::persistence::redis_store::EventBusResult::Consumed { stream_id, payload } => {
                 tracing::info!(
@@ -224,7 +273,7 @@ async fn worker_loop(
                     "received request"
                 );
                 worker_metrics::record_message_consumed(consumer_name);
-                process_request(bus, stream_id, payload, consumer_name, pg_pool).await;
+                process_request(bus, stream_id, payload, consumer_name, pg_pool, idem).await;
             }
             propfirm::persistence::redis_store::EventBusResult::Empty => {
                 // Block timed out; loop and try again.
@@ -241,68 +290,128 @@ async fn worker_loop(
     }
 }
 
-/// Process one request: parse → evaluate → XADD response → XACK.
+/// Process one request: check idempotency → parse → evaluate → XADD response → XACK.
+///
+/// The worker now performs idempotency deduplication using the
+/// `request_id` as the idempotency key. If a message was already
+/// processed (e.g., by a crashed worker that completed evaluation +
+/// produced the response but didn't XACK), the `check_and_remember`
+/// call returns `Replay` with the cached response — the worker
+/// re-publishes the cached response without re-evaluating.
 ///
 /// For successful evaluations, an audit-log row is written to the
-/// `audit_log` table when a Postgres pool is configured. For error
-/// paths (decode failure, redis error, panic), an `worker_error`
-/// audit entry is written instead. The audit row carries:
-///   - actor_id: consumer_name (e.g. "worker-3" or "recovery")
-///   - action: worker_evaluate | worker_error
-///   - tenant_id, account_id (when extractable from the payload)
-///   - resource_id: request_id (correlation key with the platform
-///     backend)
-///   - request_hash: input_hash (sha256 of evaluation inputs)
-///   - metadata: consumer, decision_kind, request_id, input_hash,
-///     error_kind (when error), error_msg (when error)
-#[tracing::instrument(skip(bus, stream_id, payload, consumer_name, pg_pool), fields(consumer = %consumer_name, stream_id = %stream_id, request_id = %payload.request_id, account_id = ?extract_ids(&payload).1))]
+/// `audit_log` table when a Postgres pool is configured.
+#[tracing::instrument(skip(bus, stream_id, payload, consumer_name, pg_pool, idem), fields(consumer = %consumer_name, stream_id = %stream_id, request_id = %payload.request_id))]
 async fn process_request(
     bus: &RedisEventBus,
     stream_id: String,
     payload: EvaluateRequestPayload,
     consumer_name: &str,
     pg_pool: Option<&Arc<sqlx::PgPool>>,
+    idem: &dyn IdempotencyBackend,
 ) {
     let request_id = payload.request_id.clone();
     let processed_at = chrono::Utc::now().to_rfc3339();
     let _latency = worker_metrics::latency_scope();
 
     // Try to extract tenant_id + account_id from the payload up front
-    // for audit-log purposes (the actual evaluation happens inside
-    // parse_and_evaluate).
+    // for audit-log + idempotency purposes.
     let (tenant_id_opt, account_id_opt) = extract_ids(&payload);
 
-    // Parse inputs.
+    // Build the idempotency key from the request_id. The tenant_id
+    // scopes the key so a retry from one tenant can never replay
+    // another tenant's request.
+    let idem_tenant = tenant_id_opt.unwrap_or_default();
+    let idem_key = &request_id;
+    let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+
+    // Check idempotency BEFORE evaluating. If this message was
+    // already processed (e.g., by a crashed worker whose response
+    // was already produced), return the cached response without
+    // re-evaluating. This is the critical fix for multi-instance
+    // at-least-once delivery.
     let (response_payload, error_msg) = match parse_and_evaluate(&payload).await {
         Ok((decision_kind, input_hash, account_state, violations)) => {
-            // Audit-log only when decision is non-Pass (to avoid
-            // flooding the table with normal traffic). Same gating
-            // as the HTTP evaluate_internal handler.
-            let decision_lower = decision_kind.to_lowercase();
-            if decision_lower != "pass" {
-                if let (Some(t), Some(a)) = (tenant_id_opt, account_id_opt) {
-                    let audit = crate::audit_log::worker_evaluate(
-                        consumer_name,
-                        t,
-                        a,
-                        &decision_kind,
-                        &request_id,
-                        &input_hash,
-                    );
-                    audit.finish(pg_pool, None, 200).await;
-                }
-            }
             let response = EvaluateResponsePayload {
                 request_id: request_id.clone(),
-                decision_kind,
-                input_hash,
+                decision_kind: decision_kind.clone(),
+                input_hash: input_hash.clone(),
                 account_state: serde_json::to_value(&account_state)
                     .unwrap_or(serde_json::Value::Null),
                 violations,
-                processed_at,
+                processed_at: processed_at.clone(),
                 error: None,
             };
-            (response, None)
+
+            // Check + remember the response atomically. If another
+            // worker already processed this request_id, we get
+            // Replay (cached response) and return that instead.
+            let response_str = serde_json::to_string(&response).unwrap_or_default();
+            match idem
+                .check_and_remember(
+                    idem_tenant,
+                    "worker_evaluate",
+                    idem_key,
+                    &payload_str,
+                    &response_str,
+                )
+                .await
+            {
+                propfirm::api::idempotency::IdempotencyOutcome::Replay(cached) => {
+                    // Another worker already processed this. Use
+                    // the cached response instead of our freshly
+                    // computed one.
+                    worker_metrics::record_idempotency_outcome("replay");
+                    tracing::info!(
+                        request_id = %request_id,
+                        "idempotency replay — using cached response from previous processing"
+                    );
+                    match serde_json::from_str::<EvaluateResponsePayload>(&cached) {
+                        Ok(cached_resp) => (cached_resp, None),
+                        Err(_) => (response, None), // fallback to our response
+                    }
+                }
+                propfirm::api::idempotency::IdempotencyOutcome::Conflict => {
+                    worker_metrics::record_idempotency_outcome("conflict");
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "idempotency conflict — same key used with different body"
+                    );
+                    // Return our response anyway — the caller should
+                    // detect the conflict via input_hash mismatch.
+                    (response, None)
+                }
+                propfirm::api::idempotency::IdempotencyOutcome::Fresh => {
+                    worker_metrics::record_idempotency_outcome("fresh");
+                    // Our response was stored. Proceed to publish.
+                    // Audit-log only when decision is non-Pass.
+                    let decision_lower = decision_kind.to_lowercase();
+                    if decision_lower != "pass" {
+                        if let (Some(t), Some(a)) = (tenant_id_opt, account_id_opt) {
+                            let audit = crate::audit_log::worker_evaluate(
+                                consumer_name,
+                                t,
+                                a,
+                                &decision_kind,
+                                &request_id,
+                                &input_hash,
+                            );
+                            audit.finish(pg_pool, None, 200).await;
+                        }
+                    }
+                    (response, None)
+                }
+                propfirm::api::idempotency::IdempotencyOutcome::Error => {
+                    worker_metrics::record_idempotency_outcome("error");
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "idempotency backend error — proceeding without dedup"
+                    );
+                    // Proceed with our response — can't deduplicate
+                    // but the verdict is still correct.
+                    (response, None)
+                }
+            }
         }
         Err(e) => {
             worker_metrics::record_error("evaluate_failed");

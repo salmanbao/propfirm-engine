@@ -195,11 +195,28 @@ impl RedisEventBus {
 
     /// Consume one batch of messages from the request stream via the
     /// consumer group. Blocks for `block_ms` if no messages are available.
-    pub async fn consume_request(&self) -> EventBusResult {
-        let consumer = if self.settings.consumer_name.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
+    ///
+    /// The `consumer_name` parameter is used as the Redis consumer
+    /// identity for XREADGROUP. This should be a stable per-pod
+    /// identifier (e.g., the pod name) so that PEL entries are
+    /// attributed to the right consumer for debugging.
+    pub async fn consume_request(&self, consumer_name: &str) -> EventBusResult {
+        // Use the provided consumer_name, falling back to the
+        // settings.consumer_name if the caller passes an empty
+        // string, and finally to a stable hash of the process ID
+        // (NOT a random UUID per call — that caused PEL
+        // fragmentation where every unacked message was tied to
+        // a unique consumer name).
+        let consumer = if !consumer_name.is_empty() {
+            consumer_name.to_string()
+        } else if !self.settings.consumer_name.is_empty() {
             self.settings.consumer_name.clone()
+        } else {
+            // Fallback: use a stable per-process identifier.
+            // This is still not ideal (multiple tasks in the
+            // same process share the same consumer name), but
+            // it's far better than a fresh UUID per call.
+            format!("pid-{}", std::process::id())
         };
         let block_ms = self.settings.block_ms;
         let group = self.settings.consumer_group.clone();
@@ -315,11 +332,17 @@ impl RedisEventBus {
     }
 
     /// Claim pending messages idle for longer than `idle_claim_ms`.
-    pub async fn claim_idle(&self) -> EventBusResult {
-        let consumer = if self.settings.consumer_name.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
+    ///
+    /// The `consumer_name` parameter is used as the Redis consumer
+    /// identity for XAUTOCLAIM. Should be stable per-pod (same as
+    /// `consume_request`).
+    pub async fn claim_idle(&self, consumer_name: &str) -> EventBusResult {
+        let consumer = if !consumer_name.is_empty() {
+            consumer_name.to_string()
+        } else if !self.settings.consumer_name.is_empty() {
             self.settings.consumer_name.clone()
+        } else {
+            format!("pid-{}-recovery", std::process::id())
         };
         let min_idle = self.settings.idle_claim_ms as i64;
         let stream = self.settings.request_stream.clone();

@@ -62,7 +62,7 @@ async fn event_bus_round_trip() {
     let mut found = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !found && std::time::Instant::now() < deadline {
-        match bus.consume_request().await {
+        match bus.consume_request("test-consumer").await {
             EventBusResult::Consumed { stream_id, payload } => {
                 assert_eq!(payload.request_id, request_id);
                 let response = EvaluateResponsePayload {
@@ -142,7 +142,7 @@ async fn event_bus_multiple_requests_ordered() {
     let mut seen = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while seen.len() < request_ids.len() && std::time::Instant::now() < deadline {
-        match bus.consume_request().await {
+        match bus.consume_request("test-consumer").await {
             EventBusResult::Consumed { stream_id, payload } => {
                 seen.push(payload.request_id.clone());
                 let response = EvaluateResponsePayload {
@@ -219,7 +219,7 @@ async fn event_bus_normal_tick_evaluation() {
     let mut response_payload = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while response_payload.is_none() && std::time::Instant::now() < deadline {
-        match bus.consume_request().await {
+        match bus.consume_request("test-consumer").await {
             EventBusResult::Consumed { stream_id, payload } => {
                 assert_eq!(payload.request_id, request_id);
                 let response = EvaluateResponsePayload {
@@ -298,7 +298,7 @@ async fn event_bus_drawdown_breach_evaluation() {
     let mut response_payload = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while response_payload.is_none() && std::time::Instant::now() < deadline {
-        match bus.consume_request().await {
+        match bus.consume_request("test-consumer").await {
             EventBusResult::Consumed { stream_id, payload } => {
                 assert_eq!(payload.request_id, request_id);
                 let response = EvaluateResponsePayload {
@@ -377,7 +377,7 @@ async fn event_bus_override_recovery_evaluation() {
     let mut response_payload = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while response_payload.is_none() && std::time::Instant::now() < deadline {
-        match bus.consume_request().await {
+        match bus.consume_request("test-consumer").await {
             EventBusResult::Consumed { stream_id, payload } => {
                 assert_eq!(payload.request_id, request_id);
                 let response = EvaluateResponsePayload {

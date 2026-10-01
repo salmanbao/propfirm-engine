@@ -123,6 +123,19 @@ pub mod worker {
         )
         .increment(1);
     }
+
+    /// Record idempotency outcome for worker-side deduplication.
+    /// Mirrors the server-side `record_idempotency_outcome` but
+    /// uses the `propfirm_event_bus_idempotency_outcomes_total`
+    /// metric name so operators can distinguish worker vs server
+    /// idempotency behavior.
+    #[inline]
+    pub fn record_idempotency_outcome(outcome: &str) {
+        metrics::counter!("propfirm_event_bus_idempotency_outcomes_total",
+            "outcome" => outcome.to_string(),
+        )
+        .increment(1);
+    }
 }
 
 #[cfg(test)]
