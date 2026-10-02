@@ -190,6 +190,24 @@ pub struct Account {
     /// EOD equity rather than the intraday balance.
     pub day_start_equity: Money,
 
+    /// **P0#1 fix (TrailingIntradayHigh daily loss)**: highest
+    /// unrealised equity peak observed during the *current* trading
+    /// day. Updated on every tick via [`EvaluationState::update_equity`];
+    /// reset to the current `equity` at day rollover via
+    /// [`EvaluationState::rollover_day`]. Distinct from `peak_equity`
+    /// (which is the *all-time* peak and never resets) — used by
+    /// HyroTrader Standard's `trailing_intraday_high` daily-loss
+    /// mechanism, the harshest daily-loss form in the dataset.
+    pub intraday_peak_equity: Money,
+
+    /// **P1#6 fix (MinProfitableDays rule)**: count of *profitable*
+    /// trading days (days where `today_realized_pnl > 0` at rollover).
+    /// Incremented at [`EvaluationState::rollover_day`]. Distinct from
+    /// `active_trading_days` (which counts any day with at least one
+    /// trade, regardless of P&L). Used by FundingPips Zero (requires 7
+    /// profitable days).
+    pub profitable_days_count: u32,
+
     /// **Day-rollover fix**: persisted start of the account's current
     /// trading day. The pipeline uses this for day-boundary comparisons
     /// instead of `Utc::now()`, so rollover is based on the account's
@@ -317,6 +335,14 @@ impl Account {
             largest_day_loss: Money::ZERO,
             sum_positive_days_profit: Money::ZERO,
             day_start_equity: initial,
+            // P0#1: intraday peak starts at the initial equity; updated on
+            // every tick and reset at day rollover. Same starting value
+            // as peak_equity (also initialized to `initial`), but this
+            // one resets at rollover while peak_equity never does.
+            intraday_peak_equity: initial,
+            // P1#6: profitable-days counter starts at 0; incremented at
+            // rollover when today_realized_pnl > 0.
+            profitable_days_count: 0,
             current_trading_day_start: None,
             target_reached_at: None,
             target_reached_on_day: None,
@@ -420,13 +446,27 @@ impl Account {
 
     /// **P0-1 fix**: Returns the maximum total drawdown limit appropriate
     /// for this account's `max_loss_reference` setting (static, trailing,
-    /// or `eod_trailing`). Dispatches to the specific limit function.
+    /// `eod_trailing`, or `intraday_trail`). Dispatches to the specific
+    /// limit function.
     #[must_use]
     pub fn max_dd_limit(&self) -> Money {
         match self.plan.max_loss_reference {
             crate::config::plan::LossReference::Static => self.max_dd_limit_static(),
             crate::config::plan::LossReference::Trailing => self.max_dd_limit_trailing(),
             crate::config::plan::LossReference::EodTrailing => self.max_dd_limit_eod_trailing(),
+            // P1#4: same scaling as Trailing (peak × pct) but against
+            // peak_equity instead of peak_balance. The MaxDrawdownRule
+            // does the floor computation directly; this is the
+            // backward-compat helper used by AccountSnapshot for
+            // utilization reporting.
+            crate::config::plan::LossReference::IntradayTrail => {
+                let peak = if self.plan.drawdown_on_balance {
+                    self.peak_balance
+                } else {
+                    self.peak_equity
+                };
+                Money(self.plan.max_total_drawdown_pct.0 * peak.0)
+            }
         }
     }
 
@@ -434,7 +474,9 @@ impl Account {
     /// the *same reference* the limit is computed from, so the two are
     /// always consistent. When the plan uses `Static`, the drawdown is
     /// measured from `initial_balance`; when `Trailing`, from `peak_balance`;
-    /// when `EodTrailing`, from `day_start_balance` (prior day close).
+    /// when `EodTrailing`, from `day_start_balance` (prior day close);
+    /// when `IntradayTrail`, from `peak_equity` (or `peak_balance` when
+    /// `drawdown_on_balance = true`).
     ///
     /// This is the function `MaxDrawdownRule` should call to compute
     /// `dd` *and* `limit` — they will always use the same reference point,
@@ -445,6 +487,13 @@ impl Account {
             crate::config::plan::LossReference::Static => self.initial_balance,
             crate::config::plan::LossReference::Trailing => self.peak_balance,
             crate::config::plan::LossReference::EodTrailing => self.day_start_balance,
+            crate::config::plan::LossReference::IntradayTrail => {
+                if self.plan.drawdown_on_balance {
+                    self.peak_balance
+                } else {
+                    self.peak_equity
+                }
+            }
         };
         let current = if self.plan.drawdown_on_balance {
             self.balance

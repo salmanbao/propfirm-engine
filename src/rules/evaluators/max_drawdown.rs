@@ -61,6 +61,13 @@ impl MaxDrawdownRule {
                         crate::config::plan::LossReference::EodTrailing => {
                             ctx.account.day_start_balance
                         }
+                        crate::config::plan::LossReference::IntradayTrail => {
+                            if ctx.account.plan.drawdown_on_balance {
+                                ctx.account.peak_balance
+                            } else {
+                                ctx.account.peak_equity
+                            }
+                        }
                     };
                     if reference.0.is_zero() {
                         return v;
@@ -158,37 +165,104 @@ impl Rule for MaxDrawdownRule {
             );
             return Ok(RuleVerdict::GapFlagged(v));
         };
-        // P0-D + P1.6: compute the limit and drawdown against the
-        // *effective* basis (pack entry overrides plan; supports static,
-        // trailing, and eod_trailing). Both use the same reference.
+        // P0-D + P1.6 + P1#3 + P1#4: compute the floor and drawdown
+        // against the *effective* basis. The engine previously used
+        // `reference` (= peak/anchor) + `limit = pct × reference` and
+        // checked `dd > limit`. That doesn't fit the dataset's
+        // `eod_trail` (fixed dollar buffer = pct × initial, not pct × peak)
+        // or the `locks_at: start_balance` cap (floor can't exceed
+        // initial). Restructured to compute the floor directly.
+        //
+        // Basis → floor formula:
+        //   - Static:           floor = initial × (1 - pct)
+        //   - Trailing:         floor = peak_balance × (1 - pct)
+        //   - EodTrailing:      floor = day_start - pct × initial
+        //                        (with `locks_at_start`: floor = min(unlocked, initial))
+        //   - IntradayTrail:    floor = peak_equity × (1 - pct)
+        // Breach when `current < floor - tolerance`.
         let basis = self.effective_basis(ctx);
-        let reference = match basis {
-            crate::config::plan::LossReference::Static => ctx.account.initial_balance,
-            crate::config::plan::LossReference::Trailing => ctx.account.peak_balance,
-            crate::config::plan::LossReference::EodTrailing => ctx.account.day_start_balance,
-        };
-        let limit = Money(plan_pct * reference.0);
         let current = if ctx.account.plan.drawdown_on_balance {
             ctx.account.balance
         } else {
             equity
         };
-        let dd = Money((reference.0 - current.0).max(dec!(0)));
+        let (floor, reference_for_breach_msg) = match basis {
+            crate::config::plan::LossReference::Static => {
+                let floor = ctx.account.initial_balance.0
+                    - (plan_pct * ctx.account.initial_balance.0);
+                (Money(floor), ctx.account.initial_balance)
+            }
+            crate::config::plan::LossReference::Trailing => {
+                let floor =
+                    ctx.account.peak_balance.0 - (plan_pct * ctx.account.peak_balance.0);
+                (Money(floor), ctx.account.peak_balance)
+            }
+            crate::config::plan::LossReference::EodTrailing => {
+                // P1#3 + dataset formula: the EOD-trail buffer is a
+                // FIXED dollar amount = pct × initial (per the dataset's
+                // `eod_trail` description: "A $50,000 account with a 4%
+                // trailing drawdown starts with a floor at $48,000.
+                // Close the day at $51,000 and the floor moves to
+                // $49,000." — $50k→$48k = $2k buffer = 4% × $50k
+                // initial; $51k→$49k = $2k buffer, NOT 4% × $51k).
+                //
+                // This is a behavior change from the previous engine
+                // formula (pct × day_start, scaled buffer). The new
+                // formula matches every verified EOD-trail firm in the
+                // dataset (FTMO 1-Step, TopStep, Apex EOD).
+                let buffer = plan_pct * ctx.account.initial_balance.0;
+                let unlocked_floor = ctx.account.day_start_balance.0 - buffer;
+                let floor = if ctx.account.plan.eod_trail_locks_at_start {
+                    // P1#3: floor caps at the starting balance. Once
+                    // `unlocked_floor > initial` (i.e., peak > initial ×
+                    // (1 + pct)), the floor stops trailing and stays at
+                    // `initial`. After the lock engages, the worst case
+                    // is returning to breakeven rather than being
+                    // breached. Used by TopStep (all 3 Combines),
+                    // Breakout 2-Step, FundedNext Stellar Instant,
+                    // FundingPips Zero.
+                    unlocked_floor.min(ctx.account.initial_balance.0)
+                } else {
+                    unlocked_floor
+                };
+                (Money(floor), ctx.account.day_start_balance)
+            }
+            crate::config::plan::LossReference::IntradayTrail => {
+                // P1#4: floor follows the highest **unrealised equity**
+                // peak (Account::peak_equity), not the closed-balance
+                // peak. Used by Apex's Intraday Trail variant,
+                // FundingPips Zero, Breakout 2-Step. Harshest max-DD
+                // mechanism in use — an open position that runs into
+                // profit and back out can breach you with no closed
+                // losing trade.
+                let peak = if ctx.account.plan.drawdown_on_balance {
+                    ctx.account.peak_balance
+                } else {
+                    ctx.account.peak_equity
+                };
+                let floor = peak.0 - (plan_pct * peak.0);
+                (Money(floor), peak)
+            }
+        };
+        // dd = drawdown from the reference peak/anchor (for breach
+        // messaging + the warning threshold). The breach itself is
+        // `current < floor - tolerance`.
+        let dd = Money((reference_for_breach_msg.0 - current.0).max(dec!(0)));
+        let limit_dollars = Money((reference_for_breach_msg.0 - floor.0).max(dec!(0)));
 
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
         let tolerance = self.tolerance_money();
-        if dd.0 > limit.0 + tolerance.0 {
+        if current.0 < floor.0 - tolerance.0 {
             let mut v = build_violation(
                 self,
                 ctx,
                 ViolationSeverity::Liquidate,
                 format!(
-                    "Maximum drawdown breach ({:?} mode): {dd} > {limit}+{tolerance} ({}%)",
-                    basis,
+                    "Maximum drawdown breach ({basis:?} mode): current {current} < floor {floor}-tol {tolerance} ({}%)",
                     plan_pct * dec!(100)
                 ),
             );
-            v = v.with_breach(dd, limit);
+            v = v.with_breach(dd, limit_dollars);
             return Ok(RuleVerdict::Liquidate(v));
         }
         // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
@@ -197,19 +271,18 @@ impl Rule for MaxDrawdownRule {
             .as_ref()
             .and_then(super::super::params::RuleParams::early_warning_pct)
             .unwrap_or(dec!(0.8));
-        let warn = limit.0 * warn_pct;
-        if dd.0 >= warn {
+        let warn = floor.0 + (limit_dollars.0 * warn_pct);
+        if current.0 <= warn {
             let mut v = build_violation(
                 self,
                 ctx,
                 ViolationSeverity::Warning,
                 format!(
-                    "Maximum drawdown at {dd}/{limit} ({}%) [{:?}]",
-                    (dd.0 / limit.0 * dec!(100)).round_dp(2),
-                    basis,
+                    "Maximum drawdown at {dd}/{limit_dollars} ({}%) [{basis:?}]",
+                    (dd.0 / limit_dollars.0.max(dec!(1)) * dec!(100)).round_dp(2),
                 ),
             );
-            v = v.with_breach(dd, limit);
+            v = v.with_breach(dd, limit_dollars);
             return Ok(RuleVerdict::EarlyWarning(v));
         }
         Ok(RuleVerdict::Pass)

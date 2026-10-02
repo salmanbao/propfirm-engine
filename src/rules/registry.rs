@@ -164,8 +164,9 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::{
         consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
         inactivity, max_daily_trades, max_drawdown, max_open_positions, max_position_size,
-        min_trading_days, news_trading, overnight_holding, per_trade_max_loss, plan_caps,
-        profit_target, sl_required, time_limit, tp_required, trailing_drawdown, weekend_holding,
+        min_profitable_days, min_trading_days, news_trading, overnight_holding, per_trade_max_loss,
+        plan_caps, profit_target, sl_required, time_limit, tp_required, trailing_drawdown,
+        weekend_holding,
     };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
@@ -173,6 +174,10 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
         Arc::new(trailing_drawdown::TrailingDrawdownRule::default()),
         Arc::new(profit_target::ProfitTargetRule::default()),
         Arc::new(min_trading_days::MinTradingDaysRule::default()),
+        // P1#6: minimum profitable trading days (FundingPips Zero requires 7).
+        // Disabled by default — only runs when the plan sets
+        // `min_profitable_days = Some(n)`.
+        Arc::new(min_profitable_days::MinProfitableDaysRule::default()),
         Arc::new(consistency::ConsistencyRule::default()),
         Arc::new(news_trading::NewsTradingRule::default()),
         Arc::new(overnight_holding::OvernightHoldingRule::default()),
@@ -250,6 +255,8 @@ impl RuleRegistry {
         let copy_id = crate::core::ids::RuleId::named("copy_trading");
         let news_id = crate::core::ids::RuleId::named("news_trading");
         let cooldown_id = crate::core::ids::RuleId::named("cooldown");
+        let min_profitable_days_id =
+            crate::core::ids::RuleId::named("min_profitable_days");
         let mut r = Self::empty();
         for rule in default_rules() {
             // Drop the opt-in rules the plan does not enable.
@@ -264,6 +271,12 @@ impl RuleRegistry {
                 continue;
             }
             if id == inactivity_id && plan.inactivity_days.is_none() {
+                continue;
+            }
+            // P1#6: drop MinProfitableDaysRule when the plan doesn't set
+            // a profitable-day requirement (FundingPips Zero is the only
+            // verified firm that sets one — 7).
+            if id == min_profitable_days_id && plan.min_profitable_days.is_none() {
                 continue;
             }
             // P0.2: drop the prohibition rules the plan disables

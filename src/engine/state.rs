@@ -66,6 +66,13 @@ impl AccountState {
         if equity.0 > self.account.peak_equity.0 {
             self.account.peak_equity = equity;
         }
+        // P0#1: also track the *intraday* peak (reset at day rollover).
+        // Used by HyroTrader Standard's `trailing_intraday_high` daily-loss
+        // mechanism. Cheaper to update here than to special-case in the
+        // rule itself — and keeps the rule's `evaluate` path uniform.
+        if equity.0 > self.account.intraday_peak_equity.0 {
+            self.account.intraday_peak_equity = equity;
+        }
         self
     }
 
@@ -115,6 +122,12 @@ impl AccountState {
             if today_net.0 > rust_decimal::Decimal::ZERO {
                 self.account.sum_positive_days_profit =
                     Money(self.account.sum_positive_days_profit.0 + today_net.0);
+                // P1#6 (MinProfitableDays rule): a "profitable day" is a
+                // day with at least one trade AND `today_realized_pnl > 0`
+                // at rollover. Incremented here, distinct from
+                // `active_trading_days` which counts any trade-day.
+                // Used by FundingPips Zero (requires 7 profitable days).
+                self.account.profitable_days_count += 1;
             }
             // A.6 fix: only count at rollover if mark_active_trading_day
             // was NOT already called today (prevents double-count).
@@ -125,6 +138,11 @@ impl AccountState {
         self.account.trading_day_index += 1;
         self.account.day_start_balance = self.account.balance;
         self.account.day_start_equity = self.account.equity;
+        // P0#1: reset the intraday peak for the new trading day. The
+        // new day's peak starts at the current equity (which is now
+        // also the new day_start_equity). Subsequent ticks during the
+        // new day will raise it via `update_equity`.
+        self.account.intraday_peak_equity = self.account.equity;
         self.account.today_realized_pnl = Money::ZERO;
         self.account.today_trades.clear();
         // A.6 fix: reset the idempotency flag for the new day.

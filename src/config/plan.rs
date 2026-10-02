@@ -62,6 +62,10 @@ pub enum LossReference {
     /// balance/equity. The floor floats up as the account grows. This is
     /// the default for backward compatibility with code written before
     /// the distinction was introduced.
+    ///
+    /// **Note**: this variant uses `peak_balance` (closed-balance peak).
+    /// For the dataset's `intraday_trail` mechanism (which uses
+    /// unrealised-equity peaks), use [`Self::IntradayTrail`].
     #[default]
     Trailing,
     /// **P1.6 fix**: End-of-day-reset trailing. Floor = prior trading
@@ -73,6 +77,13 @@ pub enum LossReference {
     ///
     /// Used by FTMO 1-Step, `FundedNext`, and several 2026 programs.
     EodTrailing,
+    /// **P1#4 fix**: Intraday-trailing max drawdown. Floor follows the
+    /// highest **unrealised equity** peak (`Account::peak_equity`), not
+    /// the closed-balance peak. Used by Apex's Intraday Trail variant,
+    /// FundingPips Zero, and Breakout 2-Step — the dataset's harshest
+    /// max-drawdown mechanism. An open position that runs into profit
+    /// and back out can breach you without a single losing closed trade.
+    IntradayTrail,
 }
 
 impl std::fmt::Display for LossReference {
@@ -81,6 +92,7 @@ impl std::fmt::Display for LossReference {
             LossReference::Static => write!(f, "static"),
             LossReference::Trailing => write!(f, "trailing"),
             LossReference::EodTrailing => write!(f, "eod_trailing"),
+            LossReference::IntradayTrail => write!(f, "intraday_trail"),
         }
     }
 }
@@ -92,8 +104,157 @@ impl std::str::FromStr for LossReference {
             "static" => Ok(LossReference::Static),
             "trailing" => Ok(LossReference::Trailing),
             "eod_trailing" | "eodtrailing" | "eod-trailing" => Ok(LossReference::EodTrailing),
+            "intraday_trail" | "intradaytrail" | "intraday-trail" => {
+                Ok(LossReference::IntradayTrail)
+            }
             other => Err(crate::core::Error::invalid_config(format!(
-                "unknown loss reference '{other}' (expected 'static', 'trailing', or 'eod_trailing')"
+                "unknown loss reference '{other}' (expected 'static', 'trailing', 'eod_trailing', or 'intraday_trail')"
+            ))),
+        }
+    }
+}
+
+/// **P0#1 fix**: Type of daily loss limit. Maps 1:1 to the
+/// `daily_loss.type` field in the propfirm-rules-dataset schema.
+///
+/// The dataset proves four real variants are in use by verified firms:
+///
+/// - [`Self::None`] — TopStep, Apex Intraday, FundedNext Stellar Instant.
+/// - [`Self::PctInitial`] — FTMO, FundedNext, FundingPips, The5%ers,
+///   Bitfunded, Apex EOD. Fixed dollar amount derived from the
+///   **initial** balance; the dollar room does not grow with the
+///   account, even if the account is up.
+/// - [`Self::PctPriorDay`] — FundingPips (5 plans), The5%ers (both),
+///   Breakout (4 plans), HyroTrader Swing. Percentage of the balance
+///   at the daily reset; the room moves with the account.
+/// - [`Self::TrailingIntradayHigh`] — HyroTrader Standard. The limit
+///   itself trails the intraday peak equity. Harshest daily form;
+///   requires tracking `Account::intraday_peak_equity`.
+///
+/// Before this enum existed, the engine silently used `PctPriorDay`
+/// for every plan (because `DailyDrawdownRule` computed
+/// `plan_pct × day_start_balance`). That was wrong for 6 of 9 verified
+/// firms. Preserved as the default for backward compatibility — every
+/// preset that needs a different variant must now set it explicitly.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
+pub enum DailyLossType {
+    /// No daily loss limit. The `max_daily_drawdown_pct` field is
+    /// ignored when this is set.
+    None,
+    /// Fixed dollar amount derived from the **initial** balance.
+    /// `limit = plan_pct × initial_balance`. The floor (day_start −
+    /// limit) moves with the day_start, but the room itself does not
+    /// grow with the account.
+    PctInitial,
+    /// Percentage of the balance/equity at the daily reset.
+    /// `limit = plan_pct × day_start`. The room moves with the account.
+    /// This is the engine's historical behavior and the default for
+    /// backward compatibility.
+    #[default]
+    PctPriorDay,
+    /// The limit itself trails the intraday peak equity.
+    /// `limit = plan_pct × intraday_peak_equity`. As the intraday peak
+    /// goes up, the floor goes up. An open position that runs into
+    /// profit and back out can breach you with no closed losing trade —
+    /// the harshest daily-loss form, used by HyroTrader Standard.
+    /// Requires `Account::intraday_peak_equity` (reset at day rollover).
+    TrailingIntradayHigh,
+}
+
+impl std::fmt::Display for DailyLossType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DailyLossType::None => write!(f, "none"),
+            DailyLossType::PctInitial => write!(f, "pct_initial"),
+            DailyLossType::PctPriorDay => write!(f, "pct_prior_day"),
+            DailyLossType::TrailingIntradayHigh => write!(f, "trailing_intraday_high"),
+        }
+    }
+}
+
+impl std::str::FromStr for DailyLossType {
+    type Err = crate::core::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(DailyLossType::None),
+            "pct_initial" | "pctinitial" => Ok(DailyLossType::PctInitial),
+            "pct_prior_day" | "pctpriorday" | "pct_prior" => Ok(DailyLossType::PctPriorDay),
+            "trailing_intraday_high" | "trailingintradayhigh" => {
+                Ok(DailyLossType::TrailingIntradayHigh)
+            }
+            other => Err(crate::core::Error::invalid_config(format!(
+                "unknown daily loss type '{other}' (expected 'none', 'pct_initial', 'pct_prior_day', or 'trailing_intraday_high')"
+            ))),
+        }
+    }
+}
+
+/// **P0#2 fix**: Type of consistency rule. Maps 1:1 to the
+/// `consistency.type` field in the propfirm-rules-dataset schema.
+///
+/// The dataset proves two real denominator variants are in use by
+/// verified firms — they produce materially different verdicts:
+///
+/// - [`Self::BestDayPctOfTotal`] — denominator = `total_realized_pnl`
+///   (all days, including losing days). Used by HyroTrader (all 4
+///   plans, after the 2026-08-29 correction in the dataset).
+/// - [`Self::BestDayPctOfPositiveDays`] — denominator =
+///   `sum_positive_days_profit` (only winning days). Stricter than it
+///   first looks — losing days don't dilute the denominator, so the
+///   cap is smaller for the same headline %. Used by FTMO 1-Step,
+///   FundingPips Zero, The5%ers 1-Step.
+///
+/// Before this enum existed, the engine always used
+/// `BestDayPctOfPositiveDays`. That was wrong for HyroTrader.
+/// Preserved as the default for backward compatibility — every
+/// preset that needs a different variant must now set it explicitly.
+///
+/// **Note**: the dataset explicitly warns there is **no per-trade
+/// consistency type**. A per-trade rule is frequently attributed to
+/// HyroTrader and is incorrect; it's per-day. Do not add a per-trade
+/// variant.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "serialization", serde(rename_all = "snake_case"))]
+pub enum ConsistencyType {
+    /// No consistency rule. The `consistency_pct` field is ignored.
+    None,
+    /// No day above X% of **total** realized P&L (denominator =
+    /// `total_realized_pnl`, including losing days). HyroTrader.
+    BestDayPctOfTotal,
+    /// No day above X% of profit from **winning** days only (denominator
+    /// = `sum_positive_days_profit`). Stricter than
+    /// [`Self::BestDayPctOfTotal`]. FTMO 1-Step, FundingPips Zero,
+    /// The5%ers 1-Step.
+    #[default]
+    BestDayPctOfPositiveDays,
+}
+
+impl std::fmt::Display for ConsistencyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConsistencyType::None => write!(f, "none"),
+            ConsistencyType::BestDayPctOfTotal => write!(f, "best_day_pct_of_total"),
+            ConsistencyType::BestDayPctOfPositiveDays => {
+                write!(f, "best_day_pct_of_positive_days")
+            }
+        }
+    }
+}
+
+impl std::str::FromStr for ConsistencyType {
+    type Err = crate::core::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "none" => Ok(ConsistencyType::None),
+            "best_day_pct_of_total" => Ok(ConsistencyType::BestDayPctOfTotal),
+            "best_day_pct_of_positive_days" => Ok(ConsistencyType::BestDayPctOfPositiveDays),
+            other => Err(crate::core::Error::invalid_config(format!(
+                "unknown consistency type '{other}' (expected 'none', 'best_day_pct_of_total', or 'best_day_pct_of_positive_days')"
             ))),
         }
     }
@@ -231,6 +392,38 @@ pub struct ChallengePlan {
     /// `Money::ZERO` when the plan is not refundable. This is the
     /// consumer of the previously-dead `refundable` field.
     pub refund_fee_amount: Money,
+    /// **P0#1 fix**: Type of daily loss limit. Defaults to
+    /// [`DailyLossType::PctPriorDay`] (the engine's historical
+    /// behavior) for backward compatibility — every preset that
+    /// needs a different variant (`PctInitial`, `TrailingIntradayHigh`,
+    /// `None`) must set it explicitly. See [`DailyLossType`] for the
+    /// full taxonomy and which verified firms use which variant.
+    pub daily_loss_type: DailyLossType,
+    /// **P1#5 fix**: When `true`, a daily-loss breach is a soft
+    /// warning (severity = `Warning`) rather than a hard breach
+    /// (severity = `Liquidate`). Used by Apex EOD Trail (the only
+    /// firm in the dataset whose daily loss is `soft: true`).
+    /// Default `false` — every other firm treats daily loss as hard.
+    pub daily_loss_soft: bool,
+    /// **P0#2 fix**: Type of consistency rule. Defaults to
+    /// [`ConsistencyType::BestDayPctOfPositiveDays`] (the engine's
+    /// historical behavior) for backward compatibility — every preset
+    /// that needs a different variant (`BestDayPctOfTotal`, `None`)
+    /// must set it explicitly. See [`ConsistencyType`] for the full
+    /// taxonomy and which verified firms use which variant.
+    pub consistency_type: ConsistencyType,
+    /// **P1#3 fix**: When `true` and `max_loss_reference` is
+    /// [`LossReference::EodTrailing`], the trailing floor freezes at
+    /// the starting balance once it would otherwise trail past it.
+    /// After the lock engages, the worst case is breakeven rather
+    /// than breach. Used by TopStep (all 3 Combines), Breakout 2-Step,
+    /// FundedNext Stellar Instant, FundingPips Zero.
+    pub eod_trail_locks_at_start: bool,
+    /// **P1#6 fix**: Minimum number of **profitable** trading days
+    /// required to pass the phase. Distinct from `min_trading_days`
+    /// (which counts any day with at least one trade, regardless of
+    /// P&L). `None` = rule disabled. Used by FundingPips Zero (7).
+    pub min_profitable_days: Option<u32>,
     /// **§D.2 fix**: payout policy — minimum payout, cycle, scaling
     /// tiers. `None` means the tenant has not configured payouts (the
     /// payout endpoints are inert for this plan).
@@ -502,6 +695,24 @@ impl Default for ChallengePlan {
             hft_min_round_trip_seconds: 60,
             inactivity_days: None,
             refund_fee_amount: Money::ZERO,
+            // P0#1: default PctPriorDay preserves the engine's historical
+            // behavior — every preset that needs a different variant sets
+            // it explicitly. See DailyLossType for the full taxonomy.
+            daily_loss_type: DailyLossType::PctPriorDay,
+            // P1#5: default false — every verified firm except Apex EOD
+            // treats daily loss as a hard breach.
+            daily_loss_soft: false,
+            // P0#2: default BestDayPctOfPositiveDays preserves the engine's
+            // historical behavior — every preset that needs a different
+            // variant sets it explicitly.
+            consistency_type: ConsistencyType::BestDayPctOfPositiveDays,
+            // P1#3: default false — locks_at_start is an opt-in for the
+            // 4 firms that use it (TopStep, Breakout 2-Step, FundedNext
+            // Stellar Instant, FundingPips Zero).
+            eod_trail_locks_at_start: false,
+            // P1#6: default None — min_profitable_days is an opt-in for
+            // FundingPips Zero (7).
+            min_profitable_days: None,
             payout_config: Some(crate::payout::PayoutConfig::default()),
         }
     }

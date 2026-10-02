@@ -84,7 +84,7 @@ impl std::str::FromStr for PackLifecycle {
 }
 
 /// Basis of a rule's measurement. Maps directly to the binding spec's
-/// `basis: static | trailing | eod_trailing` field.
+/// `basis: static | trailing | eod_trailing | intraday_trail` field.
 #[cfg_attr(
     feature = "serialization",
     derive(serde::Serialize, serde::Deserialize)
@@ -94,11 +94,17 @@ impl std::str::FromStr for PackLifecycle {
 pub enum RuleBasis {
     /// Measured from a fixed reference point (e.g. initial balance).
     Static,
-    /// Measured from a high-water mark that floats up intraday.
+    /// Measured from a high-water mark of closed balance that floats up intraday.
     Trailing,
     /// **P1.6 fix**: Measured from prior day's closing balance; floor
     /// resets once per day at the trading-session rollover.
     EodTrailing,
+    /// **P1#4 fix**: Measured from the highest **unrealised equity**
+    /// peak. Harshest max-drawdown mechanism in use; an open position
+    /// that runs into profit and back out can breach you with no closed
+    /// losing trade. Used by Apex Intraday Trail, FundingPips Zero,
+    /// Breakout 2-Step.
+    IntradayTrail,
 }
 
 impl std::fmt::Display for RuleBasis {
@@ -107,6 +113,7 @@ impl std::fmt::Display for RuleBasis {
             RuleBasis::Static => write!(f, "static"),
             RuleBasis::Trailing => write!(f, "trailing"),
             RuleBasis::EodTrailing => write!(f, "eod_trailing"),
+            RuleBasis::IntradayTrail => write!(f, "intraday_trail"),
         }
     }
 }
@@ -118,8 +125,9 @@ impl std::str::FromStr for RuleBasis {
             "static" => Ok(RuleBasis::Static),
             "trailing" => Ok(RuleBasis::Trailing),
             "eod_trailing" | "eodtrailing" | "eod-trailing" => Ok(RuleBasis::EodTrailing),
+            "intraday_trail" | "intradaytrail" | "intraday-trail" => Ok(RuleBasis::IntradayTrail),
             other => Err(Error::invalid_config(format!(
-                "unknown rule basis '{other}' (expected static/trailing/eod_trailing)"
+                "unknown rule basis '{other}' (expected static/trailing/eod_trailing/intraday_trail)"
             ))),
         }
     }

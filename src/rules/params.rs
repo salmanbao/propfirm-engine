@@ -93,6 +93,9 @@ impl RuleParams {
                 crate::rulepack::RuleBasis::EodTrailing => {
                     Some(crate::config::plan::LossReference::EodTrailing)
                 }
+                crate::rulepack::RuleBasis::IntradayTrail => {
+                    Some(crate::config::plan::LossReference::IntradayTrail)
+                }
             },
             tolerance_cents: e.tolerance_cents,
             priority: Some(e.priority),

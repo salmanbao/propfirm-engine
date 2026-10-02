@@ -7,6 +7,7 @@
 //! the account immediately.
 
 use crate::core::ids::RuleId;
+use crate::core::types::{dec, Money};
 use crate::core::violation::{ViolationKind, ViolationSeverity};
 use crate::rules::context::{EvaluationScope, RuleContext};
 use crate::rules::params::{ParameterizedRule, RuleParams};
@@ -74,6 +75,7 @@ impl Rule for DailyDrawdownRule {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
+        use crate::config::plan::DailyLossType;
         let plan_pct = self.effective_pct(ctx);
         if plan_pct <= rust_decimal::Decimal::ZERO {
             return Ok(RuleVerdict::Pass);
@@ -91,31 +93,96 @@ impl Rule for DailyDrawdownRule {
             );
             return Ok(RuleVerdict::GapFlagged(v));
         }
-        // P0-D: compute limit using the pack entry's value (overrides plan).
-        // P1.1: when drawdown_on_balance is false (default), the limit is
-        // anchored on day_start_equity, not day_start_balance, matching the
-        // drawdown computation in Account::daily_drawdown().
-        let day_start = if ctx.account.plan.drawdown_on_balance {
-            ctx.account.day_start_balance
+
+        // P0#1: dispatch on `daily_loss_type` — the engine previously
+        // hardcoded `PctPriorDay` (plan_pct × day_start) for every plan,
+        // which silently mis-encoded 6 of 9 verified firms in the
+        // propfirm-rules-dataset. Now the variant is set per-plan via
+        // `ChallengePlan::daily_loss_type`.
+        let loss_type = ctx.account.plan.daily_loss_type;
+        if matches!(loss_type, DailyLossType::None) {
+            return Ok(RuleVerdict::Pass);
+        }
+
+        // Pick the reference point + compute the (limit, dd) pair.
+        // The reference is what the floor is anchored against:
+        //   - PctInitial: initial_balance (limit never moves)
+        //   - PctPriorDay: day_start (limit moves with the daily reset)
+        //   - TrailingIntradayHigh: intraday_peak_equity (limit trails intraday peak)
+        let current = if ctx.account.plan.drawdown_on_balance {
+            ctx.account.balance
         } else {
-            ctx.account.day_start_equity
+            ctx.account.equity
         };
-        let limit = crate::core::types::Money(plan_pct * day_start.0);
-        let dd = ctx.account.daily_drawdown();
+        let (reference, dd) = match loss_type {
+            DailyLossType::None => return Ok(RuleVerdict::Pass),
+            DailyLossType::PctInitial => {
+                let day_start = if ctx.account.plan.drawdown_on_balance {
+                    ctx.account.day_start_balance
+                } else {
+                    ctx.account.day_start_equity
+                };
+                (ctx.account.initial_balance, Money((day_start.0 - current.0).max(dec!(0))))
+            }
+            DailyLossType::PctPriorDay => {
+                let day_start = if ctx.account.plan.drawdown_on_balance {
+                    ctx.account.day_start_balance
+                } else {
+                    ctx.account.day_start_equity
+                };
+                (day_start, Money((day_start.0 - current.0).max(dec!(0))))
+            }
+            DailyLossType::TrailingIntradayHigh => {
+                // For TrailingIntradayHigh, the floor follows the intraday
+                // peak equity. The "drawdown" is the drop from that peak,
+                // not from day-start. This is the harshest daily form:
+                // an open position that runs into profit and back out
+                // can breach you with no closed losing trade. Used by
+                // HyroTrader Standard.
+                //
+                // Note: when `drawdown_on_balance = true`, fall back to
+                // the all-time `peak_balance` (no intraday_peak_balance
+                // tracked today). Conservative — no verified firm uses
+                // TrailingIntradayHigh with balance-based drawdown.
+                let intraday_peak = if ctx.account.plan.drawdown_on_balance {
+                    ctx.account.peak_balance
+                } else {
+                    ctx.account.intraday_peak_equity
+                };
+                (
+                    intraday_peak,
+                    Money((intraday_peak.0 - current.0).max(dec!(0))),
+                )
+            }
+        };
+        let limit = crate::core::types::Money(plan_pct * reference.0);
         // P2 fix: tolerance to absorb broker rounding noise at the boundary.
         let tolerance = self.tolerance_money();
         if dd.0 > limit.0 + tolerance.0 {
+            // P1#5: when `daily_loss_soft = true` (Apex EOD Trail — the
+            // only verified firm whose daily loss is soft), downgrade
+            // from `Liquidate` to `Warning`. The breach is recorded
+            // but doesn't terminate the account.
+            let severity = if ctx.account.plan.daily_loss_soft {
+                ViolationSeverity::Warning
+            } else {
+                ViolationSeverity::Liquidate
+            };
             let mut v = build_violation(
                 self,
                 ctx,
-                ViolationSeverity::Liquidate,
+                severity,
                 format!(
-                    "Daily drawdown breach: {dd} > {limit}+{tolerance} ({}%)",
+                    "Daily drawdown breach ({loss_type}): {dd} > {limit}+{tolerance} ({}%)",
                     plan_pct * rust_decimal::Decimal::ONE_HUNDRED
                 ),
             );
             v = v.with_breach(dd, limit);
-            return Ok(RuleVerdict::Liquidate(v));
+            return Ok(if ctx.account.plan.daily_loss_soft {
+                RuleVerdict::EarlyWarning(v)
+            } else {
+                RuleVerdict::Liquidate(v)
+            });
         }
         // P1-13: warn at 80% utilization (or pack entry's early_warning_pct).
         let warn_pct = self
@@ -130,9 +197,10 @@ impl Rule for DailyDrawdownRule {
                 ctx,
                 ViolationSeverity::Warning,
                 format!(
-                    "Daily drawdown at {}/{} ({}%)",
+                    "Daily drawdown ({loss_type}) at {}/{}/{} ({}%)",
                     dd,
                     limit,
+                    reference,
                     (dd.0 / limit.0 * rust_decimal::Decimal::ONE_HUNDRED).round_dp(2)
                 ),
             );

@@ -54,6 +54,10 @@ pub enum ViolationKind {
     ProfitTargetMissed,
     /// Minimum trading days not met.
     MinTradingDays,
+    /// **P1#6 fix**: Minimum profitable trading days not met
+    /// (distinct from `MinTradingDays` — counts only profitable days,
+    /// not any trade-day). Used by FundingPips Zero (requires 7).
+    MinProfitableDays,
     /// Single-day profit too large relative to total profit (consistency rule).
     Consistency,
     /// Trading during high-impact news events.
@@ -93,8 +97,8 @@ impl std::fmt::Display for ViolationKind {
         use ViolationKind::{
             Consistency, Cooldown, CopyTrading, Custom, DailyDrawdown, GridTrading, Hedging,
             MaxDailyTrades, MaxDrawdown, MaxLotSize, MaxOpenPositions, MaxPositionSize,
-            MinTradingDays, MissingStopLoss, MissingTakeProfit, NewsTrading, OvernightHolding,
-            ProfitTargetMissed, TimeLimit, TrailingDrawdown, WeekendHolding,
+            MinProfitableDays, MinTradingDays, MissingStopLoss, MissingTakeProfit, NewsTrading,
+            OvernightHolding, ProfitTargetMissed, TimeLimit, TrailingDrawdown, WeekendHolding,
         };
         let s = match self {
             DailyDrawdown => "daily_drawdown",
@@ -102,6 +106,7 @@ impl std::fmt::Display for ViolationKind {
             TrailingDrawdown => "trailing_drawdown",
             ProfitTargetMissed => "profit_target_missed",
             MinTradingDays => "min_trading_days",
+            MinProfitableDays => "min_profitable_days",
             Consistency => "consistency",
             NewsTrading => "news_trading",
             OvernightHolding => "overnight_holding",

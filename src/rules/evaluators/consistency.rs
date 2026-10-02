@@ -1,13 +1,21 @@
 //! Consistency rule.
 //!
 //! Prop firms require that no single trading day's profit exceeds a certain
-//! percentage (often 30–50%) of the sum of all positive trading days' profits.
+//! percentage (often 30–50%) of a denominator that depends on the firm.
 //! This discourages lucky single-day wins and rewards steady performance.
 //!
-//! The consistency cap is: `consistency_pct × sum_positive_days_profit`.
-//! The denominator is the sum of all positive days' profits (not net
-//! `total_realized_pnl` which includes losses) — this is the industry-
-//! standard definition used by FTMO and others.
+//! **P0#2 fix**: the denominator is now configurable via
+//! `ChallengePlan::consistency_type`:
+//! - `BestDayPctOfPositiveDays` (default, stricter): denominator is
+//!   `sum_positive_days_profit` (only winning days). Used by FTMO 1-Step,
+//!   FundingPips Zero, The5%ers 1-Step.
+//! - `BestDayPctOfTotal`: denominator is `total_realized_pnl` (all days,
+//!   including losing days). Used by HyroTrader (all 4 plans, after the
+//!   2026-08-29 correction in the propfirm-rules-dataset).
+//! - `None`: rule disabled.
+//!
+//! The dataset explicitly warns there is no per-trade consistency type —
+//! a per-trade rule is frequently attributed to HyroTrader and is wrong.
 
 use crate::core::ids::RuleId;
 use crate::core::types::{dec, Money};
@@ -98,6 +106,17 @@ impl Rule for ConsistencyRule {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> crate::Result<RuleVerdict> {
+        use crate::config::plan::ConsistencyType;
+        // P0#2: dispatch on `consistency_type` — the engine previously
+        // hardcoded `BestDayPctOfPositiveDays` (denominator =
+        // sum_positive_days_profit) for every plan, which silently
+        // mis-encoded HyroTrader (all 4 plans use BestDayPctOfTotal,
+        // denominator = total_realized_pnl). Now the variant is set
+        // per-plan via `ChallengePlan::consistency_type`.
+        let consistency_type = ctx.account.plan.consistency_type;
+        if matches!(consistency_type, ConsistencyType::None) {
+            return Ok(RuleVerdict::Pass);
+        }
         // P0.4: use the effective cap (pack entry overrides plan).
         let Some(cap_pct_raw) = self
             .effective_cap(ctx)
@@ -106,9 +125,19 @@ impl Rule for ConsistencyRule {
             return Ok(RuleVerdict::Pass);
         };
         let cap_pct = crate::core::types::Pct(cap_pct_raw);
-        let total_profit = ctx.account.sum_positive_days_profit;
+        // P0#2: pick the denominator per the consistency_type.
+        // - BestDayPctOfTotal: total_realized_pnl (includes losing days)
+        // - BestDayPctOfPositiveDays: sum_positive_days_profit (winning days only)
+        // The latter is stricter — losing days don't dilute the denominator.
+        let total_profit = match consistency_type {
+            ConsistencyType::None => return Ok(RuleVerdict::Pass),
+            ConsistencyType::BestDayPctOfTotal => ctx.account.total_realized_pnl,
+            ConsistencyType::BestDayPctOfPositiveDays => ctx.account.sum_positive_days_profit,
+        };
         if total_profit.0 <= dec!(0) {
-            // No positive days yet → nothing to check
+            // No profit yet → nothing to check.
+            // For BestDayPctOfTotal: total_realized_pnl <= 0 means net loss or breakeven.
+            // For BestDayPctOfPositiveDays: no winning days yet.
             return Ok(RuleVerdict::Pass);
         }
         let largest_day = ctx.account.largest_day_profit;
@@ -122,8 +151,13 @@ impl Rule for ConsistencyRule {
                 ctx,
                 ViolationSeverity::Warning,
                 format!(
-                    "Largest single-day profit {largest_day} exceeds {}% of sum of positive days' profits {total_profit} (cap {cap})",
-                    cap_pct.0 * dec!(100)
+                    "Largest single-day profit {largest_day} exceeds {}% of {} ({cap})",
+                    cap_pct.0 * dec!(100),
+                    match consistency_type {
+                        ConsistencyType::BestDayPctOfTotal => "total_realized_pnl",
+                        ConsistencyType::BestDayPctOfPositiveDays => "sum_positive_days_profit",
+                        ConsistencyType::None => "n/a",
+                    },
                 ),
             );
             v = v.with_breach(largest_day, cap);

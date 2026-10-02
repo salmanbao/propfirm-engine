@@ -9,7 +9,7 @@
 //! classic "max total loss" rule, trailing only where the firm actually
 //! advertises a trailing max loss).
 
-use crate::config::plan::{ChallengePhase, ChallengePlan, LossReference, PlanMeta};
+use crate::config::plan::{ChallengePhase, ChallengePlan, DailyLossType, LossReference, PlanMeta};
 use crate::core::ids::ChallengeId;
 use crate::core::types::{dec, Money, Pct};
 use chrono::Utc;
@@ -280,9 +280,19 @@ pub fn topstep_futures() -> ChallengePlan {
     // P1.5: Topstep has NO daily loss limit — only the EOD-trailing
     // threshold and the per-trade limit. Zero disables the daily rule.
     p.max_daily_drawdown_pct = Pct::ZERO;
+    // P0#1: explicitly mark `daily_loss_type = None` for clarity
+    // (matches the dataset's `daily_loss.type = "none"` for TopStep).
+    p.daily_loss_type = DailyLossType::None;
     // P1.5: the account-level threshold trails the best end-of-day balance.
     p.max_total_drawdown_pct = Pct(dec!(0.10));
     p.max_loss_reference = LossReference::EodTrailing;
+    // P1#3: TopStep's drawdown locks at the starting balance once the
+    // floor would otherwise trail past it. Per the dataset: "Trails
+    // end-of-day, then freezes once the floor reaches the starting
+    // balance. TopStep's Combine trails the highest end-of-day balance
+    // until the floor would exceed the starting balance, at which point
+    // it stops and becomes fixed there."
+    p.eod_trail_locks_at_start = true;
     // P0.1: Topstep publishes an explicit per-trade loss limit.
     p.per_trade_max_loss_pct = Some(Pct(dec!(0.02)));
     p.min_trading_days = 5;

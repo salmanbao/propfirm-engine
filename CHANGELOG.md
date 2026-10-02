@@ -53,6 +53,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   autovacuum footprint. Paired with a `lookup()` SQL change to use
   SQL's `now()` directly instead of a bind parameter so the planner
   recognizes the partial-index predicate is implied.
+- `DailyLossType` enum (`None`, `PctInitial`, `PctPriorDay`,
+  `TrailingIntradayHigh`) on `ChallengePlan` — maps 1:1 to the
+  propfirm-rules-dataset's `daily_loss.type` field. Default
+  `PctPriorDay` preserves the engine's historical behavior; every
+  preset that needs a different variant sets it explicitly. Closes
+  the silent mis-encoding of FTMO/FundedNext/FundingPips/The5%ers/
+  Bitfunded/Apex EOD (all `pct_initial`) and HyroTrader Standard
+  (`trailing_intraday_high`).
+- `ConsistencyType` enum (`None`, `BestDayPctOfTotal`,
+  `BestDayPctOfPositiveDays`) on `ChallengePlan` — maps 1:1 to the
+  dataset's `consistency.type` field. Default
+  `BestDayPctOfPositiveDays` preserves the engine's historical
+  behavior; HyroTrader (all 4 plans) now correctly uses
+  `BestDayPctOfTotal` (denominator = `total_realized_pnl`, not
+  `sum_positive_days_profit`).
+- `LossReference::IntradayTrail` variant — the dataset's harshest
+  max-drawdown mechanism, where the floor follows the highest
+  **unrealised equity** peak (`Account::peak_equity`), not the
+  closed-balance peak. Used by Apex Intraday Trail, FundingPips Zero,
+  Breakout 2-Step. Paired with the `RuleBasis::IntradayTrail` variant
+  for pack entries.
+- `eod_trail_locks_at_start: bool` flag on `ChallengePlan` — when
+  `true` and `max_loss_reference = EodTrailing`, the trailing floor
+  caps at `initial_balance` once it would otherwise trail past it.
+  After the lock engages, the worst case is returning to breakeven
+  rather than being breached. Used by TopStep (all 3 Combines),
+  Breakout 2-Step, FundedNext Stellar Instant, FundingPips Zero.
+- `daily_loss_soft: bool` flag on `ChallengePlan` — when `true`,
+  a daily-loss breach is a soft warning (severity = `Warning`)
+  rather than a hard breach (severity = `Liquidate`). Used by Apex
+  EOD Trail (the only verified firm whose daily loss is `soft: true`).
+- `min_profitable_days: Option<u32>` field on `ChallengePlan` +
+  new `MinProfitableDaysRule` evaluator — counts only **profitable**
+  trading days (days where `today_realized_pnl > 0` at rollover),
+  distinct from `min_trading_days` which counts any trade-day.
+  Used by FundingPips Zero (requires 7 profitable days).
+- `Account::intraday_peak_equity` field — highest unrealised equity
+  peak observed during the *current* trading day. Updated on every
+  tick via `EvaluationState::update_equity`; reset at day rollover.
+  Used by HyroTrader Standard's `trailing_intraday_high` daily-loss
+  mechanism. Distinct from `peak_equity` (all-time peak, never resets).
+- `Account::profitable_days_count` field — count of profitable
+  trading days, incremented at `EvaluationState::rollover_day` when
+  `today_realized_pnl > 0`. Used by the new `MinProfitableDaysRule`.
+- `ViolationKind::MinProfitableDays` variant for the new rule's
+  violation category.
 
 ### Changed
 - **Worker hot path**: `produce_response().await` + `ack().await` (two
