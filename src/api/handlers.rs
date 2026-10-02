@@ -203,9 +203,8 @@ pub async fn evaluate_internal(
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
                 // Another pod won the race — return their response.
-                let cached = serde_json::from_str(&cached)
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                cached
+                serde_json::from_str(&cached)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             }
             crate::api::idempotency::IdempotencyOutcome::Conflict => {
                 // Another pod stored with a different body — 409.
@@ -426,15 +425,15 @@ async fn evaluate_internal_impl(
     // the pod's wall clock. This prevents processing stale data
     // that could produce incorrect verdicts. The threshold is
     // generous (10 min) to tolerate clock skew between pods.
-    let STALE_THRESHOLD_SECS: i64 = 10 * 60;
+    let stale_threshold_secs: i64 = 10 * 60;
     let now = chrono::Utc::now();
     let staleness_secs = (now - server_time.0).num_seconds();
-    if staleness_secs > STALE_THRESHOLD_SECS {
+    if staleness_secs > stale_threshold_secs {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
                 "tick rejected: server_time is {} seconds old (threshold: {}s)",
-                staleness_secs, STALE_THRESHOLD_SECS
+                staleness_secs, stale_threshold_secs
             ),
         ));
     }

@@ -1671,16 +1671,6 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "metrics"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3045b4193fbdc5b5681f32f11070da9be3609f189a79f3390706d42587f46bb5"
-dependencies = [
- "ahash",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics"
 version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
@@ -1702,7 +1692,7 @@ dependencies = [
  "hyper-util",
  "indexmap 2.14.2",
  "ipnet",
- "metrics 0.24.6",
+ "metrics",
  "metrics-util",
  "quanta",
  "thiserror 2.0.21",
@@ -1719,7 +1709,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.16.1",
- "metrics 0.24.6",
+ "metrics",
  "quanta",
  "rand 0.9.5",
  "rand_xoshiro",
@@ -2215,7 +2205,7 @@ dependencies = [
  "dotenvy",
  "figment",
  "http-body-util",
- "metrics 0.23.1",
+ "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
  "opentelemetry-otlp",

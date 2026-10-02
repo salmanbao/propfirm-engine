@@ -120,7 +120,12 @@ impl RedisIdempotencyBackend {
         body_hash: &str,
     ) -> redis::RedisResult<IdempotencyOutcome> {
         let stored_hash: Option<String> = match self.conn() {
-            RedisConn::Single(mut c) => redis::cmd("GET").arg(hash_key).query_async(&mut c).await?,
+            RedisConn::Single { producer, .. } => {
+                redis::cmd("GET")
+                    .arg(hash_key)
+                    .query_async(&mut producer.clone())
+                    .await?
+            }
             RedisConn::Cluster(pool) => {
                 let mut conn = pool.get().await.map_err(super::io_error_to_redis)?;
                 redis::cmd("GET")
@@ -134,8 +139,11 @@ impl RedisIdempotencyBackend {
             Some(stored) => {
                 if stored == body_hash {
                     let response: Option<String> = match self.conn() {
-                        RedisConn::Single(mut c) => {
-                            redis::cmd("GET").arg(val_key).query_async(&mut c).await?
+                        RedisConn::Single { producer, .. } => {
+                            redis::cmd("GET")
+                                .arg(val_key)
+                                .query_async(&mut producer.clone())
+                                .await?
                         }
                         RedisConn::Cluster(pool) => {
                             let mut conn = pool.get().await.map_err(super::io_error_to_redis)?;
@@ -181,7 +189,7 @@ impl RedisIdempotencyBackend {
 
         let conn = self.conn();
         let result: (String, String) = match conn {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single { producer, .. } => {
                 redis::cmd("EVAL")
                     .arg(script)
                     .arg(2)
@@ -190,7 +198,7 @@ impl RedisIdempotencyBackend {
                     .arg(body_hash)
                     .arg(response)
                     .arg(ttl_secs)
-                    .query_async(&mut c)
+                    .query_async(&mut producer.clone())
                     .await?
             }
             RedisConn::Cluster(pool) => {

@@ -34,10 +34,24 @@ use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 
 /// Wrapper around the chosen Redis connection type.
+///
+/// ## Single-node split
+///
+/// Blocking consumer operations (`XREADGROUP`, `XAUTOCLAIM`) and
+/// producer operations (`XADD`, `XACK`, `XGROUP`) run on separate
+/// `MultiplexedConnection`s. Redis processes commands from one
+/// connection sequentially; without this split, a convoy of blocked
+/// consumers would stall all produces/acks for up to
+/// `concurrency × block_ms`.
 #[derive(Clone)]
 pub enum RedisConn {
-    /// Single-node multiplexed connection (cloneable, async-safe).
-    Single(redis::aio::MultiplexedConnection),
+    /// Single-node with separate consumer/producer connections.
+    Single {
+        /// Used for blocking `XREADGROUP` and `XAUTOCLAIM`.
+        consumer: redis::aio::MultiplexedConnection,
+        /// Used for `XADD`, `XACK`, and `XGROUP`.
+        producer: redis::aio::MultiplexedConnection,
+    },
     /// Cluster pool — N concurrent multiplexed connections, managed by
     /// `bb8`. Cloning the pool is cheap (it's `Arc` internally), so
     /// multiple worker tasks share the same underlying connections.
@@ -67,10 +81,16 @@ pub async fn connect(settings: &RedisSettings) -> Result<RedisConn, redis::Redis
         Ok(RedisConn::Cluster(pool))
     } else {
         let client = redis::Client::open(settings.url.as_str())?;
-        let mut conn = client.get_multiplexed_async_connection().await?;
-        // Quick PING to fail fast on unreachable Redis.
-        let _ = redis::cmd("PING").query_async::<String>(&mut conn).await;
-        Ok(RedisConn::Single(conn))
+        let mut consumer = client.get_multiplexed_async_connection().await?;
+        let mut producer = client.get_multiplexed_async_connection().await?;
+        // Quick PINGs to fail fast on unreachable Redis.
+        let _ = redis::cmd("PING")
+            .query_async::<String>(&mut consumer)
+            .await;
+        let _ = redis::cmd("PING")
+            .query_async::<String>(&mut producer)
+            .await;
+        Ok(RedisConn::Single { consumer, producer })
     }
 }
 

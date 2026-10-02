@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Build a future that resolves when the process receives SIGINT/SIGTERM.
 pub async fn await_signal() {

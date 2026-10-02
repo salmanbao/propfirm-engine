@@ -83,7 +83,10 @@ async fn event_bus_round_trip() {
             EventBusResult::Empty => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            EventBusResult::Error(e) => panic!("consume error: {e}"),
+            EventBusResult::Error {
+                message: msg,
+                stream_id: _,
+            } => panic!("consume error: {msg}"),
             EventBusResult::Produced(_) => {}
         }
     }
@@ -162,7 +165,10 @@ async fn event_bus_multiple_requests_ordered() {
             EventBusResult::Empty => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            EventBusResult::Error(e) => panic!("consume error: {e}"),
+            EventBusResult::Error {
+                message: msg,
+                stream_id: _,
+            } => panic!("consume error: {msg}"),
             EventBusResult::Produced(_) => {}
         }
     }
@@ -240,7 +246,10 @@ async fn event_bus_normal_tick_evaluation() {
             EventBusResult::Empty => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            EventBusResult::Error(e) => panic!("consume error: {e}"),
+            EventBusResult::Error {
+                message: msg,
+                stream_id: _,
+            } => panic!("consume error: {msg}"),
             EventBusResult::Produced(_) => {}
         }
     }
@@ -319,7 +328,10 @@ async fn event_bus_drawdown_breach_evaluation() {
             EventBusResult::Empty => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            EventBusResult::Error(e) => panic!("consume error: {e}"),
+            EventBusResult::Error {
+                message: msg,
+                stream_id: _,
+            } => panic!("consume error: {msg}"),
             EventBusResult::Produced(_) => {}
         }
     }
@@ -398,7 +410,10 @@ async fn event_bus_override_recovery_evaluation() {
             EventBusResult::Empty => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            EventBusResult::Error(e) => panic!("consume error: {e}"),
+            EventBusResult::Error {
+                message: msg,
+                stream_id: _,
+            } => panic!("consume error: {msg}"),
             EventBusResult::Produced(_) => {}
         }
     }

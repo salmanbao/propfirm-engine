@@ -311,9 +311,9 @@ async fn worker_loop(
             propfirm::persistence::redis_store::EventBusResult::Empty => {
                 // Block timed out; loop and try again.
             }
-            propfirm::persistence::redis_store::EventBusResult::Error(msg) => {
+            propfirm::persistence::redis_store::EventBusResult::Error { message, stream_id } => {
                 worker_metrics::record_error("consume_failed");
-                error!(error = %msg, "consume_request error; sleeping 1s");
+                error!(error = %message, stream_id = ?stream_id, "consume_request error; sleeping 1s");
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             propfirm::persistence::redis_store::EventBusResult::Produced(_) => {
@@ -679,8 +679,8 @@ async fn run_healthcheck() -> anyhow::Result<()> {
 
     // Step 2: PING Redis.
     let ping_ok = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("PING")
                 .query_async::<String>(&mut c)
                 .await
@@ -705,8 +705,8 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     let stream = &settings.event_bus.request_stream;
     let group = &settings.event_bus.consumer_group;
     let stream_exists: bool = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("EXISTS")
                 .arg(stream)
                 .query_async::<i64>(&mut c)
@@ -734,8 +734,8 @@ async fn run_healthcheck() -> anyhow::Result<()> {
     // [field_name, field_value] pairs. We search for our group name
     // in the nested structure.
     let group_exists = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             let raw: Option<Vec<Vec<(String, redis::Value)>>> = redis::cmd("XINFO")
                 .arg("GROUPS")
                 .arg(stream)
@@ -863,8 +863,8 @@ async fn run_status() -> anyhow::Result<()> {
 
     // XPENDING summary: returns [pending_count, lowest_id, highest_id, consumer_count]
     let xpending_summary: Option<Vec<redis::Value>> = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("XPENDING")
                 .arg(stream)
                 .arg(group)
@@ -909,8 +909,8 @@ async fn run_status() -> anyhow::Result<()> {
     println!();
     println!("XINFO CONSUMERS (per-consumer pending):");
     let xinfo_consumers: Option<Vec<Vec<(String, redis::Value)>>> = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("XINFO")
                 .arg("CONSUMERS")
                 .arg(stream)
@@ -1038,8 +1038,8 @@ async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
 
     for _ in 0..max_iterations {
         let (next_id, claimed_ids): (String, Vec<String>) = match &conn {
-            RedisConn::Single(c) => {
-                let mut c = c.clone();
+            RedisConn::Single { producer, .. } => {
+                let mut c = producer.clone();
                 // XAUTOCLAIM stream group consumer min_idle start_id COUNT n
                 // returns (next-start-id, [(stream-id, fields), ...], deleted-ids)
                 // We just need the stream-ids.
@@ -1113,8 +1113,8 @@ async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
         // Use a single XACK call with multiple IDs (Redis supports
         // XACK stream group id1 id2 id3 ...).
         let ack_count: i64 = match &conn {
-            RedisConn::Single(c) => {
-                let mut c = c.clone();
+            RedisConn::Single { producer, .. } => {
+                let mut c = producer.clone();
                 let mut cmd = redis::cmd("XACK");
                 cmd.arg(&stream).arg(&group);
                 for id in &claimed_ids {
@@ -1145,8 +1145,8 @@ async fn run_drain(idle_secs: i64) -> anyhow::Result<()> {
 
     // Final XPENDING count.
     let remaining: i64 = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("XPENDING")
                 .arg(&stream)
                 .arg(&group)
@@ -1244,8 +1244,8 @@ async fn run_reset_group() -> anyhow::Result<()> {
 
     // Step 1: XGROUP DESTROY — deletes the group + its PEL.
     let destroy_ok: bool = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("XGROUP")
                 .arg("DESTROY")
                 .arg(&stream)
@@ -1276,8 +1276,8 @@ async fn run_reset_group() -> anyhow::Result<()> {
 
     // Step 2: XGROUP CREATE — recreate with MKSTREAM + start-from-$.
     let create_ok: bool = match &conn {
-        RedisConn::Single(c) => {
-            let mut c = c.clone();
+        RedisConn::Single { producer, .. } => {
+            let mut c = producer.clone();
             redis::cmd("XGROUP")
                 .arg("CREATE")
                 .arg(&stream)

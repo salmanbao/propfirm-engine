@@ -119,7 +119,10 @@ rustls-pemfile = { version = "2", optional = true }
 
 # Observability
 prometheus = { version = "0.14", optional = true }
-metrics = { version = "0.23", optional = true }
+# Must match metrics-exporter-prometheus 0.18's metrics (0.24). A version
+# split here installs the recorder in a different global than the
+# `metrics::counter!` macros → /metrics renders empty (silent failure).
+metrics = { version = "0.24", optional = true }
 metrics-exporter-prometheus = { version = "0.18", optional = true, default-features = false, features = ["http-listener"] }
 
 # OpenTelemetry (feature-gated behind `otel`)

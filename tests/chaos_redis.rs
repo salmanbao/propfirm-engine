@@ -96,7 +96,11 @@ async fn wait_for_redis(url: &str, timeout_secs: u64) -> bool {
         if let Ok(conn) = redis_connect(&settings).await {
             use propfirm::persistence::redis_store::RedisConn;
             match conn {
-                RedisConn::Single(mut c) => {
+                RedisConn::Single {
+                    consumer: _,
+                    producer,
+                } => {
+                    let mut c = producer.clone();
                     if redis::cmd("PING")
                         .query_async::<String>(&mut c)
                         .await
@@ -184,7 +188,10 @@ async fn chaos_redis_kill_mid_consume_does_not_panic() {
     // Verify consume_request returns Error (not panic).
     let outcome = bus.consume_request("test-consumer").await;
     match outcome {
-        propfirm::persistence::redis_store::EventBusResult::Error(_) => {
+        propfirm::persistence::redis_store::EventBusResult::Error {
+            message: _,
+            stream_id: _,
+        } => {
             eprintln!("OK: consume_request returned Error (not panic)");
         }
         other => {
@@ -206,7 +213,10 @@ async fn chaos_redis_kill_mid_consume_does_not_panic() {
         propfirm::persistence::redis_store::EventBusResult::Empty => {
             eprintln!("OK: consume_request recovered (Empty after Redis restart)");
         }
-        propfirm::persistence::redis_store::EventBusResult::Error(msg) => {
+        propfirm::persistence::redis_store::EventBusResult::Error {
+            message: msg,
+            stream_id: _,
+        } => {
             // It's also acceptable for the bb8 pool to need a few
             // seconds to recover its connections — treat short errors
             // as recoverable.

@@ -14,16 +14,6 @@
 
 use std::time::Instant;
 
-/// Record an HTTP request counter (called by the TraceLayer / handlers).
-#[inline]
-pub fn record_request(method: &str, status: u16) {
-    metrics::counter!("propfirm_http_requests_total",
-        "method" => method.to_string(),
-        "status" => status.to_string(),
-    )
-    .increment(1);
-}
-
 /// Record a per-decision-kind counter (called by `evaluate_internal_impl`).
 #[inline]
 pub fn record_decision(decision_kind: &str) {

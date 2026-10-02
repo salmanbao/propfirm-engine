@@ -23,7 +23,6 @@
 //! - `payload` — JSON-serialized request/response body
 
 use std::time::Duration;
-use uuid::Uuid;
 
 use crate::persistence::redis_store::{io_error_to_redis, RedisConn};
 use crate::settings::EventBusSettings;
@@ -65,7 +64,14 @@ pub enum EventBusResult {
     /// No message available within the block window.
     Empty,
     /// Redis returned an error.
-    Error(String),
+    Error {
+        /// Human-readable error message.
+        message: String,
+        /// Stream ID if the error happened after a message was read
+        /// (e.g. decode failure). Used to ACK poison messages so they
+        /// don't loop forever in XAUTOCLAIM.
+        stream_id: Option<String>,
+    },
 }
 
 /// Redis Streams event bus — both consumer (worker) and producer (worker).
@@ -94,14 +100,14 @@ impl RedisEventBus {
         let group = self.settings.consumer_group.clone();
         let start_id = "$";
         match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single { mut producer, .. } => {
                 let _: () = redis::cmd("XGROUP")
                     .arg("CREATE")
                     .arg(&stream)
                     .arg(&group)
                     .arg(start_id)
                     .arg("MKSTREAM")
-                    .query_async(&mut c)
+                    .query_async(&mut producer)
                     .await
                     .unwrap_or(());
             }
@@ -129,7 +135,7 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
         match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single { mut producer, .. } => {
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -137,7 +143,7 @@ impl RedisEventBus {
                     .arg(&payload.request_id)
                     .arg("payload")
                     .arg(&serialized)
-                    .query_async(&mut c)
+                    .query_async(&mut producer)
                     .await?;
                 Ok(id)
             }
@@ -165,7 +171,7 @@ impl RedisEventBus {
         let stream = self.settings.response_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
         match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single { mut producer, .. } => {
                 let id: String = redis::cmd("XADD")
                     .arg(&stream)
                     .arg("*")
@@ -173,7 +179,7 @@ impl RedisEventBus {
                     .arg(&payload.request_id)
                     .arg("payload")
                     .arg(&serialized)
-                    .query_async(&mut c)
+                    .query_async(&mut producer)
                     .await?;
                 Ok(id)
             }
@@ -223,7 +229,10 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
 
         let raw: redis::RedisResult<Option<redis::Value>> = match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single {
+                consumer: mut consumer_conn,
+                ..
+            } => {
                 redis::cmd("XREADGROUP")
                     .arg("GROUP")
                     .arg(&group)
@@ -235,13 +244,18 @@ impl RedisEventBus {
                     .arg("STREAMS")
                     .arg(&stream)
                     .arg(">")
-                    .query_async(&mut c)
+                    .query_async(&mut consumer_conn)
                     .await
             }
             RedisConn::Cluster(pool) => {
                 let mut conn = match pool.get().await {
                     Ok(c) => c,
-                    Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                    Err(e) => {
+                        return EventBusResult::Error {
+                            message: io_error_to_redis(e).to_string(),
+                            stream_id: None,
+                        }
+                    }
                 };
                 redis::cmd("XREADGROUP")
                     .arg("GROUP")
@@ -261,7 +275,12 @@ impl RedisEventBus {
 
         let raw = match raw {
             Ok(v) => v,
-            Err(e) => return EventBusResult::Error(e.to_string()),
+            Err(e) => {
+                return EventBusResult::Error {
+                    message: e.to_string(),
+                    stream_id: None,
+                }
+            }
         };
         let Some(redis::Value::Array(streams)) = raw else {
             return EventBusResult::Empty;
@@ -297,11 +316,22 @@ impl RedisEventBus {
             }
         }
         let Some(payload_str) = payload_str else {
-            return EventBusResult::Error("missing payload field".into());
+            return EventBusResult::Error {
+                message: "missing payload field".into(),
+                stream_id: Some(stream_id),
+            };
         };
         match serde_json::from_str::<EvaluateRequestPayload>(&payload_str) {
             Ok(payload) => EventBusResult::Consumed { stream_id, payload },
-            Err(e) => EventBusResult::Error(format!("decode payload: {e}")),
+            Err(e) => {
+                // ACK poison messages so they don't get re-delivered
+                // forever by XAUTOCLAIM.
+                let _ = self.ack(&stream_id).await;
+                EventBusResult::Error {
+                    message: format!("decode payload: {e}"),
+                    stream_id: Some(stream_id),
+                }
+            }
         }
     }
 
@@ -310,12 +340,12 @@ impl RedisEventBus {
         let stream = self.settings.request_stream.clone();
         let group = self.settings.consumer_group.clone();
         match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single { mut producer, .. } => {
                 let _: i64 = redis::cmd("XACK")
                     .arg(&stream)
                     .arg(&group)
                     .arg(stream_id)
-                    .query_async(&mut c)
+                    .query_async(&mut producer)
                     .await?;
             }
             RedisConn::Cluster(pool) => {
@@ -352,7 +382,10 @@ impl RedisEventBus {
         let raw: redis::RedisResult<
             Option<(String, Vec<(String, Vec<(String, String)>)>, Vec<String>)>,
         > = match self.conn() {
-            RedisConn::Single(mut c) => {
+            RedisConn::Single {
+                consumer: mut consumer_conn,
+                ..
+            } => {
                 redis::cmd("XAUTOCLAIM")
                     .arg(&stream)
                     .arg(&group)
@@ -361,13 +394,18 @@ impl RedisEventBus {
                     .arg("0-0")
                     .arg("COUNT")
                     .arg(10i64)
-                    .query_async(&mut c)
+                    .query_async(&mut consumer_conn)
                     .await
             }
             RedisConn::Cluster(pool) => {
                 let mut conn = match pool.get().await {
                     Ok(c) => c,
-                    Err(e) => return EventBusResult::Error(io_error_to_redis(e).to_string()),
+                    Err(e) => {
+                        return EventBusResult::Error {
+                            message: io_error_to_redis(e).to_string(),
+                            stream_id: None,
+                        }
+                    }
                 };
                 redis::cmd("XAUTOCLAIM")
                     .arg(&stream)
@@ -383,7 +421,12 @@ impl RedisEventBus {
         };
         let raw = match raw {
             Ok(v) => v,
-            Err(e) => return EventBusResult::Error(e.to_string()),
+            Err(e) => {
+                return EventBusResult::Error {
+                    message: e.to_string(),
+                    stream_id: None,
+                }
+            }
         };
         match raw {
             None => EventBusResult::Empty,
@@ -399,11 +442,20 @@ impl RedisEventBus {
                     }
                 }
                 let Some(payload_str) = payload_str else {
-                    return EventBusResult::Error("missing payload field".into());
+                    return EventBusResult::Error {
+                        message: "missing payload field".into(),
+                        stream_id: Some(stream_id),
+                    };
                 };
                 match serde_json::from_str::<EvaluateRequestPayload>(&payload_str) {
                     Ok(payload) => EventBusResult::Consumed { stream_id, payload },
-                    Err(e) => EventBusResult::Error(format!("decode payload: {e}")),
+                    Err(e) => {
+                        let _ = self.ack(&stream_id).await;
+                        EventBusResult::Error {
+                            message: format!("decode payload: {e}"),
+                            stream_id: Some(stream_id),
+                        }
+                    }
                 }
             }
         }
