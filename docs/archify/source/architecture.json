@@ -14,7 +14,7 @@
       {
         "id": "stateless-contract",
         "label": "Stateless Contract",
-        "focus": ["api", "pure", "rulepack"],
+        "focus": ["api", "pipeline", "evaluator"],
         "note": "No server-side account persistence"
       }
     ],
@@ -26,33 +26,40 @@
       }
     }
   },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 40,
+    "gapY": 40,
+    "cellW": 160,
+    "cellH": 80
+  },
   "components": [
-    { "id": "external", "type": "external", "label": "Platform Bridge", "sublabel": "LCC / trading gateway", "pos": [20, 200], "size": [150, 60] },
-    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "axum HTTP", "pos": [220, 200], "size": [130, 60] },
-    { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "event orchestrator", "pos": [400, 200], "size": [130, 60] },
-    { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only replay", "pos": [580, 200], "size": [130, 60] },
-    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "service bearer + tenant", "pos": [220, 60], "size": [130, 56], "tag": "Compliance" },
-    { "id": "evaluator", "type": "backend", "label": "Evaluator", "sublabel": "pure rule execution", "pos": [400, 60], "size": [130, 56] },
-    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "22 pack-driven rules", "pos": [580, 60], "size": [130, 56] },
-    { "id": "pure", "type": "backend", "label": "Pure Evaluate", "sublabel": "stateless input_hash", "pos": [400, 340], "size": [130, 56] },
-    { "id": "rulepack", "type": "backend", "label": "RulePack", "sublabel": "versioned JSON rules", "pos": [580, 340], "size": [130, 56] },
-    { "id": "notifications", "type": "messagebus", "label": "Notifier", "sublabel": "webhook / log", "pos": [760, 340], "size": [130, 56] }
+    { "id": "external", "type": "external", "label": "Platform Bridge", "sublabel": "LCC / trading gateway", "row": 1, "col": 0 },
+    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "axum HTTP", "row": 1, "col": 1 },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "event orchestrator", "row": 1, "col": 2 },
+    { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only replay", "row": 1, "col": 3 },
+    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "service bearer + tenant", "row": 0, "col": 1, "tag": "Compliance" },
+    { "id": "evaluator", "type": "backend", "label": "Evaluator", "sublabel": "pure rule execution", "row": 0, "col": 2 },
+    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "25 pack-driven rules", "row": 0, "col": 3 },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "idempotency + event bus", "row": 2, "col": 1 },
+    { "id": "notifications", "type": "messagebus", "label": "Notifier", "sublabel": "webhook / log", "row": 2, "col": 3 }
   ],
   "boundaries": [
-    { "kind": "region", "label": "Engine crate", "wraps": ["api", "auth", "pipeline", "evaluator", "rules", "event_store", "pure", "rulepack", "notifications"], "pad": 16 }
+    { "kind": "region", "label": "Engine crate", "wraps": ["api", "auth", "pipeline", "evaluator", "rules", "event_store", "notifications"], "pad": 16 }
   ],
   "connections": [
     { "id": "caller-to-api", "from": "external", "to": "api", "label": "HTTP", "variant": "emphasis", "labelAt": [110, 274] },
     { "id": "auth-gate", "from": "auth", "to": "api", "label": "verify bearer + tenant", "variant": "security", "labelAt": [285, 150] },
     { "id": "api-to-pipeline", "from": "api", "to": "pipeline", "label": "PipelineEvent", "variant": "default", "labelAt": [310, 310] },
     { "id": "pipeline-to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis" },
-    { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate registry", "variant": "default", "labelAt": [555, 130] },
+    { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate", "variant": "default", "labelAt": [555, 154] },
     { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 186] },
-    { "id": "api-to-pure", "from": "api", "to": "pure", "label": "stateless evaluate", "variant": "emphasis" },
-    { "id": "pure-to-rulepack", "from": "pure", "to": "rulepack", "label": "pack", "variant": "default" }
+    { "id": "pipeline-to-redis", "from": "pipeline", "to": "redis", "label": "event bus", "variant": "dashed", "labelAt": [330, 390] },
+    { "id": "pipeline-to-notifications", "from": "pipeline", "to": "notifications", "label": "notify", "variant": "security", "labelAt": [700, 394] }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Core Modules", "items": ["core: Account, Position, Trade, Tick, Violation", "config: ChallengePlan and presets", "rules: Rule trait, registry, 22 evaluators"] },
+    { "dot": "cyan", "title": "Core Modules", "items": ["core: Account, Position, Trade, Tick, Violation", "config: ChallengePlan and presets", "rules: Rule trait, registry, 25 evaluators"] },
     { "dot": "emerald", "title": "Evaluation Path", "items": ["Pipeline applies events and builds RuleContext", "Evaluator runs pure rule evaluation", "input_hash enables byte-for-byte replay"] },
     { "dot": "rose", "title": "Statelessness", "items": ["No server-side account store (ADR-11)", "account_state in/out via request/response", "EventStore is audit/replay only"] }
   ]

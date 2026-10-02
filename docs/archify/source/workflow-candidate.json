@@ -96,7 +96,7 @@
       "id": "api_router",
       "lane": "api",
       "col": 0,
-      "type": "frontend",
+      "type": "backend",
       "label": "API Router",
       "width": 140
     },
@@ -160,7 +160,7 @@
       "id": "response",
       "lane": "api",
       "col": 5,
-      "type": "frontend",
+      "type": "backend",
       "label": "JSON Response",
       "width": 140
     }

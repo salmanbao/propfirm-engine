@@ -27,7 +27,7 @@
     { "id": "auth-ok", "from": "auth_layer", "to": "pipeline", "label": "authenticated", "variant": "security", "labelAt": [315, 314] },
     { "id": "to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis", "labelAt": [537, 428] },
     { "id": "decision-back", "from": "evaluator", "to": "pipeline", "label": "PureVerdict", "variant": "default", "labelAt": [537, 238] },
-    { "id": "to-output", "from": "pipeline", "to": "output_bus", "label": "events + alerts", "variant": "default" },
+    { "id": "to-output", "from": "pipeline", "to": "output_bus", "label": "events + alerts", "variant": "default", "labelAt": [595, 450] },
     { "id": "event-store-flow", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [474, 328] }
   ],
   "cards": [

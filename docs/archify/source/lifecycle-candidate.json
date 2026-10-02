@@ -23,7 +23,8 @@
     { "id": "evaluate", "from": "active", "to": "target_hit_pending", "label": "target", "labelAt": [325, 202] },
     { "id": "target_hit", "from": "target_hit_pending", "to": "passed", "label": "min days", "labelAt": [479, 220] },
     { "id": "fail", "from": "active", "to": "failed", "label": "breach", "fromSide": "bottom", "toSide": "top", "channelY": 240, "labelAt": [180, 200] },
-    { "id": "emergency", "from": "active", "to": "emergency_stopped", "label": "stop", "fromSide": "bottom", "toSide": "top", "channelY": 240, "labelAt": [430, 200] }
+    { "id": "emergency", "from": "active", "to": "emergency_stopped", "label": "stop", "fromSide": "bottom", "toSide": "top", "channelY": 240, "labelAt": [430, 200] },
+    { "id": "override", "from": "failed", "to": "active", "label": "override", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "channelY": 280, "labelAt": [180, 260] }
   ],
   "cards": []
 }
