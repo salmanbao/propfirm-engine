@@ -39,7 +39,11 @@ services:
   redis:
     image: redis:7
     container_name: propfirm-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    # `io-threads` offloads socket I/O to N worker threads, leaving the
+    # main thread free for command execution. Free throughput for the
+    # many-small-commands workload the worker issues (XADD/XACK/EVAL).
+    # `io-threads-do-reads` also offloads read-side syscalls.
+    command: ["redis-server", "--appendonly", "yes", "--io-threads", "4", "--io-threads-do-reads", "yes"]
     ports:
       - "6379:6379"
     volumes:

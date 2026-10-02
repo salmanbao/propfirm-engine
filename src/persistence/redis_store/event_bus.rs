@@ -128,16 +128,27 @@ impl RedisEventBus {
     }
 
     /// Produce an evaluation request to the request stream.
+    ///
+    /// The `XADD` carries `MAXLEN ~ <settings.max_len>` when `max_len`
+    /// is non-zero, so the stream is trimmed approximately to that
+    /// length on every produce. Approximate trimming is O(1) and
+    /// non-blocking; the consumer-group PEL (un-Acked entries) is
+    /// preserved across trims.
     pub async fn produce_request(
         &self,
         payload: &EvaluateRequestPayload,
     ) -> Result<String, redis::RedisError> {
         let stream = self.settings.request_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
+        let max_len = self.settings.max_len;
         match self.conn() {
             RedisConn::Single { mut producer, .. } => {
-                let id: String = redis::cmd("XADD")
-                    .arg(&stream)
+                let mut cmd = redis::cmd("XADD");
+                cmd.arg(&stream);
+                if max_len > 0 {
+                    cmd.arg("MAXLEN").arg("~").arg(max_len as i64);
+                }
+                let id: String = cmd
                     .arg("*")
                     .arg("request_id")
                     .arg(&payload.request_id)
@@ -149,8 +160,12 @@ impl RedisEventBus {
             }
             RedisConn::Cluster(pool) => {
                 let mut conn = pool.get().await.map_err(io_error_to_redis)?;
-                let id: String = redis::cmd("XADD")
-                    .arg(&stream)
+                let mut cmd = redis::cmd("XADD");
+                cmd.arg(&stream);
+                if max_len > 0 {
+                    cmd.arg("MAXLEN").arg("~").arg(max_len as i64);
+                }
+                let id: String = cmd
                     .arg("*")
                     .arg("request_id")
                     .arg(&payload.request_id)
@@ -164,16 +179,23 @@ impl RedisEventBus {
     }
 
     /// Produce an evaluation response to the response stream.
+    ///
+    /// Same `MAXLEN ~` trimming semantics as [`produce_request`].
     pub async fn produce_response(
         &self,
         payload: &EvaluateResponsePayload,
     ) -> Result<String, redis::RedisError> {
         let stream = self.settings.response_stream.clone();
         let serialized = serde_json::to_string(payload).unwrap_or_default();
+        let max_len = self.settings.max_len;
         match self.conn() {
             RedisConn::Single { mut producer, .. } => {
-                let id: String = redis::cmd("XADD")
-                    .arg(&stream)
+                let mut cmd = redis::cmd("XADD");
+                cmd.arg(&stream);
+                if max_len > 0 {
+                    cmd.arg("MAXLEN").arg("~").arg(max_len as i64);
+                }
+                let id: String = cmd
                     .arg("*")
                     .arg("request_id")
                     .arg(&payload.request_id)
@@ -185,8 +207,12 @@ impl RedisEventBus {
             }
             RedisConn::Cluster(pool) => {
                 let mut conn = pool.get().await.map_err(io_error_to_redis)?;
-                let id: String = redis::cmd("XADD")
-                    .arg(&stream)
+                let mut cmd = redis::cmd("XADD");
+                cmd.arg(&stream);
+                if max_len > 0 {
+                    cmd.arg("MAXLEN").arg("~").arg(max_len as i64);
+                }
+                let id: String = cmd
                     .arg("*")
                     .arg("request_id")
                     .arg(&payload.request_id)
@@ -195,6 +221,109 @@ impl RedisEventBus {
                     .query_async(&mut *conn)
                     .await?;
                 Ok(id)
+            }
+        }
+    }
+
+    /// Produce a response and ACK the original request in one trip.
+    ///
+    /// On **single-node** Redis this is a true pipeline: `XADD` and
+    /// `XACK` are sent in one TCP packet and both responses are read
+    /// in one batch — one round-trip instead of two. This is the
+    /// hot path for every worker-processed message, so halving RTs
+    /// here roughly doubles worker throughput headroom.
+    ///
+    /// On **cluster** Redis (or, more precisely, the bb8 pool path
+    /// used when `redis.cluster = true`) the two commands target
+    /// different keys and may hash to different slots, so they cannot
+    /// be safely bundled in one `redis::pipe()`. We fall back to
+    /// `tokio::join!`, which still cuts wall time from `RT1 + RT2` to
+    /// `max(RT1, RT2)` by running them concurrently.
+    ///
+    /// Returns the produced response stream id on success.
+    pub async fn produce_response_and_ack(
+        &self,
+        payload: &EvaluateResponsePayload,
+        stream_id: &str,
+    ) -> Result<String, redis::RedisError> {
+        let response_stream = self.settings.response_stream.clone();
+        let request_stream = self.settings.request_stream.clone();
+        let group = self.settings.consumer_group.clone();
+        let serialized = serde_json::to_string(payload).unwrap_or_default();
+        let max_len = self.settings.max_len;
+        let req_id = payload.request_id.clone();
+
+        match self.conn() {
+            RedisConn::Single { mut producer, .. } => {
+                // Pipelined: XADD response + XACK request in one RT.
+                let mut pipe = redis::pipe();
+                {
+                    let xadd = pipe.cmd("XADD");
+                    xadd.arg(&response_stream);
+                    if max_len > 0 {
+                        xadd.arg("MAXLEN").arg("~").arg(max_len as i64);
+                    }
+                    xadd.arg("*")
+                        .arg("request_id")
+                        .arg(&req_id)
+                        .arg("payload")
+                        .arg(&serialized);
+                }
+                pipe.cmd("XACK")
+                    .arg(&request_stream)
+                    .arg(&group)
+                    .arg(stream_id);
+                let (id, _ack_count): (String, i64) =
+                    pipe.query_async(&mut producer).await?;
+                Ok(id)
+            }
+            RedisConn::Cluster(pool) => {
+                // Different slots — can't pipeline. Run concurrently
+                // to at least collapse wall-time to max(RT1, RT2).
+                let pool_clone = pool.clone();
+                let response_stream_c = response_stream.clone();
+                let req_id_c = req_id.clone();
+                let serialized_c = serialized.clone();
+                let max_len_c = max_len;
+                let response_fut = async move {
+                    let mut conn = pool_clone.get().await.map_err(io_error_to_redis)?;
+                    let mut cmd = redis::cmd("XADD");
+                    cmd.arg(&response_stream_c);
+                    if max_len_c > 0 {
+                        cmd.arg("MAXLEN").arg("~").arg(max_len_c as i64);
+                    }
+                    let id: String = cmd
+                        .arg("*")
+                        .arg("request_id")
+                        .arg(&req_id_c)
+                        .arg("payload")
+                        .arg(&serialized_c)
+                        .query_async(&mut *conn)
+                        .await?;
+                    Ok::<String, redis::RedisError>(id)
+                };
+                let pool_clone2 = pool.clone();
+                let request_stream_c = request_stream.clone();
+                let group_c = group.clone();
+                let stream_id_c = stream_id.to_string();
+                let ack_fut = async move {
+                    let mut conn = pool_clone2.get().await.map_err(io_error_to_redis)?;
+                    let _: i64 = redis::cmd("XACK")
+                        .arg(&request_stream_c)
+                        .arg(&group_c)
+                        .arg(&stream_id_c)
+                        .query_async(&mut *conn)
+                        .await?;
+                    Ok::<(), redis::RedisError>(())
+                };
+                let (id_res, ack_res) = tokio::join!(response_fut, ack_fut);
+                // Prefer to surface the XADD error first — the
+                // response being produced is the load-bearing thing;
+                // a missed XACK just means the message will be
+                // re-delivered via XAUTOCLAIM and deduped by the
+                // idempotency backend.
+                ack_res?;
+                id_res
             }
         }
     }

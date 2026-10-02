@@ -53,6 +53,7 @@ data:
   PROPFIRM_EVENT_BUS__BLOCK_MS: {{ .Values.eventBus.blockMs | quote }}
   PROPFIRM_EVENT_BUS__CONCURRENCY: {{ .Values.worker.concurrency | quote }}
   PROPFIRM_EVENT_BUS__IDLE_CLAIM_MS: {{ .Values.eventBus.idleClaimMs | quote }}
+  PROPFIRM_EVENT_BUS__MAX_LEN: {{ .Values.eventBus.maxLen | quote }}
 
   # Observability
   PROPFIRM_OBSERVABILITY__LOG_FILTER: {{ .Values.observability.logFilter | quote }}

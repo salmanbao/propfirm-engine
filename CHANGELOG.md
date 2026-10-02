@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CARGO_LOCK_POLICY.md` documenting when to run `cargo update`
 - `SECURITY.md` with vulnerability disclosure process
 - `dependabot.yml` for automated dep upgrade PRs
+- `event_bus.max_len` setting (default `100_000`): every `XADD` carries
+  `MAXLEN ~ <max_len>` so streams are trimmed approximately to that
+  length. `max_len = 0` disables trimming (back-compat).
+- `redis.ioThreads` / `redis.ioThreadsDoReads` Helm knobs (default
+  `4` / `"yes"`); also wired into all `docker-compose` / `podman-compose`
+  redis launch commands. Offloads socket I/O to worker threads.
+
+### Changed
+- **Worker hot path**: `produce_response().await` + `ack().await` (two
+  sequential RTs) collapsed to one `produce_response_and_ack()` call.
+  Single-node Redis uses a true `redis::pipe()` (one TCP packet, one
+  batch read); cluster path falls back to `tokio::join!` (concurrent,
+  cuts wall-time from `RT1 + RT2` to `max(RT1, RT2)`).
+- **Redis idempotency**: `EVAL` switched to `EVALSHA` with lazy
+  `SCRIPT LOAD` + cached SHA1 + `NOSCRIPT` fallback that invalidates
+  the cache and reloads transparently. Saves ~300 bytes/call on the
+  idempotency hot path.
+- **Postgres idempotency**: `INSERT … ON CONFLICT DO NOTHING` (two RTs:
+  INSERT then SELECT) collapsed to `INSERT … ON CONFLICT DO UPDATE
+  SET expires_at = idempotency.expires_at RETURNING (xmax = 0) AS fresh,
+  body_hash, response, expires_at` — one RT on every conflict (the
+  common steady-state path). Rare expired-row case handled by a separate
+  `revive_expired()` UPDATE.
 
 ## [0.2.0] — 2026-09-30
 

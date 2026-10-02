@@ -291,6 +291,20 @@ pub struct EventBusSettings {
     /// messages from healthy-but-slow consumers, causing duplicate
     /// processing. Default: 60000 (60s).
     pub idle_claim_ms: usize,
+    /// Soft cap on the number of entries kept in each stream
+    /// (`propfirm:evaluate:requests` and `:responses`). Every `XADD`
+    /// carries `MAXLEN ~ <max_len>` so Redis trims the stream
+    /// approximately to this length. Approximate trimming (`~`)
+    /// is O(1) and never blocks; the consumer-group PEL is
+    /// preserved (un-Acked entries survive trimming).
+    ///
+    /// Set to 0 to **disable trimming** (streams grow without bound —
+    /// only do this if you have an external `XTRIM` / `XADD MAXLEN`
+    /// policy, otherwise Redis will eventually hit `maxmemory` and
+    /// start refusing writes).
+    ///
+    /// Default: 100_000 entries (~50–200 MB depending on payload size).
+    pub max_len: usize,
 }
 
 impl Default for EventBusSettings {
@@ -303,6 +317,7 @@ impl Default for EventBusSettings {
             block_ms: 5000,
             concurrency: 16,
             idle_claim_ms: 60_000,
+            max_len: 100_000,
         }
     }
 }
@@ -411,6 +426,7 @@ consumer_group = "propfirm-worker"
 block_ms = 5000
 concurrency = 16
 idle_claim_ms = 60000
+max_len = 100000
 "#;
 
 #[cfg(test)]

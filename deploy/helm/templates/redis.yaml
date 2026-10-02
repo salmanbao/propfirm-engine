@@ -24,7 +24,18 @@ spec:
       containers:
         - name: redis
           image: {{ .Values.redis.image }}
-          args: ["redis-server", "--appendonly", {{ .Values.redis.appendOnly | quote }}]
+          args:
+            - redis-server
+            - --appendonly
+            - {{ .Values.redis.appendOnly | quote }}
+            {{- if .Values.redis.ioThreads }}
+            - --io-threads
+            - {{ .Values.redis.ioThreads | quote }}
+            {{- end }}
+            {{- if .Values.redis.ioThreadsDoReads }}
+            - --io-threads-do-reads
+            - {{ .Values.redis.ioThreadsDoReads | quote }}
+            {{- end }}
           ports:
             - name: redis
               containerPort: 6379

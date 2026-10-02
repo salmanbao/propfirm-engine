@@ -133,6 +133,7 @@ async fn make_bus(stream: &str, group: &str) -> RedisEventBus {
         block_ms: 500,
         concurrency: 1,
         idle_claim_ms: 1000,
+        max_len: 100_000,
     };
     RedisEventBus::new(conn, event_bus_settings)
 }

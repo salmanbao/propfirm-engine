@@ -146,6 +146,13 @@ redis:
   storage: 5Gi
   storageClassName: ""
   appendOnly: "yes"
+  # Offload socket I/O to N worker threads. Free throughput for the
+  # many-small-commands workload the worker issues (XADD/XACK/EVAL).
+  # Set to 0 to disable (e.g. on a 1-CPU node where context-switching
+  # cost outweighs the parallelism win). 4 is a sane default for a
+  # multi-core node.
+  ioThreads: 4
+  ioThreadsDoReads: "yes"
 
 # ---------------------------------------------------------------------------
 # Idempotency backend selection
@@ -167,6 +174,11 @@ eventBus:
   consumerName: ""      # auto-generated UUID per pod
   blockMs: 5000
   idleClaimMs: 60000
+  # Soft cap on each stream's length. `XADD` carries `MAXLEN ~ N`.
+  # Approximate trimming is O(1) and non-blocking. PEL entries
+  # (un-Acked messages) survive trimming.
+  # Set to 0 to disable trimming (streams grow without bound).
+  maxLen: 100000
 
 # ---------------------------------------------------------------------------
 # Observability

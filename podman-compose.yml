@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7
     container_name: propfirm-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--io-threads", "4", "--io-threads-do-reads", "yes"]
     ports:
       - "127.0.0.1:6380:6379"
     volumes:

@@ -472,11 +472,16 @@ async fn process_request(
         }
     };
 
-    // Publish response.
-    if let Err(e) = bus.produce_response(&response_payload).await {
+    // Publish response + ACK the original message in one round-trip
+    // (single-node: pipelined; cluster: concurrent via tokio::join!).
+    // See `RedisEventBus::produce_response_and_ack` for the rationale.
+    if let Err(e) = bus
+        .produce_response_and_ack(&response_payload, &stream_id)
+        .await
+    {
         worker_metrics::record_error("produce_response_failed");
-        error!(request_id = %request_id, error = %e, "failed to publish response");
-        // Audit-log the publish failure.
+        error!(request_id = %request_id, error = %e, "failed to publish response / ack");
+        // Audit-log the publish/ack failure.
         let audit = crate::audit_log::worker_error(
             consumer_name,
             tenant_id_opt,
@@ -488,23 +493,6 @@ async fn process_request(
         audit.finish(pg_pool, None, 500).await;
     } else {
         worker_metrics::record_message_produced();
-    }
-
-    // Ack the request (so it leaves the PEL).
-    if let Err(e) = bus.ack(&stream_id).await {
-        worker_metrics::record_error("ack_failed");
-        error!(request_id = %request_id, stream_id = %stream_id, error = %e, "failed to XACK");
-        // Audit-log the ack failure.
-        let audit = crate::audit_log::worker_error(
-            consumer_name,
-            tenant_id_opt,
-            account_id_opt,
-            &request_id,
-            "ack_failed",
-            &e.to_string(),
-        );
-        audit.finish(pg_pool, None, 500).await;
-    } else {
         worker_metrics::record_message_acked();
     }
     tracing::info!(request_id = %request_id, stream_id = %stream_id, consumer = %consumer_name, error = ?error_msg, "request processed");

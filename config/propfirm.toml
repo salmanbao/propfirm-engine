@@ -78,3 +78,9 @@ block_ms = 5000
 concurrency = 16
 # Idle threshold before XAUTOCLAIM grabs a pending message (ms).
 idle_claim_ms = 60000
+# Soft cap on each stream's length. Every XADD carries MAXLEN ~ <max_len>
+# so Redis trims the stream approximately to this length on every produce.
+# Approximate trimming is O(1) and non-blocking; the consumer-group PEL
+# (un-Acked entries) is preserved across trims. Set to 0 to disable
+# trimming (streams grow without bound — not recommended in production).
+max_len = 100000
