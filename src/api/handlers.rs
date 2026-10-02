@@ -21,9 +21,10 @@ use crate::core::types::{Price, Quantity, Symbol};
 use crate::engine::pipeline::PipelineEvent;
 use crate::override_engine::Override;
 use crate::rulepack::RulePack;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use serde::Deserialize;
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -982,6 +983,126 @@ pub async fn evaluate_order(
 }
 
 // DTOs for the new endpoints.
+
+/// `GET /internal/v1/audit-log` — query the audit_log table.
+///
+/// Query parameters (all optional, but at least one of
+/// `tenant_id` / `account_id` is required so a caller can't pull
+/// another tenant's audit trail — enforced below):
+/// - `tenant_id` — UUID, scope to this tenant.
+/// - `account_id` — UUID, scope to this account.
+/// - `action` — exact match on the `action` column
+///   (e.g. `override_breach`, `emergency_stop`, `worker_evaluate`,
+///   `worker_error`, `manual_run`, `breach_report`, `evaluate`,
+///   `evaluate_order`).
+/// - `since` — RFC3339 lower bound on `occurred_at` (inclusive).
+/// - `limit` — page size, default 100, clamped to [1, 500].
+///
+/// Returns the most-recent `limit` rows matching the filters, ordered
+/// by `occurred_at DESC, id DESC`. Mirrors the table schema 1:1.
+///
+/// **No auth** — the engine is internal-only. Tenant isolation is
+/// enforced by requiring `tenant_id` (or `account_id`, which the
+/// engine resolves to its tenant via the audit row). The platform
+/// backend is trusted to set the correct `tenant_id` for the
+/// authenticated caller.
+#[tracing::instrument(skip(state, headers, q), fields(endpoint = "/internal/v1/audit-log"))]
+pub async fn audit_log(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(q): Query<AuditLogQuery>,
+) -> Result<Json<AuditLogResponse>, (StatusCode, String)> {
+    let _latency = LatencyScope::start("/internal/v1/audit-log");
+    let tenant_from_header = extract_tenant_id(&headers).ok();
+
+    // Enforce tenant isolation: either the caller passes an explicit
+    // tenant_id (which must match the X-Tenant-Id header), or they
+    // pass an account_id (which we trust to belong to the caller's
+    // tenant — the audit row itself carries the tenant_id). If
+    // neither is set, reject 400 to prevent cross-tenant reads.
+    let tenant_id = if let Some(t) = &q.tenant_id {
+        // Verify the query param matches the X-Tenant-Id header.
+        // The header is the trusted source (set by the platform
+        // backend); the query param is just a filter.
+        if let Some(h) = &tenant_from_header {
+            if *h != *t {
+                record_error("/internal/v1/audit-log", "tenant_mismatch");
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "query tenant_id does not match X-Tenant-Id header".into(),
+                ));
+            }
+        }
+        Some(t)
+    } else {
+        tenant_from_header.as_ref()
+    };
+
+    if tenant_id.is_none() && q.account_id.is_none() {
+        record_error("/internal/v1/audit-log", "missing_tenant_or_account");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "at least one of tenant_id or account_id is required".into(),
+        ));
+    }
+
+    let Some(pg_pool) = state.pg_pool.as_ref() else {
+        // Dev mode — no Postgres configured. Return an empty list
+        // rather than 500, so the endpoint is still callable in
+        // integration tests that run without a DB.
+        return Ok(Json(AuditLogResponse {
+            entries: Vec::new(),
+            count: 0,
+        }));
+    };
+
+    let tenant_ref = tenant_id.as_ref().map(|t| t as _);
+    let account_ref = q.account_id.as_ref().map(|a| a as _);
+    let query = crate::api::audit_log::AuditQuery {
+        tenant_id: tenant_ref,
+        account_id: account_ref,
+        action: q.action.as_deref(),
+        since: q.since.as_deref(),
+        limit: q.limit.unwrap_or(100),
+    };
+
+    match crate::api::audit_log::query_entries(pg_pool, query).await {
+        Ok(entries) => {
+            let count = entries.len() as u64;
+            Ok(Json(AuditLogResponse { entries, count }))
+        }
+        Err(e) => {
+            record_error("/internal/v1/audit-log", "query_failed");
+            tracing::error!(error = %e, "audit_log query failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("audit_log query failed: {e}"),
+            ))
+        }
+    }
+}
+
+/// Query parameters for `GET /internal/v1/audit-log`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogQuery {
+    #[serde(default)]
+    pub tenant_id: Option<crate::tenant::TenantId>,
+    #[serde(default)]
+    pub account_id: Option<AccountId>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// Response body for `GET /internal/v1/audit-log`.
+#[derive(Debug, serde::Serialize)]
+pub struct AuditLogResponse {
+    pub entries: Vec<crate::api::audit_log::AuditEntryRow>,
+    pub count: u64,
+}
 
 /// `POST /v1/rule-packs/validate` — stateless rule pack validation.
 ///

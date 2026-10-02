@@ -127,18 +127,29 @@ impl IdempotencyBackend for PostgresIdempotencyBackend {
 }
 
 impl PostgresIdempotencyBackend {
+    /// Look up an existing idempotency row by `composite_key`.
+    ///
+    /// The `now` parameter is no longer bound into the SQL — we use
+    /// SQL's `now()` directly so the planner can match the partial
+    /// index `idempotency_active_idx WHERE expires_at > now()` (see
+    /// `migrations/0002_idempotency_active_idx.sql`). With a bind
+    /// parameter the planner can't statically know `$1 ≈ now()` and
+    /// falls back to the full-table index.
+    ///
+    /// The `now` parameter is kept for the `revive_expired` race-guard
+    /// path (different access pattern — only expired rows) where a
+    /// bind parameter is fine.
     async fn lookup(
         &self,
         composite: &str,
         body_hash: &str,
-        now: chrono::DateTime<chrono::Utc>,
+        _now: chrono::DateTime<chrono::Utc>,
     ) -> sqlx::Result<IdempotencyOutcome> {
         let row = sqlx::query(
             r#"SELECT body_hash, response FROM idempotency
-               WHERE composite_key = $1 AND expires_at > $2"#,
+               WHERE composite_key = $1 AND expires_at > now()"#,
         )
         .bind(composite)
-        .bind(now)
         .fetch_optional(&*self.pool)
         .await?;
 

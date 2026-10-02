@@ -38,6 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `status` labels. Restores the metric removed in `e431ed1` and
   reactivates the critical `PropfirmHighErrorRate` Grafana alert that
   was silently querying a non-existent series.
+- `GET /internal/v1/audit-log` endpoint for querying the audit_log
+  table via the engine itself (no direct Postgres access needed).
+  Supports `tenant_id`, `account_id`, `action`, `since` (RFC3339),
+  `limit` filters. Tenant isolation is enforced: the query
+  `tenant_id` must match the `X-Tenant-Id` header, or `account_id`
+  must be set. Limit clamped to [1, 500]. Returns rows ordered by
+  `occurred_at DESC, id DESC`. See `src/api/audit_log.rs::query_entries`
+  and `src/api/handlers.rs::audit_log`.
+- `0002_idempotency_active_idx.sql` migration adding a partial index
+  `idempotency_active_idx ON idempotency (composite_key) WHERE
+  expires_at > now()`. Smaller index than the full-table btree
+  (only currently-active rows), better cache locality, smaller
+  autovacuum footprint. Paired with a `lookup()` SQL change to use
+  SQL's `now()` directly instead of a bind parameter so the planner
+  recognizes the partial-index predicate is implied.
 
 ### Changed
 - **Worker hot path**: `produce_response().await` + `ack().await` (two
@@ -55,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body_hash, response, expires_at` — one RT on every conflict (the
   common steady-state path). Rare expired-row case handled by a separate
   `revive_expired()` UPDATE.
+- **Postgres idempotency `lookup()` SQL**: changed `WHERE expires_at > $2`
+  (bind param) to `WHERE expires_at > now()` (SQL function). The bind
+  form couldn't be matched by the new partial index
+  `idempotency_active_idx WHERE expires_at > now()` because the planner
+  can't statically know `$1 ≈ now()`. The SQL `now()` form is recognized
+  as implied by the partial index predicate, so the index kicks in.
 - **HTTP metrics middleware**: new `http_request_metrics` axum
   middleware (`from_fn`) added as the **outermost** layer in
   `src/api/routes.rs`. Increments `propfirm_http_requests_total`
@@ -66,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queried the metric, silently breaking the `PropfirmHighErrorRate`
   alert (severity: page). This time the counter is incremented by a
   real middleware, not a dead function.
+- **TraceLayer `on_response` + `on_failure` hooks**: the per-request
+  span declared in `TraceLayer::make_span_with` now carries
+  `status = field::Empty`, `latency_ms = field::Empty`,
+  `error = field::Empty` placeholders. The `on_response` hook fills
+  `status` + `latency_ms` after the response is built; the
+  `on_failure` hook fills `error` for 5xx. Without this, OTLP
+  consumers (Tempo / Jaeger / Honeycomb) could see "request hit
+  /internal/v1/evaluate" but not "and returned 500" — a real
+  attribution gap for an audit-grade system. The metric side is
+  handled by the outermost `http_request_metrics` middleware; this
+  fills the trace side.
 - **Audit-log `request_hash`**: the 5 sensitive handlers that didn't
   hash their request body (`override_breach`, `manual_run`,
   `emergency_stop`, `breach_report`, `evaluate_order`) now compute

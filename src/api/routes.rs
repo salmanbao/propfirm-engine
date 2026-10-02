@@ -33,8 +33,8 @@
 //! - `PropagateRequestIdLayer` — echoes `x-request-id` back in response
 
 use crate::api::handlers::{
-    breach_report, emergency_stop, evaluate_internal, evaluate_order, health, manual_run,
-    override_breach, ready, validate_rule_pack, SharedState,
+    audit_log, breach_report, emergency_stop, evaluate_internal, evaluate_order, health,
+    manual_run, override_breach, ready, validate_rule_pack, SharedState,
 };
 use axum::{
     extract::{Request, State},
@@ -44,11 +44,13 @@ use axum::{
     Router,
 };
 use std::time::Duration;
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 /// Header name used for request id propagation.
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -85,6 +87,7 @@ pub async fn router_with_limits(
         .route("/internal/v1/manual-run", post(manual_run))
         .route("/internal/v1/emergency-stop", post(emergency_stop))
         .route("/internal/v1/breach-report", post(breach_report))
+        .route("/internal/v1/audit-log", get(audit_log))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/rule-packs/validate", post(validate_rule_pack))
         .route("/metrics", get(metrics_handler));
@@ -105,20 +108,53 @@ pub async fn router_with_limits(
     // the framework-side failures.
     r.layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
-                let req_id = req
-                    .headers()
-                    .get(REQUEST_ID_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("-")
-                    .to_string();
-                tracing::info_span!(
-                    "http",
-                    method = %req.method(),
-                    uri = %req.uri(),
-                    request_id = %req_id
-                )
-            }),
+            TraceLayer::new_for_http()
+                .make_span_with(|req: &axum::http::Request<_>| {
+                    let req_id = req
+                        .headers()
+                        .get(REQUEST_ID_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("-")
+                        .to_string();
+                    // `status`, `latency_ms`, and `error` are recorded
+                    // later by `on_response` / `on_failure` — declared
+                    // as `field::Empty` placeholders so the span carries
+                    // the keys from creation (useful in OTLP backends
+                    // that index by field presence, e.g. Tempo's
+                    // search-tag completeness check).
+                    tracing::info_span!(
+                        "http",
+                        method = %req.method(),
+                        uri = %req.uri(),
+                        request_id = %req_id,
+                        status = tracing::field::Empty,
+                        latency_ms = tracing::field::Empty,
+                        error = tracing::field::Empty,
+                    )
+                })
+                .on_response(|response: &Response, latency: Duration, span: &Span| {
+                    // Attach the response status code + latency to the
+                    // span. Without this, OTLP consumers (Tempo /
+                    // Jaeger / Honeycomb) can show "request hit
+                    // /internal/v1/evaluate" but not "and returned
+                    // 500" — a real attribution gap for an audit-grade
+                    // system. The metric side is handled by the
+                    // outermost `http_request_metrics` middleware;
+                    // this fills the trace side.
+                    span.record("status", response.status().as_u16());
+                    span.record("latency_ms", latency.as_millis() as u64);
+                })
+                .on_failure(
+                    |error: ServerErrorsFailureClass, _latency: Duration, span: &Span| {
+                        // Fires only for 5xx (server errors). The
+                        // `status` field is already recorded by
+                        // `on_response` (which runs after
+                        // `on_failure` in the failure case); here
+                        // we attach the classified error string so
+                        // OTLP traces can slice by error class.
+                        span.record("error", error.to_string());
+                    },
+                ),
         )
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
