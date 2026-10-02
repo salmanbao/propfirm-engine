@@ -483,6 +483,13 @@ pub async fn override_breach(
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/override");
     let tenant_id = extract_tenant_id(&headers)?;
+    // Hash the canonical (re-serialized) request body up front, before
+    // any field of `req` is moved (e.g. `req.account_state.ok_or()?`
+    // below consumes `req.account_state`). Computing this at the top
+    // keeps the hash byte-stable and avoids borrow-of-partially-moved.
+    let body_hash = crate::api::idempotency::hash_body(
+        &serde_json::to_string(&req).unwrap_or_default(),
+    );
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -556,13 +563,18 @@ pub async fn override_breach(
     // Audit log entry — persisted to the audit_log table after the
     // operation completes (success or failure). The pool may be absent
     // in dev mode; in that case the call is a no-op.
+    //
+    // `body_hash` was computed at the top of the handler (before any
+    // `req.field` moves) so the audit row can byte-for-byte verify
+    // the request that triggered this override.
     let audit = crate::api::audit_log::override_breach(
         &req.actor_id,
         tenant_id,
         account_id,
         clears_violation_id,
         &req.reason,
-    );
+    )
+    .with_request_hash(body_hash);
     let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -612,6 +624,10 @@ pub async fn manual_run(
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/manual-run");
     let tenant_id = extract_tenant_id(&headers)?;
+    // Hash the canonical request body up front (before any field moves).
+    let body_hash = crate::api::idempotency::hash_body(
+        &serde_json::to_string(&req).unwrap_or_default(),
+    );
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -632,7 +648,9 @@ pub async fn manual_run(
 
     // Audit log entry — manual runs are operator-triggered (low
     // volume), so we always write to the audit_log table.
-    let audit = crate::api::audit_log::manual_run("manual_run", tenant_id, account_id);
+    let audit =
+        crate::api::audit_log::manual_run("manual_run", tenant_id, account_id)
+            .with_request_hash(body_hash);
     let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -684,6 +702,10 @@ pub async fn emergency_stop(
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/emergency-stop");
     let tenant_id = extract_tenant_id(&headers)?;
+    // Hash the canonical request body up front (before any field moves).
+    let body_hash = crate::api::idempotency::hash_body(
+        &serde_json::to_string(&req).unwrap_or_default(),
+    );
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -710,7 +732,8 @@ pub async fn emergency_stop(
     // Audit log entry — emergency stops are sensitive operator actions,
     // always audit (with reason + actor_id).
     let audit =
-        crate::api::audit_log::emergency_stop(&req.actor_id, tenant_id, account_id, &req.reason);
+        crate::api::audit_log::emergency_stop(&req.actor_id, tenant_id, account_id, &req.reason)
+            .with_request_hash(body_hash);
     let pg_pool = state.pg_pool.clone();
 
     let at = chrono::Utc::now();
@@ -765,6 +788,10 @@ pub async fn breach_report(
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/breach-report");
     let tenant_id = extract_tenant_id(&headers)?;
+    // Hash the canonical request body up front (before any field moves).
+    let body_hash = crate::api::idempotency::hash_body(
+        &serde_json::to_string(&req).unwrap_or_default(),
+    );
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -811,7 +838,8 @@ pub async fn breach_report(
         account_id,
         violations.len(),
         cleared_violation_ids.len(),
-    );
+    )
+    .with_request_hash(body_hash);
     let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -856,6 +884,10 @@ pub async fn evaluate_order(
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/v1/evaluate-order");
     let tenant_id = extract_tenant_id(&headers)?;
+    // Hash the canonical request body up front (before any field moves).
+    let body_hash = crate::api::idempotency::hash_body(
+        &serde_json::to_string(&req).unwrap_or_default(),
+    );
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -935,7 +967,8 @@ pub async fn evaluate_order(
         &symbol_str,
         &side_str,
         &decision_kind,
-    );
+    )
+    .with_request_hash(body_hash);
     let pg_pool = state.pg_pool.clone();
     audit.finish(pg_pool.as_ref(), None, 200).await;
 

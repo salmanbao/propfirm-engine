@@ -17,7 +17,14 @@
 //! - `POST /v1/evaluate-order` — pre-trade order evaluation
 //! - `POST /v1/rule-packs/validate` — validate a rule pack (stateless)
 //!
-//! Tower middleware layers (outer-to-inner):
+//! Tower middleware layers (outer-to-inner — outermost sees every
+//! response, including framework-level rejections like 408 timeout
+//! or 413 body-limit):
+//! - `http_request_metrics` (axum `from_fn`) — increments the
+//!   `propfirm_http_requests_total` counter with `method` + `status`
+//!   labels for EVERY response. This is the outermost layer so it
+//!   captures timeouts and body-limit rejections that bypass the
+//!   handler body.
 //! - `TraceLayer` — per-request spans with `method`, `uri`, `request_id`
 //! - `TimeoutLayer` — per-request timeout (configurable)
 //! - `CompressionLayer` — gzip/brotli response compression
@@ -30,7 +37,9 @@ use crate::api::handlers::{
     override_breach, ready, validate_rule_pack, SharedState,
 };
 use axum::{
-    extract::State,
+    extract::{Request, State},
+    middleware::{from_fn, Next},
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -43,6 +52,20 @@ use tower_http::trace::TraceLayer;
 
 /// Header name used for request id propagation.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Outermost metrics middleware — increments `propfirm_http_requests_total`
+/// with `method` + `status` labels for every response, including the
+/// framework-level rejections (body-limit 413, timeout 408, malformed
+/// routing 404) that bypass the handler body. Without this layer, the
+/// `PropfirmHighErrorRate` Grafana alert (severity: page) has nothing
+/// to query — see commit message and `src/api/metrics.rs::record_http_response`
+/// for the full history.
+async fn http_request_metrics(req: Request, next: Next) -> Response {
+    let method = req.method().to_string();
+    let resp = next.run(req).await;
+    crate::api::metrics::record_http_response(&method, resp.status().as_u16());
+    resp
+}
 
 /// Build the production router with all middleware layers.
 ///
@@ -73,13 +96,13 @@ pub async fn router_with_limits(
         .route("/swagger-ui", get(swagger_ui_handler))
         .route("/swagger-ui/", get(swagger_ui_handler));
 
-    // Layer order (outermost first):
-    //   1. SetRequestIdLayer        — generates x-request-id if absent
-    //   2. TraceLayer               — per-request span with method/uri/request_id
-    //   3. TimeoutLayer             — per-request timeout
-    //   4. CompressionLayer         — response compression
-    //   5. RequestBodyLimitLayer    — request body cap
-    //   6. PropagateRequestIdLayer  — echoes x-request-id in response
+    // Layer order (outermost first). The metrics middleware is added
+    // last (making it outermost) so it observes every response —
+    // including 408 timeouts and 413 body-limit rejections that the
+    // inner layers (TimeoutLayer, RequestBodyLimitLayer) emit without
+    // ever running the handler body. Without this placement, the
+    // `propfirm_http_requests_total{status=~"5.."}` alert would miss
+    // the framework-side failures.
     r.layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
             TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<_>| {
@@ -104,6 +127,7 @@ pub async fn router_with_limits(
         .layer(CompressionLayer::new())
         .layer(RequestBodyLimitLayer::new(body_limit_bytes))
         .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(from_fn(http_request_metrics))
         .with_state(state)
 }
 

@@ -14,6 +14,33 @@
 
 use std::time::Instant;
 
+/// Record an HTTP request counter (method + status) — called by the
+/// `http_request_metrics` axum middleware in `src/api/routes.rs`.
+///
+/// Re-introduces the `propfirm_http_requests_total` counter that was
+/// removed in commit `e431ed1` ("Remove dead propfirm_http_requests_total
+/// counter (zero callers)"). That deletion was technically correct for
+/// `src/` (no Rust code called `record_request()`), but missed that
+/// `deploy/helm/alertrules/propfirm-engine.yaml` and
+/// `deploy/helm/dashboards/propfirm-overview.json` both query this
+/// metric. The critical `PropfirmHighErrorRate` alert (severity:
+/// page) was silently dead until now.
+///
+/// This time the counter is incremented by a real middleware — not a
+/// dead function — and the middleware is the **outermost** layer so
+/// it sees every response, including the framework-level rejections
+/// (body-limit 413, timeout 408, malformed routing 404) that bypass
+/// the handler body entirely.
+#[inline]
+pub fn record_http_response(method: &str, status: u16) {
+    metrics::counter!(
+        "propfirm_http_requests_total",
+        "method" => method.to_string(),
+        "status" => status.to_string(),
+    )
+    .increment(1);
+}
+
 /// Record a per-decision-kind counter (called by `evaluate_internal_impl`).
 #[inline]
 pub fn record_decision(decision_kind: &str) {

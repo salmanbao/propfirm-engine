@@ -39,7 +39,22 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.observability.logFilter | quote }}
-          # The worker has no HTTP port — it only consumes from Redis.
+            # Pin the worker's /metrics scrape port to the value
+            # declared in `worker.metricsPort`. The worker binary
+            # reads this env var (PROPFIRM_WORKER_METRICS_PORT) in
+            # `src/bin/worker.rs`. Without this port + the Service +
+            # ServiceMonitor below, the propfirm_event_bus_*
+            # counters are emitted to a process-local recorder that
+            # Prometheus can't reach.
+            - name: PROPFIRM_WORKER_METRICS_PORT
+              value: {{ .Values.worker.metricsPort | quote }}
+          ports:
+            # Container port — only for /metrics + /health scraping.
+            # The worker has no inbound HTTP traffic from the platform
+            # backend; it only consumes from Redis Streams.
+            - name: metrics
+              containerPort: {{ .Values.worker.metricsPort }}
+              protocol: TCP
           # Liveness + readiness probes use the `propfirm-worker
           # healthcheck` subcommand, which pings Redis + verifies the
           # consumer group is registered on the request stream.

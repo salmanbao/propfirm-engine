@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `redis.ioThreads` / `redis.ioThreadsDoReads` Helm knobs (default
   `4` / `"yes"`); also wired into all `docker-compose` / `podman-compose`
   redis launch commands. Offloads socket I/O to worker threads.
+- `worker.metricsPort` Helm knob (default `8081`) + new
+  `templates/service-worker.yaml` Service (port `metrics`) + extended
+  `templates/servicemonitor.yaml` to also scrape the worker when
+  `worker.serviceMonitor.enabled = true` (default false). Previously
+  the worker started a `/metrics` HTTP server on `:8081` but the Helm
+  chart didn't declare the containerPort and had no Service /
+  ServiceMonitor for the worker — so `propfirm_event_bus_*` counters
+  were un-scrapable in production.
+- `record_http_response(method, status)` helper in `src/api/metrics.rs`
+  emitting the `propfirm_http_requests_total` counter with `method`
+  and `status` labels. Restores the metric removed in `e431ed1` and
+  reactivates the critical `PropfirmHighErrorRate` Grafana alert that
+  was silently querying a non-existent series.
 
 ### Changed
 - **Worker hot path**: `produce_response().await` + `ack().await` (two
@@ -42,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body_hash, response, expires_at` — one RT on every conflict (the
   common steady-state path). Rare expired-row case handled by a separate
   `revive_expired()` UPDATE.
+- **HTTP metrics middleware**: new `http_request_metrics` axum
+  middleware (`from_fn`) added as the **outermost** layer in
+  `src/api/routes.rs`. Increments `propfirm_http_requests_total`
+  with `method` + `status` labels for EVERY response, including the
+  framework-level rejections (408 timeout, 413 body-limit, 404
+  malformed routing) that bypass the handler body entirely. The
+  previous `record_request()` helper was removed in `e431ed1` because
+  no Rust code called it — but the Helm alert rule + dashboard still
+  queried the metric, silently breaking the `PropfirmHighErrorRate`
+  alert (severity: page). This time the counter is incremented by a
+  real middleware, not a dead function.
+- **Audit-log `request_hash`**: the 5 sensitive handlers that didn't
+  hash their request body (`override_breach`, `manual_run`,
+  `emergency_stop`, `breach_report`, `evaluate_order`) now compute
+  `hash_body(serde_json::to_string(&req))` at the top of the handler
+  (before any field move) and chain `.with_request_hash(body_hash)`
+  on the audit entry. Matches the existing pattern in
+  `evaluate_internal` / `worker_evaluate`. Disputes can now
+  byte-for-byte verify the exact request that triggered any audited
+  action, not just evaluations.
 
 ## [0.2.0] — 2026-09-30
 

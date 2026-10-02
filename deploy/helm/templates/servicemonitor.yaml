@@ -19,4 +19,33 @@ spec:
       path: {{ .Values.observability.metricsPath }}
       interval: {{ .Values.observability.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.observability.serviceMonitor.scrapeTimeout }}
+{{- end }}
+---
+{{- if and .Values.worker.enabled .Values.worker.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-worker
+  {{- if .Values.observability.serviceMonitor.namespace }}
+  namespace: {{ .Values.observability.serviceMonitor.namespace }}
+  {{- end }}
+  labels:
+    {{- include "propfirm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  selector:
+    matchLabels:
+      {{- include "propfirm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  endpoints:
+    # The worker has no inbound HTTP traffic, but it does expose a
+    # tiny `/metrics` + `/health` server on `worker.metricsPort`
+    # (see `src/bin/worker.rs` and `templates/service-worker.yaml`).
+    # Scrape that port — this is the only way Prometheus can see the
+    # `propfirm_event_bus_*` counters (consumed, produced, acked,
+    # claimed, errors, idempotency_outcomes).
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.worker.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.worker.serviceMonitor.scrapeTimeout }}
 {{- end -}}
