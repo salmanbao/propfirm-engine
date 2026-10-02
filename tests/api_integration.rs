@@ -25,6 +25,7 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt; // for collect()
+use propfirm::api::handlers::SharedState;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::presets::ftmo_phase1;
@@ -47,13 +48,13 @@ fn test_tenant_id_str() -> String {
 ///
 /// The account is returned so tests can serialize it into
 /// `account_state` — ADR-11: the server itself holds no account state.
-async fn make_state_with_account() -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
+async fn make_state_with_account() -> (SharedState, Account) {
     let plan = ftmo_phase1();
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(test_tenant_id())
         .start(chrono::Utc::now())
         .unwrap();
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
+    let state: SharedState = ServerState::with_memory().into();
     (state, account)
 }
 
@@ -86,7 +87,7 @@ async fn send(
 #[tokio::test]
 async fn p0_a_health_works() {
     let (state, _) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let tid = test_tenant_id_str();
     let (status, body) = send(app, Method::GET, "/health", None, &tid).await;
     assert_eq!(status, StatusCode::OK);
@@ -103,7 +104,7 @@ async fn p0_a_evaluate_order_returns_verdict() {
     // Before P0-A: this returned 500 "account not found" because
     // state.read().clone() discarded the seeded account.
     let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -139,7 +140,7 @@ async fn p0_a_evaluate_order_returns_verdict() {
 #[tokio::test]
 async fn p0_a_manual_run_returns_decision() {
     let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let req_body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account
@@ -170,7 +171,7 @@ async fn p0_a_breach_report_returns_violations_array() {
     // Even with no breaches, the endpoint should return 200 + empty
     // violations array — NOT 404.
     let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account
@@ -199,7 +200,7 @@ async fn p0_a_breach_report_returns_violations_array() {
 #[tokio::test]
 async fn p0_a_override_account_id_mismatch_returns_400() {
     let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let random_account = AccountId::new();
     let random_violation = propfirm::core::ids::ViolationId::new();
     let req_body = serde_json::json!({
@@ -245,7 +246,7 @@ async fn p0_b_internal_evaluate_input_hash_is_real_sha256() {
     // P0-B verification: the input_hash in the response must be a real
     // 64-char sha256 digest, not a 16-char SipHash.
     let (state, account) = make_state_with_account().await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let tick_json = serde_json::json!({
         "symbol": "EURUSD",
         "quote": {
@@ -296,7 +297,7 @@ async fn p0_a_server_state_clone_shares_underlying_store() {
         .with_tenant(TenantId::named("test"))
         .start(chrono::Utc::now())
         .unwrap();
-    let state = ServerState::with_memory();
+    let state: SharedState = ServerState::with_memory().into();
     // Clone the state — this used to discard every Arc'ed store.
     let cloned = state.clone();
     // The cloned state must still share the same idempotency backend.

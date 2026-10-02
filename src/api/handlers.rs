@@ -26,10 +26,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
-pub type SharedState = Arc<RwLock<crate::api::server::ServerState>>;
+pub type SharedState = Arc<crate::api::server::ServerState>;
 
 /// Extracts `TenantId` from the `X-Tenant-Id` header.
 ///
@@ -89,7 +88,7 @@ pub async fn health() -> &'static str {
 /// report 503 if not. In future, this should also ping the Postgres
 /// pool and Redis connection for live checks.
 pub async fn ready(State(state): State<SharedState>) -> Result<&'static str, (StatusCode, String)> {
-    let _s = state.read().await.clone();
+    let _s = state.clone();
     // Verify the backend is non-null. The trait object is always Some in
     // current code paths, so this is a placeholder for future live checks.
     Ok("ready")
@@ -145,54 +144,22 @@ pub async fn evaluate_internal(
     // pod stored a response in between, `remember` returns Replay
     // and we return the other pod's cached response.
     let tenant_id = extract_tenant_id(&headers)?;
-    let body = serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let s = state.read().await.clone();
+    let s = state.clone();
     let response = if let Some(key) = headers.get("Idempotency-Key").and_then(|v| v.to_str().ok()) {
-        // Step 1: Check first — if Replay, return cached without evaluating.
-        match s
-            .idempotency
-            .check(tenant_id, "POST /internal/v1/evaluate", key, &body)
-            .await
-        {
-            crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
-                record_idempotency_outcome("replay");
-                let cached = serde_json::from_str(&cached)
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                return Ok(Json(cached));
-            }
-            crate::api::idempotency::IdempotencyOutcome::Conflict => {
-                record_idempotency_outcome("conflict");
-                record_error("/internal/v1/evaluate", "idempotency_conflict");
-                return Err((
-                    StatusCode::CONFLICT,
-                    "Idempotency-Key was already used with a different request body".into(),
-                ));
-            }
-            crate::api::idempotency::IdempotencyOutcome::Error => {
-                record_idempotency_outcome("error");
-                record_error("/internal/v1/evaluate", "idempotency_backend_error");
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "idempotency lookup failed".into(),
-                ));
-            }
-            crate::api::idempotency::IdempotencyOutcome::Fresh => {
-                record_idempotency_outcome("fresh");
-                // Not seen yet — proceed to evaluate.
-            }
-        }
-
-        // Step 2: Evaluate (CPU cost).
+        // Optimization: use check_and_remember (single atomic Redis/PG call)
+        // instead of check → evaluate → remember (2-3 round-trips).
+        // This evaluates first, then atomically stores the response. On the
+        // rare Replay case (another pod won the race), the other pod's
+        // cached response is returned.
+        let body =
+            serde_json::to_string(&req).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
         let response = evaluate_internal_impl(tenant_id, req).await?;
         let response_str = serde_json::to_string(&response)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        // Step 3: Remember — atomic upsert. If another pod stored
-        // a response between our check and remember, we get Replay
-        // and return the other pod's cached response instead.
         match s
             .idempotency
-            .remember(
+            .check_and_remember(
                 tenant_id,
                 "POST /internal/v1/evaluate",
                 key,
@@ -202,19 +169,26 @@ pub async fn evaluate_internal(
             .await
         {
             crate::api::idempotency::IdempotencyOutcome::Replay(cached) => {
-                // Another pod won the race — return their response.
+                record_idempotency_outcome("replay");
                 serde_json::from_str(&cached)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             }
             crate::api::idempotency::IdempotencyOutcome::Conflict => {
-                // Another pod stored with a different body — 409.
+                record_idempotency_outcome("conflict");
+                record_error("/internal/v1/evaluate", "idempotency_conflict");
                 return Err((
                     StatusCode::CONFLICT,
                     "Idempotency-Key was already used with a different request body".into(),
                 ));
             }
-            crate::api::idempotency::IdempotencyOutcome::Fresh => response,
-            crate::api::idempotency::IdempotencyOutcome::Error => response,
+            crate::api::idempotency::IdempotencyOutcome::Fresh => {
+                record_idempotency_outcome("fresh");
+                response
+            }
+            crate::api::idempotency::IdempotencyOutcome::Error => {
+                record_idempotency_outcome("error");
+                response
+            }
         }
     } else {
         evaluate_internal_impl(tenant_id, req).await?
@@ -589,7 +563,7 @@ pub async fn override_breach(
         clears_violation_id,
         &req.reason,
     );
-    let pg_pool = state.read().await.pg_pool.clone();
+    let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -659,7 +633,7 @@ pub async fn manual_run(
     // Audit log entry — manual runs are operator-triggered (low
     // volume), so we always write to the audit_log table.
     let audit = crate::api::audit_log::manual_run("manual_run", tenant_id, account_id);
-    let pg_pool = state.read().await.pg_pool.clone();
+    let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -737,7 +711,7 @@ pub async fn emergency_stop(
     // always audit (with reason + actor_id).
     let audit =
         crate::api::audit_log::emergency_stop(&req.actor_id, tenant_id, account_id, &req.reason);
-    let pg_pool = state.read().await.pg_pool.clone();
+    let pg_pool = state.pg_pool.clone();
 
     let at = chrono::Utc::now();
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -838,7 +812,7 @@ pub async fn breach_report(
         violations.len(),
         cleared_violation_ids.len(),
     );
-    let pg_pool = state.read().await.pg_pool.clone();
+    let pg_pool = state.pg_pool.clone();
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -962,7 +936,7 @@ pub async fn evaluate_order(
         &side_str,
         &decision_kind,
     );
-    let pg_pool = state.read().await.pg_pool.clone();
+    let pg_pool = state.pg_pool.clone();
     audit.finish(pg_pool.as_ref(), None, 200).await;
 
     Ok(Json(EvaluateOrderResponse {

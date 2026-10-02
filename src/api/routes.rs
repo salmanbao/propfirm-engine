@@ -45,10 +45,15 @@ use tower_http::trace::TraceLayer;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Build the production router with all middleware layers.
-pub async fn router(state: SharedState) -> Router {
-    let body_limit_bytes = 2 * 1024 * 1024; // 2 MiB default
-    let request_timeout = Duration::from_secs(30);
-
+///
+/// `body_limit_bytes` and `request_timeout` come from the caller
+/// (typically `ServerState` or `Settings`) so they're configurable
+/// instead of hard-coded.
+pub async fn router_with_limits(
+    state: SharedState,
+    body_limit_bytes: usize,
+    request_timeout: Duration,
+) -> Router {
     let r = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -111,7 +116,7 @@ pub async fn router(state: SharedState) -> Router {
 pub async fn metrics_handler(
     State(state): State<SharedState>,
 ) -> Result<String, (axum::http::StatusCode, String)> {
-    let s = state.read().await;
+    let s = &state;
     Ok(s.metrics_handle.render())
 }
 
@@ -150,3 +155,9 @@ const SWAGGER_UI_HTML: &str = r#"<!DOCTYPE html>
   </script>
 </body>
 </html>"#;
+
+/// Backwards-compatible router builder that uses default limits.
+/// Calls `router_with_limits` with the hard-coded defaults (2 MiB, 30s).
+pub async fn router(state: SharedState) -> Router {
+    router_with_limits(state, 2 * 1024 * 1024, Duration::from_secs(30)).await
+}

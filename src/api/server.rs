@@ -27,7 +27,6 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 /// Shared server state.
@@ -291,8 +290,13 @@ pub async fn run_server(settings: Settings) -> Result<(), anyhow::Error> {
     // via OnceLock).
     let metrics_handle = default_metrics_handle();
     let state = build_state(&settings, metrics_handle).await?;
-    let shared: SharedState = Arc::new(RwLock::new(state));
-    let app = crate::api::routes::router(shared).await;
+    let shared: SharedState = Arc::new(state);
+    let app = crate::api::routes::router_with_limits(
+        shared,
+        settings.server.max_body_bytes,
+        settings.request_timeout(),
+    )
+    .await;
 
     // Pick TLS or plain.
     let tls_config = load_tls_config(&settings.server.tls).await?;

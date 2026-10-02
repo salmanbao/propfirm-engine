@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use chrono::Datelike;
 use http_body_util::BodyExt;
+use propfirm::api::handlers::SharedState;
 use propfirm::api::routes::router;
 use propfirm::api::server::ServerState;
 use propfirm::config::plan::LossReference;
@@ -40,7 +41,7 @@ fn test_tenant_id_str() -> String {
 ///
 /// ADR-11: the server holds no account state — the account is returned
 /// for the caller to serialize into `account_state`.
-async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, Account) {
+async fn make_state_at(equity: i64) -> (SharedState, Account) {
     let plan = ftmo_phase1(); // 10k static max loss: breach below 9k equity
     let mut account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("test-tenant"))
@@ -48,7 +49,7 @@ async fn make_state_at(equity: i64) -> (Arc<tokio::sync::RwLock<ServerState>>, A
         .unwrap();
     account.equity = Money::new(rust_decimal::Decimal::new(equity, 0));
     account.balance = account.equity;
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
+    let state: SharedState = ServerState::with_memory().into();
     (state, account)
 }
 
@@ -117,7 +118,7 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
     // pack — a breach IF the equity is trusted. With `estimated`
     // provenance the breach-capable rule downgrades to Warn.
     let (state, account) = make_state_at(8000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let (status, body) = send(
         app,
         Method::POST,
@@ -135,7 +136,7 @@ async fn p0_5_estimated_equity_cannot_terminate_via_endpoint() {
 #[tokio::test]
 async fn p0_5_missing_equity_source_defaults_to_estimated() {
     let (state, account) = make_state_at(8000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     // No equity_source field at all — must default to the safe option.
     let (status, body) = send(
         app,
@@ -154,7 +155,7 @@ async fn p0_5_missing_equity_source_defaults_to_estimated() {
 #[tokio::test]
 async fn p0_5_broker_reported_equity_can_terminate_via_endpoint() {
     let (state, account) = make_state_at(8000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let (status, body) = send(
         app,
         Method::POST,
@@ -175,7 +176,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
     // entry on a plan that forbids it. Simpler: use the plan's own
     // weekend_holding_allowed = false and submit an order on Saturday.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     // Saturday timestamp.
     let sat = chrono::Utc::now();
     let days_to_sat = (5 + 7 - sat.weekday().num_days_from_monday()) % 7;
@@ -210,7 +211,7 @@ async fn p0_6_open_position_in_overnight_window_produces_violation() {
 #[tokio::test]
 async fn p0_8_same_key_same_body_replays_first_response() {
     let (state, account) = make_state_at(9500).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = evaluate_body(&account, Some("broker_reported"));
     let headers = [("Idempotency-Key", "eval-key-1")];
     let (s1, b1) = send_with_headers(
@@ -240,7 +241,7 @@ async fn p0_8_same_key_same_body_replays_first_response() {
 #[tokio::test]
 async fn p0_8_same_key_conflicting_body_returns_409() {
     let (state, account) = make_state_at(9500).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let headers = [("Idempotency-Key", "eval-key-2")];
     let body_a = evaluate_body(&account, Some("broker_reported"));
     let body_b = evaluate_body(&account, Some("estimated")); // conflicting
@@ -275,7 +276,7 @@ async fn p0_8_mutation_is_not_double_applied() {
     // second identical request must return the identical (replayed)
     // response, proving no double-apply path ran.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let order_body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -328,7 +329,7 @@ async fn p2_bridge_tick_v1_broker_reported_equity_can_terminate() {
     // plan that is a breach — and because bridge.tick is broker-attested
     // the equity source defaults to BrokerReported automatically.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let broker_time = chrono::Utc::now().timestamp_millis();
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -369,7 +370,7 @@ async fn p2_bridge_tick_v1_positions_flow_through() {
     // context by using a plan that forbids overnight holding and an open
     // position over the weekend.
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let sat = chrono::Utc::now();
     let days_to_sat = (5 + 7 - sat.weekday().num_days_from_monday()) % 7;
     let saturday = sat + chrono::Duration::days(i64::from(days_to_sat));
@@ -419,7 +420,7 @@ async fn p2_bridge_tick_v1_positions_flow_through() {
 #[tokio::test]
 async fn p1_concurrent_evaluate_and_override_do_not_deadlock() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
 
     let evaluate_body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -509,8 +510,8 @@ async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
     let plan = ftmo_phase1()
         .with_loss_reference(LossReference::Trailing)
         .with_total_dd(Pct(dec!(0.05)));
-    let state = Arc::new(tokio::sync::RwLock::new(ServerState::with_memory()));
-    let app = router(state).await;
+    let state: SharedState = ServerState::with_memory().into();
+    let app = router(state.clone()).await;
 
     let mut account = Account::new(AccountId::new(), plan)
         .with_tenant(test_tenant_id())
@@ -589,7 +590,7 @@ async fn p2_two_calls_chain_peak_equity_into_trailing_breach() {
 #[tokio::test]
 async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
 
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -621,7 +622,7 @@ async fn p2_gap_flagged_is_distinct_in_evaluate_response() {
 #[tokio::test]
 async fn evaluate_order_missing_account_state_returns_400() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "symbol": "EURUSD",
@@ -637,7 +638,7 @@ async fn evaluate_order_missing_account_state_returns_400() {
 #[tokio::test]
 async fn evaluate_order_account_id_mismatch_returns_400() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let mut mismatched = account.clone();
     mismatched.id = AccountId::new();
     let body = serde_json::json!({
@@ -662,7 +663,7 @@ async fn evaluate_order_uses_account_plan_not_startup_plan() {
     // position. evaluate_order must reject the new order using the account's
     // plan, not the startup plan.
     let (state, _) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let tight_plan = ChallengePlan {
         max_open_positions: Some(1),
         max_loss_reference: LossReference::Static,
@@ -710,7 +711,7 @@ async fn evaluate_order_same_server_different_plans_produce_different_verdicts()
     use propfirm::config::plan::{ChallengePlan, LossReference};
     use propfirm::core::types::Pct;
     let (state, _) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
 
     let hedging_plan = ChallengePlan {
         hedging_allowed: false,
@@ -792,7 +793,7 @@ async fn evaluate_order_same_server_different_plans_produce_different_verdicts()
 #[tokio::test]
 async fn evaluate_internal_applies_target_hit_transition() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = propfirm::core::account::AccountStatus::Active;
     account.equity = Money::new(dec!(11_000));
     account.balance = Money::new(dec!(11_000));
@@ -826,7 +827,7 @@ async fn evaluate_internal_applies_target_hit_transition() {
 #[tokio::test]
 async fn evaluate_order_returns_not_evaluated_for_terminal_account() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = propfirm::core::account::AccountStatus::Failed;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -848,7 +849,7 @@ async fn evaluate_order_returns_not_evaluated_for_terminal_account() {
 #[tokio::test]
 async fn evaluate_internal_rejects_cross_tenant_request() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -884,7 +885,7 @@ async fn evaluate_internal_rejects_cross_tenant_request() {
 #[tokio::test]
 async fn override_breach_rejects_active_account() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let violation_id = propfirm::core::ids::ViolationId::new();
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -919,7 +920,7 @@ async fn override_breach_rejects_active_account() {
 #[tokio::test]
 async fn override_requires_violation_field() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -939,7 +940,7 @@ async fn override_requires_violation_field() {
 #[tokio::test]
 async fn breach_report_returns_violations_from_state() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let violation = propfirm::core::violation::Violation {
         id: propfirm::core::ids::ViolationId::new(),
@@ -1004,7 +1005,7 @@ async fn promotion_parity_evaluate_and_pipeline_agree() {
         .expect("pipeline must process");
 
     let (state, _) = make_state_at(9500).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -1060,7 +1061,7 @@ async fn post_promotion_state_is_usable_on_next_evaluate() {
     account.balance = Money::new(dec!(10_500));
 
     let (state, _) = make_state_at(10500).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -1145,7 +1146,7 @@ async fn promotion_continues_into_new_phase_rules() {
     account.balance = Money::new(dec!(10_500));
 
     let (state, _app) = make_state_at(10500).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
         "account_state": account,
@@ -1229,7 +1230,7 @@ async fn evaluate_skips_non_evaluable_status() {
         AccountStatus::EmergencyStopped,
     ] {
         let (state, mut account) = make_state_at(10000).await;
-        let app = router(state).await;
+        let app = router(state.clone()).await;
         account.status = status;
         let body = serde_json::json!({
             "account_id": account.id.to_string(),
@@ -1271,7 +1272,7 @@ async fn evaluate_order_returns_200_for_non_evaluable_status() {
         AccountStatus::EmergencyStopped,
     ] {
         let (state, mut account) = make_state_at(10000).await;
-        let app = router(state).await;
+        let app = router(state.clone()).await;
         account.status = status;
         let body = serde_json::json!({
             "account_id": account.id.to_string(),
@@ -1308,7 +1309,7 @@ async fn manual_run_returns_200_for_non_evaluable_status() {
         AccountStatus::EmergencyStopped,
     ] {
         let (state, mut account) = make_state_at(10000).await;
-        let app = router(state).await;
+        let app = router(state.clone()).await;
         account.status = status;
         let body = serde_json::json!({
             "account_id": account.id.to_string(),
@@ -1329,7 +1330,7 @@ async fn manual_run_returns_200_for_non_evaluable_status() {
 #[tokio::test]
 async fn emergency_stop_on_already_stopped_account_is_idempotent() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::EmergencyStopped;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -1350,7 +1351,7 @@ async fn emergency_stop_on_already_stopped_account_is_idempotent() {
 #[tokio::test]
 async fn evaluate_returns_structured_violation_details() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.equity = Money::new(dec!(8_500));
     account.balance = Money::new(dec!(8_500));
     let body = serde_json::json!({
@@ -1390,7 +1391,7 @@ async fn evaluate_returns_structured_violation_details() {
 #[tokio::test]
 async fn override_rejects_random_violation_uuid() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let body = serde_json::json!({
         "account_id": account.id.to_string(),
@@ -1425,7 +1426,7 @@ async fn override_rejects_random_violation_uuid() {
 #[tokio::test]
 async fn override_rejects_wrong_account_violation() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let wrong_account_id = AccountId::new().to_string();
     let violation_id = propfirm::core::ids::ViolationId::new().to_string();
@@ -1462,7 +1463,7 @@ async fn override_rejects_wrong_account_violation() {
 #[tokio::test]
 async fn override_rejects_wrong_tenant_violation() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let violation_id = propfirm::core::ids::ViolationId::new().to_string();
     let body = serde_json::json!({
@@ -1498,7 +1499,7 @@ async fn override_rejects_wrong_tenant_violation() {
 #[tokio::test]
 async fn override_rejects_non_terminating_violation() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let violation_id = propfirm::core::ids::ViolationId::new().to_string();
     let body = serde_json::json!({
@@ -1534,7 +1535,7 @@ async fn override_rejects_non_terminating_violation() {
 #[tokio::test]
 async fn breach_report_returns_historical_violations_even_when_equity_recovered() {
     let (state, mut account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     account.status = AccountStatus::Failed;
     let violation = propfirm::core::violation::Violation {
         id: propfirm::core::ids::ViolationId::new(),
@@ -1568,7 +1569,7 @@ async fn breach_report_returns_historical_violations_even_when_equity_recovered(
 #[tokio::test]
 async fn breach_report_rejects_other_tenant_violation() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let violation = propfirm::core::violation::Violation {
         id: propfirm::core::ids::ViolationId::new(),
         account_id: account.id,
@@ -1601,7 +1602,7 @@ async fn breach_report_rejects_other_tenant_violation() {
 #[tokio::test]
 async fn all_handlers_enforce_tenant_on_account_state() {
     let (state, account) = make_state_at(10000).await;
-    let app = router(state).await;
+    let app = router(state.clone()).await;
     let mut other_account = account.clone();
     other_account.tenant_id = TenantId::named("other-tenant");
     let other_account_json = serde_json::to_string(&other_account).unwrap();
