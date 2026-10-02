@@ -288,7 +288,7 @@ async fn evaluate_internal_impl(
     } else {
         crate::rulepack::RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan)
     };
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
 
     // P2: cross-account reference trades (same for both shapes).
     let cross_ref_account_id = AccountId::from_uuid(Uuid::new_v4());
@@ -591,7 +591,7 @@ pub async fn override_breach(
     );
     let pg_pool = state.read().await.pg_pool.clone();
 
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
@@ -661,7 +661,7 @@ pub async fn manual_run(
     let audit = crate::api::audit_log::manual_run("manual_run", tenant_id, account_id);
     let pg_pool = state.read().await.pg_pool.clone();
 
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
@@ -740,7 +740,7 @@ pub async fn emergency_stop(
     let pg_pool = state.read().await.pg_pool.clone();
 
     let at = chrono::Utc::now();
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
@@ -840,7 +840,7 @@ pub async fn breach_report(
     );
     let pg_pool = state.read().await.pg_pool.clone();
 
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();
@@ -930,7 +930,7 @@ pub async fn evaluate_order(
         avg_fill_price: None,
     };
 
-    let registry = crate::rules::registry::RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
         crate::engine::evaluator::Evaluator::with_registry(registry).for_account(account_id);
     let notifier = crate::notifications::log::LogNotifier::new();

@@ -155,6 +155,28 @@ impl RuleReport {
         }
     }
 
+    /// Like [`new`](Self::new) but accepts an explicit timestamp.
+    /// Use when the caller has already computed `chrono::Utc::now()`
+    /// (e.g., `RuleRegistry::evaluate` hoists it out of the per-rule loop).
+    #[must_use]
+    pub fn new_at(
+        rule_id: crate::core::ids::RuleId,
+        rule_name: impl Into<String>,
+        verdict: RuleVerdict,
+        scope: EvaluationScope,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        RuleReport {
+            rule_id,
+            rule_name: rule_name.into(),
+            verdict,
+            scope,
+            priority: 100,
+            evaluated_at: at,
+            metadata: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn with_priority(mut self, p: u32) -> Self {
         self.priority = p;

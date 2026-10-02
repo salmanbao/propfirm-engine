@@ -101,6 +101,7 @@ pub mod override_engine;
 pub mod payout;
 pub mod persistence;
 pub mod pure;
+pub mod registry_cache;
 pub mod reporting;
 pub mod risk;
 pub mod rulepack;

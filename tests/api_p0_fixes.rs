@@ -996,7 +996,7 @@ async fn promotion_parity_evaluate_and_pipeline_agree() {
     account.balance = Money::new(dec!(9_500));
 
     let registry = RuleRegistry::with_default_rules_for_plan(&account.plan);
-    let evaluator = Evaluator::with_registry(registry).for_account(account.id);
+    let evaluator = Evaluator::with_registry(std::sync::Arc::new(registry)).for_account(account.id);
     let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
     let pipeline_result = pipeline
         .process(account.clone(), PipelineEvent::OnDemand)

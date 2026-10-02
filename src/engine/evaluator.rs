@@ -10,12 +10,13 @@ use crate::core::trade::Trade;
 use crate::rules::context::{RuleContext, RuleContextKind};
 use crate::rules::registry::RuleRegistry;
 use crate::rules::traits::RuleReport;
+use std::sync::Arc;
 
 /// The evaluator combines a registry with the challenge plan and produces
 /// rule reports and decisions.
 #[derive(Clone)]
 pub struct Evaluator {
-    pub registry: RuleRegistry,
+    pub registry: Arc<RuleRegistry>,
     account_id: AccountId,
 }
 
@@ -38,14 +39,18 @@ impl Evaluator {
     #[must_use]
     pub fn new(plan: &crate::config::plan::ChallengePlan) -> Self {
         Evaluator {
-            registry: RuleRegistry::with_default_rules_for_plan(plan),
+            registry: Arc::new(RuleRegistry::with_default_rules_for_plan(plan)),
             account_id: AccountId::new(),
         }
     }
 
     /// Constructs an evaluator with a custom registry.
+    ///
+    /// Accepts `Arc<RuleRegistry>` to enable per-plan caching via
+    /// [`crate::registry_cache::get_or_build`]. The Arc is cloned
+    /// cheaply (no deep copy).
     #[must_use]
-    pub fn with_registry(registry: RuleRegistry) -> Self {
+    pub fn with_registry(registry: Arc<RuleRegistry>) -> Self {
         Evaluator {
             registry,
             account_id: AccountId::new(),

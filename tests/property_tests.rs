@@ -140,8 +140,8 @@ proptest! {
         reg_b.register(Arc::new(max_drawdown::MaxDrawdownRule::default()));
         reg_b.register(Arc::new(daily_drawdown::DailyDrawdownRule::default()));
 
-        let evaluator_a = Evaluator::with_registry(reg_a);
-        let evaluator_b = Evaluator::with_registry(reg_b);
+        let evaluator_a = Evaluator::with_registry(std::sync::Arc::new(reg_a));
+        let evaluator_b = Evaluator::with_registry(std::sync::Arc::new(reg_b));
         let decision_a = eval_tick(&evaluator_a, &account);
         let decision_b = eval_tick(&evaluator_b, &account);
         prop_assert_eq!(decision_a.kind, decision_b.kind,

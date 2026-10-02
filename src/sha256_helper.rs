@@ -27,15 +27,23 @@ impl Sha256Hasher {
     }
 
     /// Consume the hasher and return the full 64-char lowercase hex digest.
+    ///
+    /// Optimization: uses a stack buffer + manual nibble lookup instead
+    /// of 32 × `format!("{b:02x}")` (which allocates a temporary String
+    /// per byte). This saves 32 small heap allocations per evaluation.
     #[must_use]
     pub fn finalize_hex(self) -> String {
         let bytes = self.0.finalize();
-        let mut s = String::with_capacity(64 + 7); // "sha256:" + 64
-        s.push_str("sha256:");
-        for b in bytes {
-            s.push_str(&format!("{b:02x}"));
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut buf = [0u8; 71]; // "sha256:" (7) + 64 hex chars
+        buf[..7].copy_from_slice(b"sha256:");
+        for (i, &b) in bytes.iter().enumerate() {
+            let pos = 7 + i * 2;
+            buf[pos] = HEX[(b >> 4) as usize];
+            buf[pos + 1] = HEX[(b & 0x0f) as usize];
         }
-        s
+        // SAFETY: hex chars are all valid ASCII/UTF-8.
+        String::from_utf8(buf.to_vec()).expect("hex output is valid UTF-8")
     }
 }
 

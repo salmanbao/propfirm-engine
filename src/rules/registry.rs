@@ -389,6 +389,12 @@ impl RuleRegistry {
     /// everyone's evaluation.
     pub fn evaluate(&self, ctx: &RuleContext) -> crate::Result<Vec<RuleReport>> {
         let mut reports = Vec::with_capacity(self.rules.len());
+        // Optimization: hoist timestamp + kind string out of the per-rule
+        // loop. Previously each RuleReport::new called chrono::Utc::now()
+        // (a clock_gettime syscall) per rule — up to 25 syscalls per eval.
+        // Now we call it once and pass it in.
+        let now = chrono::Utc::now();
+        let kind_str = ctx.kind.to_string();
         for rule in &self.rules {
             if !rule.is_enabled(ctx) {
                 continue;
@@ -454,12 +460,12 @@ impl RuleRegistry {
                     Self::failure_verdict(rule, base)
                 }
             };
-            let mut report = RuleReport::new(rule.id(), rule.name(), verdict, scope);
+            let mut report = RuleReport::new_at(rule.id(), rule.name(), verdict, scope, now);
             // P0-4: stamp each report with the rule's declared priority so
             // Decision::from_reports can pick the winner deterministically
             // rather than by iteration order.
             report = report.with_priority(rule.priority());
-            report = report.with_metadata("kind", ctx.kind.to_string());
+            report = report.with_metadata("kind", kind_str.clone());
             reports.push(report);
         }
         Ok(reports)

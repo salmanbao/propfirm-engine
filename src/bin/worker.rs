@@ -569,7 +569,7 @@ async fn parse_and_evaluate(
     };
 
     let pack = RulePack::synthetic_from_plan(account_id, tenant_id, &acc.plan);
-    let registry = RuleRegistry::with_default_rules_for_plan(&acc.plan);
+    let registry = propfirm::registry_cache::get_or_build(&acc.plan);
 
     // Parse positions and trades from the wire shape.
     let mut positions = Vec::new();

@@ -169,16 +169,20 @@ impl Decision {
     #[must_use]
     pub fn from_reports(reports: &[RuleReport]) -> Self {
         // Collect all violations for the breach-report endpoint.
-        let mut all_violations: Vec<Violation> = Vec::new();
-        // Categorize reports by verdict kind.
-        let mut emergencies: Vec<(u32, Violation)> = Vec::new();
-        let mut liquidates: Vec<(u32, Violation)> = Vec::new();
-        let mut fails: Vec<(u32, Violation)> = Vec::new();
-        let mut soft_fails: Vec<(u32, Violation)> = Vec::new();
-        let mut target_hits: Vec<(u32, Violation)> = Vec::new();
-        let mut early_warnings: Vec<(u32, Violation)> = Vec::new();
-        let mut gap_flagged: Vec<(u32, Violation)> = Vec::new();
-        let mut warnings: Vec<(u32, Violation)> = Vec::new();
+        // Optimization: pre-size all Vecs to avoid dynamic growth
+        // allocations. In the common case (Pass verdict for most rules),
+        // most of these stay empty; pre-sizing to reports.len() is
+        // conservative but avoids the 0→4→8→... growth pattern.
+        let cap = reports.len();
+        let mut all_violations: Vec<Violation> = Vec::with_capacity(cap);
+        let mut emergencies: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut liquidates: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut fails: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut soft_fails: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut target_hits: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut early_warnings: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut gap_flagged: Vec<(u32, Violation)> = Vec::with_capacity(cap);
+        let mut warnings: Vec<(u32, Violation)> = Vec::with_capacity(cap);
 
         for r in reports {
             let prio = r.priority;

@@ -121,9 +121,9 @@ impl ServerState {
         &self,
     ) -> crate::engine::pipeline::Pipeline<crate::notifications::log::LogNotifier> {
         crate::engine::pipeline::Pipeline::new(
-            crate::engine::evaluator::Evaluator::with_registry(
+            crate::engine::evaluator::Evaluator::with_registry(std::sync::Arc::new(
                 crate::rules::registry::RuleRegistry::with_default_rules(),
-            ),
+            )),
             self.notifier.clone(),
         )
     }
