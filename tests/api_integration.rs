@@ -33,7 +33,6 @@ use propfirm::core::account::Account;
 use propfirm::core::ids::AccountId;
 
 use propfirm::tenant::TenantId;
-use std::sync::Arc;
 use tower::ServiceExt;
 
 fn test_tenant_id() -> TenantId {

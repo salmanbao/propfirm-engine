@@ -26,7 +26,6 @@ use propfirm::core::position::{Position, PositionSide};
 use propfirm::core::types::{dec, Money, Pct, Price, Quantity, Symbol};
 
 use propfirm::tenant::TenantId;
-use std::sync::Arc;
 use tower::ServiceExt;
 
 fn test_tenant_id() -> TenantId {

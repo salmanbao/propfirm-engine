@@ -6,7 +6,7 @@
 //! ~1,000 accounts, i.e. ~17 evaluations/second sustained. Run with
 //! `cargo bench` to verify the engine can keep up.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use propfirm::config::plan::LossReference;
 use propfirm::config::presets::ftmo_phase1;
 use propfirm::core::account::Account;
@@ -31,7 +31,7 @@ fn evaluate_tick_bench(c: &mut Criterion) {
     );
     c.bench_function("evaluate_tick_single", |b| {
         b.iter(|| {
-            let _ = black_box(
+            let _ = std::hint::black_box(
                 evaluator
                     .evaluate_tick(&account, &tick, &[], &[], Vec::new())
                     .unwrap(),
@@ -63,7 +63,7 @@ fn evaluate_order_bench(c: &mut Criterion) {
     };
     c.bench_function("evaluate_order_single", |b| {
         b.iter(|| {
-            let _ = black_box(
+            let _ = std::hint::black_box(
                 evaluator
                     .evaluate_order(&account, &order, &[], &[], Vec::new())
                     .unwrap(),
@@ -112,7 +112,7 @@ fn realistic_load_bench(c: &mut Criterion) {
                             _ => 1,
                         };
                     }
-                    black_box(total_decisions);
+                    std::hint::black_box(total_decisions);
                 });
             },
         );
@@ -154,7 +154,7 @@ fn pure_evaluate_bench(c: &mut Criterion) {
     let server_time = propfirm::core::types::ServerTime::now();
     c.bench_function("pure_evaluate", |b| {
         b.iter(|| {
-            let _ = black_box(
+            let _ = std::hint::black_box(
                 propfirm::pure::evaluate(
                     &account,
                     &pack,
