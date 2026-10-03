@@ -88,6 +88,14 @@ pub enum ViolationKind {
     MissingStopLoss,
     /// Take-profit not set on order.
     MissingTakeProfit,
+    /// **P3 fix**: cross-account hedging detected — open position on
+    /// the current account is hedged by an opposing fill on a sibling
+    /// account under the same tenant. HyroTrader's
+    /// `no_cross_account_hedging` restriction.
+    CrossAccountHedging,
+    /// **P3 fix**: low-capitalisation asset exposure cap exceeded.
+    /// HyroTrader's `lowcap_exposure_5pct` restriction.
+    LowcapExposure,
     /// Custom rule violation.
     Custom,
 }
@@ -95,10 +103,11 @@ pub enum ViolationKind {
 impl std::fmt::Display for ViolationKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use ViolationKind::{
-            Consistency, Cooldown, CopyTrading, Custom, DailyDrawdown, GridTrading, Hedging,
-            MaxDailyTrades, MaxDrawdown, MaxLotSize, MaxOpenPositions, MaxPositionSize,
-            MinProfitableDays, MinTradingDays, MissingStopLoss, MissingTakeProfit, NewsTrading,
-            OvernightHolding, ProfitTargetMissed, TimeLimit, TrailingDrawdown, WeekendHolding,
+            Consistency, Cooldown, CopyTrading, CrossAccountHedging, Custom, DailyDrawdown,
+            GridTrading, Hedging, LowcapExposure, MaxDailyTrades, MaxDrawdown, MaxLotSize,
+            MaxOpenPositions, MaxPositionSize, MinProfitableDays, MinTradingDays, MissingStopLoss,
+            MissingTakeProfit, NewsTrading, OvernightHolding, ProfitTargetMissed, TimeLimit,
+            TrailingDrawdown, WeekendHolding,
         };
         let s = match self {
             DailyDrawdown => "daily_drawdown",
@@ -122,6 +131,8 @@ impl std::fmt::Display for ViolationKind {
             CopyTrading => "copy_trading",
             MissingStopLoss => "missing_stop_loss",
             MissingTakeProfit => "missing_take_profit",
+            CrossAccountHedging => "cross_account_hedging",
+            LowcapExposure => "lowcap_exposure",
             Custom => "custom",
         };
         write!(f, "{s}")

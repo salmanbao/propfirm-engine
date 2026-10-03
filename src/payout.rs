@@ -72,6 +72,23 @@ pub struct PayoutConfig {
     pub cycle: PayoutCycle,
     /// Scaling plan tiers (80 → 90 → 100 by payout count).
     pub tiers: Vec<SplitTier>,
+    /// **P4 fix (TopStep payout qualifying days)**: requires N winning
+    /// days of at least $X each before a payout is approved. `None` =
+    /// no qualifying-day requirement. TopStep's Trading Combine
+    /// requires 5 winning days of at least $150 each. Distinct from
+    /// the `min_profitable_days` plan field (which is an evaluation
+    /// pass/fail condition, not a payout condition).
+    #[serde(default)]
+    pub qualifying_days: Option<QualifyingDaysConfig>,
+}
+
+/// Configuration for TopStep-style payout qualifying days.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QualifyingDaysConfig {
+    /// Minimum number of winning days required.
+    pub min_days: u32,
+    /// Minimum P&L per winning day (e.g. $150 for TopStep).
+    pub min_pnl_per_day: Money,
 }
 
 impl Default for PayoutConfig {
@@ -92,6 +109,7 @@ impl Default for PayoutConfig {
                     trader_share: crate::core::types::dec!(1.00),
                 },
             ],
+            qualifying_days: None,
         }
     }
 }

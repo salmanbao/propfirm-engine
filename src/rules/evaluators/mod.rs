@@ -12,11 +12,13 @@
 pub mod consistency;
 pub mod cooldown;
 pub mod copy_trading;
+pub mod cross_account_hedging; // P3 fix: no_cross_account_hedging restriction.
 pub mod daily_drawdown;
 pub mod grid_trading;
 pub mod hedging;
 pub mod hft_scalping; // P2.15 fix.
 pub mod inactivity; // P1.4/P1.5 fix: inactivity termination.
+pub mod lowcap_exposure; // P3 fix: lowcap_exposure_5pct restriction.
 pub mod max_daily_trades;
 pub mod max_drawdown;
 pub mod max_open_positions;

@@ -424,6 +424,34 @@ pub struct ChallengePlan {
     /// (which counts any day with at least one trade, regardless of
     /// P&L). `None` = rule disabled. Used by FundingPips Zero (7).
     pub min_profitable_days: Option<u32>,
+    /// **P3 fix**: when `true`, the `no_cross_account_hedging`
+    /// restriction is enforced — the engine's new
+    /// `CrossAccountHedgingRule` consumes the
+    /// `cross_account_reference_trades` seam in `pure.rs` and flags
+    /// any open position on the current account that's hedged by an
+    /// opposing position on a sibling (other) account. Used by
+    /// HyroTrader (all 4 plans). Default `false`.
+    pub cross_account_hedging_prohibited: bool,
+    /// **P3 fix**: cap on exposure to low-capitalisation instruments,
+    /// as a percentage of account balance. `None` = no cap. Used by
+    /// HyroTrader (5%). Requires the instrument registry to mark
+    /// instruments as low-cap via `Instrument::is_lowcap`.
+    pub lowcap_exposure_limit_pct: Option<Pct>,
+    /// **P4 fix**: when `true`, the consistency rule (`ConsistencyRule`)
+    /// keeps applying on the funded stage, not just during evaluation.
+    /// Most firms drop consistency after evaluation; The5%ers 1-Step
+    /// doesn't. Default `false`.
+    pub consistency_applies_on_funded_stage: bool,
+    /// **P4 fix (HyroTrader "qualifying trading day")**: a trade of at
+    /// least this percentage of `initial_balance` is required for a
+    /// day to count toward `min_trading_days`. `None` = any trade-day
+    /// counts (the existing behavior). Used by HyroTrader (5%).
+    pub qualifying_day_threshold_pct: Option<Pct>,
+    /// **P4 fix (HyroTrader "qualifying trading day")**: a day's net
+    /// P&L must be beyond ±this percentage of `initial_balance` to
+    /// count as a "qualifying" day. `None` = no P&L band check.
+    /// Used by HyroTrader (1%).
+    pub qualifying_day_pnl_band_pct: Option<Pct>,
     /// **§D.2 fix**: payout policy — minimum payout, cycle, scaling
     /// tiers. `None` means the tenant has not configured payouts (the
     /// payout endpoints are inert for this plan).
@@ -713,6 +741,15 @@ impl Default for ChallengePlan {
             // P1#6: default None — min_profitable_days is an opt-in for
             // FundingPips Zero (7).
             min_profitable_days: None,
+            // P3: defaults — both restriction flags are opt-in.
+            cross_account_hedging_prohibited: false,
+            lowcap_exposure_limit_pct: None,
+            // P4: default false — most firms drop consistency after eval.
+            consistency_applies_on_funded_stage: false,
+            // P4: default None — HyroTrader's "qualifying trading day"
+            // definition is opt-in.
+            qualifying_day_threshold_pct: None,
+            qualifying_day_pnl_band_pct: None,
             payout_config: Some(crate::payout::PayoutConfig::default()),
         }
     }

@@ -97,8 +97,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Account::profitable_days_count` field — count of profitable
   trading days, incremented at `EvaluationState::rollover_day` when
   `today_realized_pnl > 0`. Used by the new `MinProfitableDaysRule`.
+- `Account::qualifying_trading_days_count` field (P4) — count of
+  days that met HyroTrader's "qualifying trading day" definition
+  (trade ≥5% of initial balance with P&L beyond ±1%). When the plan
+  sets `qualifying_day_threshold_pct` / `qualifying_day_pnl_band_pct`,
+  `MinTradingDaysRule` uses this counter instead of `active_trading_days`.
 - `ViolationKind::MinProfitableDays` variant for the new rule's
   violation category.
+- `ViolationKind::CrossAccountHedging` + `ViolationKind::LowcapExposure`
+  variants for the two new P3 restriction rules.
+- `CrossAccountHedgingRule` (P3) — consumes the existing
+  `cross_account_reference_trades` seam in `pure.rs` and flags any
+  open position on the current account that's hedged by an opposing
+  fill on a sibling account. HyroTrader's `no_cross_account_hedging`
+  restriction.
+- `LowcapExposureRule` (P3) — caps total notional exposure to
+  low-capitalisation instruments at X% of account balance. HyroTrader's
+  `lowcap_exposure_5pct` restriction. Requires instruments to be marked
+  `is_lowcap = true` in the registry (new `InstrumentSpec::is_lowcap`
+  field).
+- `InstrumentSpec::is_lowcap` field (P3) — false for all FX majors;
+  the platform backend sets it to `true` for low-cap crypto assets.
+- P2 preset sweep — 23 new preset functions covering the 6 missing
+  firms + TopStep 100K/150K size variants: TopStep 100K + 150K,
+  FundingPips (1 Step, 2 Step Standard/Flex/Pro phases 1+2, Zero),
+  The5%ers (1-Step, 2-Step phase 1+2), Breakout (1-Step Classic/Pro/
+  Turbo, 2-Step phase 1+2), HyroTrader (1-Step Standard/Swing, 2-Step
+  Standard/Swing phase 1+2), Bitfunded (2-Step phase 1+2, 1-Step,
+  Instant), Apex (EOD Trail, Intraday Trail — size-parameterized
+  constructors for the `phases_by_account_size` shape). Every plan
+  read directly from `powerFC/propfirm-rules-dataset` (schema v2.0).
+- `ChallengePlan::cross_account_hedging_prohibited: bool` (P3) —
+  gate for the new `CrossAccountHedgingRule`.
+- `ChallengePlan::lowcap_exposure_limit_pct: Option<Pct>` (P3) —
+  gate for the new `LowcapExposureRule`.
+- `ChallengePlan::consistency_applies_on_funded_stage: bool` (P4) —
+  when `true`, the consistency rule keeps applying on the funded stage.
+  The5%ers 1-Step (only verified firm that doesn't drop consistency
+  after evaluation).
+- `ChallengePlan::qualifying_day_threshold_pct: Option<Pct>` +
+  `qualifying_day_pnl_band_pct: Option<Pct>` (P4) — HyroTrader's
+  "qualifying trading day" definition.
+- `PayoutConfig::qualifying_days: Option<QualifyingDaysConfig>` (P4) —
+  TopStep's "5 winning days of at least $150 each" payout condition.
+  Distinct from `min_profitable_days` (evaluation pass/fail, not
+  payout condition).
 
 ### Changed
 - **Worker hot path**: `produce_response().await` + `ack().await` (two

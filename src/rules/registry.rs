@@ -162,11 +162,11 @@ pub fn default_factories_for_kinds(
 #[must_use]
 pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::{
-        consistency, cooldown, copy_trading, daily_drawdown, grid_trading, hedging, hft_scalping,
-        inactivity, max_daily_trades, max_drawdown, max_open_positions, max_position_size,
-        min_profitable_days, min_trading_days, news_trading, overnight_holding, per_trade_max_loss,
-        plan_caps, profit_target, sl_required, time_limit, tp_required, trailing_drawdown,
-        weekend_holding,
+        consistency, cooldown, copy_trading, cross_account_hedging, daily_drawdown, grid_trading,
+        hedging, hft_scalping, inactivity, lowcap_exposure, max_daily_trades, max_drawdown,
+        max_open_positions, max_position_size, min_profitable_days, min_trading_days,
+        news_trading, overnight_holding, per_trade_max_loss, plan_caps, profit_target, sl_required,
+        time_limit, tp_required, trailing_drawdown, weekend_holding,
     };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
@@ -204,6 +204,11 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
         Arc::new(plan_caps::MaxTotalLotsRule::default()),
         Arc::new(plan_caps::TradingHoursRule),
         Arc::new(plan_caps::MarginRule),
+        // P3: HyroTrader's restriction tags. Both default to DISABLED —
+        // each rule's `is_enabled` requires an explicit plan flag
+        // (`cross_account_hedging_prohibited`, `lowcap_exposure_limit_pct`).
+        Arc::new(cross_account_hedging::CrossAccountHedgingRule::default()),
+        Arc::new(lowcap_exposure::LowcapExposureRule::default()),
     ]
 }
 
@@ -255,8 +260,10 @@ impl RuleRegistry {
         let copy_id = crate::core::ids::RuleId::named("copy_trading");
         let news_id = crate::core::ids::RuleId::named("news_trading");
         let cooldown_id = crate::core::ids::RuleId::named("cooldown");
-        let min_profitable_days_id =
-            crate::core::ids::RuleId::named("min_profitable_days");
+        let min_profitable_days_id = crate::core::ids::RuleId::named("min_profitable_days");
+        let cross_account_hedging_id =
+            crate::core::ids::RuleId::named("cross_account_hedging");
+        let lowcap_exposure_id = crate::core::ids::RuleId::named("lowcap_exposure");
         let mut r = Self::empty();
         for rule in default_rules() {
             // Drop the opt-in rules the plan does not enable.
@@ -277,6 +284,17 @@ impl RuleRegistry {
             // a profitable-day requirement (FundingPips Zero is the only
             // verified firm that sets one — 7).
             if id == min_profitable_days_id && plan.min_profitable_days.is_none() {
+                continue;
+            }
+            // P3: drop the cross-account hedging rule when the plan
+            // doesn't prohibit it (HyroTrader does; every other firm
+            // leaves it off).
+            if id == cross_account_hedging_id && !plan.cross_account_hedging_prohibited {
+                continue;
+            }
+            // P3: drop the lowcap exposure rule when the plan doesn't
+            // set a lowcap cap (HyroTrader sets 5%).
+            if id == lowcap_exposure_id && plan.lowcap_exposure_limit_pct.is_none() {
                 continue;
             }
             // P0.2: drop the prohibition rules the plan disables

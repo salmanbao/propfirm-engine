@@ -35,6 +35,15 @@ pub struct InstrumentSpec {
     pub digits: u8,
     /// Minimum price movement (a "pip" for FX; tick size generally).
     pub pip_size: Decimal,
+    /// **P3 fix (lowcap_exposure_5pct rule)**: whether this instrument
+    /// is classified as "low-capitalisation". Used by HyroTrader's
+    /// `lowcap_exposure_5pct` restriction — the rule caps total
+    /// exposure to low-cap instruments at 5% of account balance.
+    /// Defaults to `false` for all FX majors; the platform backend
+    /// sets it to `true` for low-cap crypto assets (e.g. micro-caps).
+    /// Without this flag, the `LowcapExposureRule` is a no-op.
+    #[cfg_attr(feature = "serialization", serde(default))]
+    pub is_lowcap: bool,
 }
 
 impl InstrumentSpec {
@@ -46,6 +55,7 @@ impl InstrumentSpec {
             contract_size: dec!(100_000),
             digits: 5,
             pip_size: dec!(0.0001),
+            is_lowcap: false,
         }
     }
 
@@ -57,6 +67,7 @@ impl InstrumentSpec {
             contract_size: dec!(100_000),
             digits: 3,
             pip_size: dec!(0.01),
+            is_lowcap: false,
         }
     }
 
@@ -68,6 +79,7 @@ impl InstrumentSpec {
             contract_size: dec!(1),
             digits: 2,
             pip_size: dec!(0.01),
+            is_lowcap: false,
         }
     }
 
@@ -107,6 +119,7 @@ impl Default for InstrumentSpec {
             contract_size: dec!(1),
             digits: 5,
             pip_size: dec!(0.0001),
+            is_lowcap: false,
         }
     }
 }

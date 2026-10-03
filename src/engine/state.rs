@@ -129,6 +129,52 @@ impl AccountState {
                 // Used by FundingPips Zero (requires 7 profitable days).
                 self.account.profitable_days_count += 1;
             }
+            // P4 (HyroTrader "qualifying trading day"): a day counts as
+            // "qualifying" if (a) it had at least one trade with notional
+            // ≥ `qualifying_day_threshold_pct × initial_balance`, AND
+            // (b) the day's net P&L is beyond ±`qualifying_day_pnl_band_pct
+            // × initial_balance`. When the plan sets these thresholds,
+            // MinTradingDaysRule uses `qualifying_trading_days_count`
+            // instead of `active_trading_days`. Used by HyroTrader (5%
+            // threshold, 1% P&L band).
+            //
+            // The notional check requires summing each trade's notional
+            // (lots × contract_size × price). We approximate by checking
+            // the largest single trade's absolute P&L against the
+            // threshold — if the largest trade's P&L is ≥ threshold ×
+            // initial, it's a qualifying day by notional. This is a
+            // simplification — the dataset's actual rule looks at trade
+            // NOTIONAL, not P&L, but notional requires a price feed we
+            // don't have here. The P&L-band check (b) is exact.
+            let thresholds_set = self
+                .account
+                .plan
+                .qualifying_day_threshold_pct
+                .is_some()
+                || self.account.plan.qualifying_day_pnl_band_pct.is_some();
+            if thresholds_set && had_trades_today {
+                let initial = self.account.initial_balance.0;
+                let abs_pnl = today_net.0.abs();
+                // (a) notional threshold: largest trade P&L ≥ threshold × initial.
+                // We don't track per-trade P&L separately today; approximate
+                // by checking if the day's abs P&L ≥ threshold × initial.
+                let notional_ok = self
+                    .account
+                    .plan
+                    .qualifying_day_threshold_pct
+                    .map(|t| abs_pnl >= t.0 * initial)
+                    .unwrap_or(true);
+                // (b) P&L band: |today_net| ≥ band × initial.
+                let band_ok = self
+                    .account
+                    .plan
+                    .qualifying_day_pnl_band_pct
+                    .map(|b| abs_pnl >= b.0 * initial)
+                    .unwrap_or(true);
+                if notional_ok && band_ok {
+                    self.account.qualifying_trading_days_count += 1;
+                }
+            }
             // A.6 fix: only count at rollover if mark_active_trading_day
             // was NOT already called today (prevents double-count).
             if !self.account.day_counted_today {

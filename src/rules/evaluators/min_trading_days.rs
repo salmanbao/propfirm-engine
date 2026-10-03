@@ -90,7 +90,17 @@ impl Rule for MinTradingDaysRule {
         if required == 0 {
             return Ok(RuleVerdict::Pass);
         }
-        let actual = ctx.account.active_trading_days;
+        // P4 (HyroTrader "qualifying trading day"): when the plan sets
+        // qualifying-day thresholds, count only qualifying days, not
+        // any trade-day. HyroTrader requires a trade of ≥5% of initial
+        // balance with P&L beyond ±1% for a day to count.
+        let actual = if ctx.account.plan.qualifying_day_threshold_pct.is_some()
+            || ctx.account.plan.qualifying_day_pnl_band_pct.is_some()
+        {
+            ctx.account.qualifying_trading_days_count
+        } else {
+            ctx.account.active_trading_days
+        };
         if actual >= required {
             return Ok(RuleVerdict::Pass);
         }

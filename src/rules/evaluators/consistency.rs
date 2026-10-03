@@ -102,6 +102,15 @@ impl Rule for ConsistencyRule {
             }
             return p.value.is_some();
         }
+        // P4: when `consistency_applies_on_funded_stage = false` (the
+        // default — most firms drop consistency after evaluation), the
+        // rule is disabled on the funded stage. The5%ers 1-Step sets
+        // the flag to `true` to keep it active.
+        if ctx.account.plan.phase == crate::config::plan::ChallengePhase::Funded
+            && !ctx.account.plan.consistency_applies_on_funded_stage
+        {
+            return false;
+        }
         ctx.account.plan.consistency_pct.is_some()
     }
 

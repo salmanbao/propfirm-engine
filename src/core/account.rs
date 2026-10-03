@@ -207,6 +207,15 @@ pub struct Account {
     /// trade, regardless of P&L). Used by FundingPips Zero (requires 7
     /// profitable days).
     pub profitable_days_count: u32,
+    /// **P4 fix (HyroTrader "qualifying trading day")**: count of days
+    /// that met the plan's `qualifying_day_threshold_pct` (a trade of
+    /// at least that percentage of initial balance) AND
+    /// `qualifying_day_pnl_band_pct` (P&L beyond ±that percentage). When
+    /// the plan sets these thresholds, the `MinTradingDaysRule` reads
+    /// this counter instead of `active_trading_days`. When the plan
+    /// doesn't set them, this counter stays 0 and the rule uses
+    /// `active_trading_days` (the existing behavior).
+    pub qualifying_trading_days_count: u32,
 
     /// **Day-rollover fix**: persisted start of the account's current
     /// trading day. The pipeline uses this for day-boundary comparisons
@@ -343,6 +352,9 @@ impl Account {
             // P1#6: profitable-days counter starts at 0; incremented at
             // rollover when today_realized_pnl > 0.
             profitable_days_count: 0,
+            // P4: qualifying-days counter starts at 0; incremented at
+            // rollover when the day met the plan's qualifying thresholds.
+            qualifying_trading_days_count: 0,
             current_trading_day_start: None,
             target_reached_at: None,
             target_reached_on_day: None,
