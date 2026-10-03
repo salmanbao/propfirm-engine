@@ -29,7 +29,7 @@ required-features = ["server"]
 # `workers` Go consumer calls POST /internal/v1/evaluate per tick.
 
 [features]
-default = ["serialization", "in-memory-store"]
+default = ["serialization"]
 serialization = ["serde", "serde_json", "chrono/serde"]
 # D81: `server` brings in the HTTP server, observability, and TLS.
 # **No database, no Redis, no worker** — the engine is a stateless
@@ -73,7 +73,7 @@ flame = ["dep:tracing-flame"]
 # `openapi` enables the utoipa OpenAPI spec + Swagger UI route.
 # When enabled, the server serves `/openapi.json` + `/swagger-ui/`.
 openapi = ["dep:utoipa", "dep:utoipa-swagger-ui"]
-in-memory-store = []
+# D81: in-memory-store feature removed — it was vestigial (gated nothing).
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 tokio-cli = ["dep:tokio"]
 

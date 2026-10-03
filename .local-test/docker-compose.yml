@@ -1,37 +1,28 @@
+# .local-test/docker-compose.yml — minimal local test config.
+#
+# D81: the engine is a stateless compute service — no Postgres, no Redis.
+# This file is kept for integration test infrastructure that may still
+# reference it, but it no longer brings up database services.
+
 services:
-  postgres:
-    image: postgres:16
-    container_name: propfirm-postgres
+  propfirm-server:
+    build:
+      context: ..
+      target: runtime
+    image: propfirm-engine:latest
+    container_name: propfirm-server-test
     environment:
-      POSTGRES_USER: propfirm
-      POSTGRES_PASSWORD: propfirm
-      POSTGRES_DB: propfirm
+      PROPFIRM_SERVER__BIND_ADDR: "0.0.0.0:8080"
+      PROPFIRM_SERVER__TLS__ENABLED: "false"
+      PROPFIRM_OBSERVABILITY__LOG_FORMAT: "pretty"
+      PROPFIRM_OBSERVABILITY__LOG_FILTER: "info,propfirm=debug"
+      RUST_LOG: "info,propfirm=debug"
     ports:
-      - "127.0.0.1:5433:5432"
-    volumes:
-      - propfirm-pg:/var/lib/postgresql/data
+      - "127.0.0.1:8082:8080"
+    command: ["/app/propfirm-server"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U propfirm -d propfirm"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 10
     restart: unless-stopped
-
-  redis:
-    image: redis:7
-    container_name: propfirm-redis
-    command: ["redis-server", "--appendonly", "yes", "--io-threads", "4", "--io-threads-do-reads", "yes"]
-    ports:
-      - "127.0.0.1:6380:6379"
-    volumes:
-      - propfirm-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
-volumes:
-  propfirm-pg:
-  propfirm-redis:

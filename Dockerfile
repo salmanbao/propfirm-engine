@@ -1,8 +1,8 @@
-# Multi-stage build for propfirm-engine binaries.
+# Multi-stage build for propfirm-engine.
 #
-# Outputs three binaries:
-#   - /app/propfirm-server  (HTTP API server, internal-only)
-#   - /app/propfirm-worker  (Redis Streams event-bus consumer)
+# D81: outputs two binaries (no worker — the platform's `workers`
+# consumer owns the event bus):
+#   - /app/propfirm-server  (HTTP API server, internal-only, stateless)
 #   - /app/propfirm-cli     (Local dev CLI demo)
 #
 # Runtime image is debian:bookworm-slim with ca-certificates + tini (PID 1).
@@ -17,8 +17,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install cargo-cyclonedx for SBOM generation in the builder stage.
-# This is the canonical place to generate it — we have the full dep
-# tree available. The SBOM file is then COPYed into the runtime image.
 RUN cargo install --locked cargo-cyclonedx --version "^0.5" || \
     echo "cargo-cyclonedx install failed; SBOM will not be embedded"
 
@@ -26,14 +24,13 @@ WORKDIR /build
 
 # Cache dependencies: copy manifests first and create stub source tree.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src/bin src/rules/evaluators src/persistence/migrations
+RUN mkdir -p src/bin src/rules/evaluators
 RUN echo "pub fn main() {}" > src/lib.rs
 RUN echo "fn main() {}" > src/bin/cli.rs
 RUN echo "fn main() {}" > src/bin/server.rs
-RUN echo "fn main() {}" > src/bin/worker.rs
 
 # Build dependencies only.
-RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-worker --bin propfirm-cli 2>/dev/null || true
+RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-cli 2>/dev/null || true
 
 # Now copy the real source and rebuild.
 COPY src/ src/
@@ -41,17 +38,13 @@ COPY benches/ benches/
 COPY tests/ tests/
 COPY examples/ examples/
 
-# Generate the SBOM BEFORE the final build — the SBOM lists deps,
-# not the binaries themselves, so we can generate it now.
-# --format json: CycloneDX JSON format (most consumers support it)
-# --output-pattern packages: emit one file per package + a combined file
-# --all-features: include optional deps in the SBOM
+# Generate the SBOM BEFORE the final build.
 RUN ~/.cargo/bin/cargo-cyclonedx --all-features --format json --output-pattern packages || \
     echo "SBOM generation skipped (cargo-cyclonedx unavailable)"
 
 # Force a clean rebuild of the crate (dependencies are cached).
-RUN touch src/lib.rs src/bin/cli.rs src/bin/server.rs src/bin/worker.rs
-RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-worker --bin propfirm-cli
+RUN touch src/lib.rs src/bin/cli.rs src/bin/server.rs
+RUN cargo build --release --features "server tokio-cli" --bin propfirm-server --bin propfirm-cli
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim AS runtime
@@ -69,28 +62,23 @@ WORKDIR /app
 
 # Copy binaries from builder.
 COPY --from=builder /build/target/release/propfirm-server /app/propfirm-server
-COPY --from=builder /build/target/release/propfirm-worker /app/propfirm-worker
 COPY --from=builder /build/target/release/propfirm-cli /app/propfirm-cli
 
-# Copy default config + migrations.
+# Copy default config.
 COPY config/ /app/config/
-COPY src/persistence/migrations/ /app/migrations/
 
 RUN mkdir -p /app/sbom && cp -r /build/target/cyclonedx/. /app/sbom/ || true
 
 # Make binaries executable.
-RUN chmod 755 /app/propfirm-server /app/propfirm-worker /app/propfirm-cli
+RUN chmod 755 /app/propfirm-server /app/propfirm-cli
 
-# Healthcheck: hit /health every 30s. For the server binary.
-# (Worker binary's healthcheck is invoked via `docker exec
-# propfirm-worker /app/propfirm-worker healthcheck`.)
+# Healthcheck: hit /health every 30s.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8080/health || exit 1
 
-# Add an OCI label pointing at the SBOM. Tools like `docker inspect`
-# and Kubernetes SBOM controllers can read this.
+# OCI labels.
 LABEL org.opencontainers.image.title="propfirm-engine" \
-      org.opencontainers.image.description="Prop Firm Risk & Rule Evaluation Engine — internal service" \
+      org.opencontainers.image.description="Prop Firm Risk & Rule Evaluation Engine — D81 stateless compute service" \
       org.opencontainers.image.source="https://github.com/salmanbao/propfirm-engine" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
       io.propfirm.sbom.location="/app/sbom/" \

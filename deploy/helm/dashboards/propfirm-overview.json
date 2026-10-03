@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Prop Firm Engine — HTTP API, event-bus worker, idempotency, and rule-evaluation overview. Auto-imported by the Grafana Helm chart's sidecar when this file is mounted as a ConfigMap with the `grafana_dashboard` label.",
+  "description": "Prop Firm Engine — D81 stateless compute service: HTTP API, rule-evaluation decisions, and errors. Auto-imported by the Grafana Helm chart's sidecar when this file is mounted as a ConfigMap with the `grafana_dashboard` label.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -429,126 +429,6 @@
           "refId": "A"
         }
       ],
-      "title": "Idempotency Outcomes",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Worker event-bus throughput: messages consumed, responses produced, acks, and idle-message claims (from the recovery loop). All four should track each other in steady state — divergence indicates PEL backlog (consumed > acked) or produce failures (produced < consumed).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 16
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": ["lastNotNull", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(rate(propfirm_event_bus_messages_consumed_total[5m]))",
-          "legendFormat": "consumed",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(rate(propfirm_event_bus_messages_produced_total[5m]))",
-          "legendFormat": "produced",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(rate(propfirm_event_bus_messages_acked_total[5m]))",
-          "legendFormat": "acked",
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "sum(rate(propfirm_event_bus_messages_claimed_total[5m]))",
-          "legendFormat": "claimed (PEL recovery)",
-          "refId": "D"
-        }
-      ],
-      "title": "Worker Event-Bus Throughput",
-      "type": "timeseries"
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -619,7 +499,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Error breakdown by endpoint + kind. Sustained non-zero error rate on any endpoint indicates either: (1) client is sending malformed requests (kind=bad_request), (2) engine is panicking or hitting internal errors (kind=internal_error), (3) idempotency backend is unreachable (kind=idempotency_backend_error).",
+      "description": "Error breakdown by endpoint + kind. Sustained non-zero error rate on any endpoint indicates either: (1) client is sending malformed requests (kind=bad_request), (2) engine is panicking or hitting internal errors (kind=internal_error).",
       "fieldConfig": {
         "defaults": {
           "color": {
