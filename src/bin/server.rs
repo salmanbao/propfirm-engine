@@ -32,10 +32,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         bind_addr = %settings.server.bind_addr,
         tls_enabled = %settings.server.tls.enabled,
-        idempotency_backend = %settings.idempotency.backend,
         metrics_enabled = %settings.observability.metrics_enabled,
         otlp_enabled = !settings.observability.otlp.endpoint.is_empty(),
-        "propfirm-server starting"
+        "propfirm-server starting (D81: stateless compute service, no DB)"
     );
 
     // 3. Install panic hook.

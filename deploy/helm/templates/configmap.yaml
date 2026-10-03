@@ -20,30 +20,8 @@ data:
   PROPFIRM_SERVER__TLS__CLIENT_CA_PATH: "{{ .Values.server.tls.clientCaMountPath }}/ca.crt"
   {{- end }}
 
-  # Postgres
-  {{- if .Values.postgres.deploy }}
-  PROPFIRM_POSTGRES__DSN: "postgresql://propfirm:propfirm@{{ .Release.Name }}-postgres:5432/propfirm"
-  {{- else }}
-  PROPFIRM_POSTGRES__DSN: {{ .Values.postgres.externalDsn | quote }}
-  {{- end }}
-  PROPFIRM_POSTGRES__MAX_CONNECTIONS: {{ .Values.postgres.maxConnections | quote }}
-  PROPFIRM_POSTGRES__RUN_MIGRATIONS: {{ .Values.postgres.runMigrations | quote }}
-  PROPFIRM_POSTGRES__ACQUIRE_TIMEOUT_SECS: {{ .Values.postgres.acquireTimeoutSecs | quote }}
-
-  # Redis
-  {{- if .Values.redis.deploy }}
-  PROPFIRM_REDIS__URL: "redis://{{ .Release.Name }}-redis:6379"
-  {{- else }}
-  PROPFIRM_REDIS__URL: {{ .Values.redis.externalUrl | quote }}
-  {{- end }}
-  PROPFIRM_REDIS__CLUSTER: {{ .Values.redis.cluster | quote }}
-  PROPFIRM_REDIS__CONNECT_TIMEOUT_SECS: {{ .Values.redis.connectTimeoutSecs | quote }}
-  PROPFIRM_REDIS__POOL_SIZE: {{ .Values.redis.poolSize | quote }}
-
-  # Idempotency backend
-  PROPFIRM_IDEMPOTENCY__BACKEND: {{ .Values.idempotency.backend | quote }}
-  PROPFIRM_IDEMPOTENCY__TTL_SECS: {{ .Values.idempotency.ttlSecs | quote }}
-  PROPFIRM_IDEMPOTENCY__MAX_ENTRIES: {{ .Values.idempotency.maxEntries | quote }}
+  # D81: no Postgres, no Redis, no idempotency, no event bus env vars.
+  # The engine is a stateless compute service — workers owns all state.
 
   # Observability
   PROPFIRM_OBSERVABILITY__LOG_FILTER: {{ .Values.observability.logFilter | quote }}

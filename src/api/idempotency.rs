@@ -96,8 +96,10 @@ struct Entry {
 
 /// Bounded LRU + TTL idempotency store, keyed by `(tenant, endpoint, key)`.
 ///
-/// This is the **default** backend (no I/O, no setup). For production use
-/// `PostgresIdempotencyBackend` or `RedisIdempotencyBackend` from
+/// This is the **default and only** backend (no I/O, no setup). D81 moved
+/// durable idempotency to the platform's `workers` consumer
+/// (`consumer_state` upsert); this in-memory store handles only
+/// within-process deduplication (lost on restart, harmless).
 #[derive(Clone)]
 pub struct IdempotencyStore {
     inner: Arc<Mutex<Inner>>,

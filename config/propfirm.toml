@@ -1,5 +1,9 @@
 # propfirm.toml — default config for the propfirm-engine service.
 #
+# D81: the engine is a stateless compute service — no Postgres, no Redis,
+# no worker, no idempotency backend. Only server + observability settings.
+# The platform's `workers` consumer owns all state (docs/64 §4.1).
+#
 # Loaded by `Settings::load` in this order (later sources win):
 # 1. This file (lowest precedence)
 # 2. Path pointed to by `PROPFIRM_CONFIG` env var (operator override)
@@ -9,7 +13,6 @@
 # Nested keys in env vars use `__` separator:
 #   PROPFIRM_SERVER__BIND_ADDR=0.0.0.0:9090
 #   PROPFIRM_SERVER__TLS__ENABLED=true
-#   PROPFIRM_POSTGRES__DSN=postgresql://...
 
 [server]
 bind_addr = "0.0.0.0:8080"
@@ -25,62 +28,11 @@ enabled = false
 cert_path = "/etc/propfirm/tls/cert.pem"
 key_path = "/etc/propfirm/tls/key.pem"
 
-[postgres]
-# Used for: durable event store + durable idempotency backend (when
-# idempotency.backend = "postgres").
-dsn = "postgresql://propfirm:propfirm@localhost:5432/propfirm"
-max_connections = 10
-run_migrations = true
-acquire_timeout_secs = 5
-
-[redis]
-# Used for: idempotency backend (when idempotency.backend = "redis") and
-# the event bus (worker binary). Supports single-node and cluster.
-#
-# Single-node:  redis://host:6379
-# TLS:          rediss://host:6379
-# Auth:         redis://:password@host:6379
-# Cluster:      comma-separated list, set cluster = true
-url = "redis://localhost:6379"
-cluster = false
-connect_timeout_secs = 3
-pool_size = 8
-
 [observability]
 # RUST_LOG-style filter for tracing.
-log_filter = "info,propfirm=debug,sqlx=warn,redis=warn"
+log_filter = "info,propfirm=debug"
 # "json" (recommended for prod) | "pretty" (colored, for dev)
 log_format = "json"
 metrics_enabled = true
 metrics_path = "/metrics"
 panic_hook = true
-
-[idempotency]
-# "memory" (dev-only, lost on restart)
-# "postgres" (durable, requires [postgres] config)
-# "redis" (durable, requires [redis] config; recommended for HA)
-backend = "memory"
-# TTL for stored keys in seconds (0 = no TTL — keys persist forever).
-ttl_secs = 86400
-# Max entries (memory backend only).
-max_entries = 10000
-
-[event_bus]
-# Redis Streams used by the worker binary.
-request_stream = "propfirm:evaluate:requests"
-response_stream = "propfirm:evaluate:responses"
-consumer_group = "propfirm-worker"
-# Empty = auto-generated UUID per worker.
-consumer_name = ""
-# XREADGROUP block timeout (ms).
-block_ms = 5000
-# Number of concurrent consumer tasks per worker process.
-concurrency = 16
-# Idle threshold before XAUTOCLAIM grabs a pending message (ms).
-idle_claim_ms = 60000
-# Soft cap on each stream's length. Every XADD carries MAXLEN ~ <max_len>
-# so Redis trims the stream approximately to this length on every produce.
-# Approximate trimming is O(1) and non-blocking; the consumer-group PEL
-# (un-Acked entries) is preserved across trims. Set to 0 to disable
-# trimming (streams grow without bound — not recommended in production).
-max_len = 100000

@@ -33,19 +33,16 @@
 //!    ratio, Calmar ratio, profit factor, max drawdown, equity curve
 //!    analytics, exposure, and parametric Value-at-Risk.
 //!
-//! 6. **Persistence** ([`persistence`]) – event-store traits with an
-//!    in-memory implementation (account persistence removed by ADR-11).
+//! 6. **Events** ([`events`]) – an append-only audit log / event sourcing
+//!    primitives for full replay of account history (in-memory only — D81).
 //!
-//! 7. **Events** ([`events`]) – an append-only audit log / event sourcing
-//!    primitives for full replay of account history.
-//!
-//! 8. **Notifications** ([`notifications`]) – pluggable notifier trait for
+//! 7. **Notifications** ([`notifications`]) – pluggable notifier trait for
 //!    webhook / email / push delivery on rule violations.
 //!
-//! 9. **Reporting** ([`reporting`]) – builds structured [`PerformanceReport`]
+//! 8. **Reporting** ([`reporting`]) – builds structured [`PerformanceReport`]
 //!    summaries combining rule status and risk metrics.
 //!
-//! 10. **API** ([`api`]) – an optional `axum`-based HTTP server exposing
+//! 9. **API** ([`api`]) – an optional `axum`-based HTTP server exposing
 //!     REST endpoints for account evaluation.
 //!
 //! ## Example

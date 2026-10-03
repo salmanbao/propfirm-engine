@@ -1,10 +1,8 @@
 # docker-compose.yml — local dev / integration verification.
 #
-# Brings up:
-#   - postgres:16 (durable event store + idempotency backend)
-#   - redis:7 (event bus + idempotency backend)
-#   - propfirm-server (HTTP API, internal-only, plain HTTP for dev)
-#   - propfirm-worker (Redis Streams event-bus consumer)
+# D81: the engine is a stateless compute service — no Postgres, no Redis,
+# no worker. The platform's `workers` consumer (separate repo) owns all
+# state, ordering, idempotency, retry, and DLQ.
 #
 # ## Usage
 #
@@ -19,65 +17,18 @@
 # See docs/local-dev.md for the full checklist.
 
 services:
-  postgres:
-    image: postgres:16
-    container_name: propfirm-postgres
-    environment:
-      POSTGRES_USER: propfirm
-      POSTGRES_PASSWORD: propfirm
-      POSTGRES_DB: propfirm
-    ports:
-      - "5432:5432"
-    volumes:
-      - propfirm-pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U propfirm -d propfirm"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  redis:
-    image: redis:7
-    container_name: propfirm-redis
-    # `io-threads` offloads socket I/O to N worker threads, leaving the
-    # main thread free for command execution. Free throughput for the
-    # many-small-commands workload the worker issues (XADD/XACK/EVAL).
-    # `io-threads-do-reads` also offloads read-side syscalls.
-    command: ["redis-server", "--appendonly", "yes", "--io-threads", "4", "--io-threads-do-reads", "yes"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - propfirm-redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   propfirm-server:
     build:
       context: .
       target: runtime
     image: propfirm-engine:latest
     container_name: propfirm-server
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       PROPFIRM_SERVER__BIND_ADDR: "0.0.0.0:8080"
       PROPFIRM_SERVER__TLS__ENABLED: "false"
-      PROPFIRM_POSTGRES__DSN: "postgresql://propfirm:propfirm@postgres:5432/propfirm"
-      PROPFIRM_POSTGRES__RUN_MIGRATIONS: "true"
-      PROPFIRM_REDIS__URL: "redis://redis:6379"
-      PROPFIRM_IDEMPOTENCY__BACKEND: "redis"
       PROPFIRM_OBSERVABILITY__LOG_FORMAT: "pretty"
-      PROPFIRM_OBSERVABILITY__LOG_FILTER: "info,propfirm=debug,sqlx=warn"
+      PROPFIRM_OBSERVABILITY__LOG_FILTER: "info,propfirm=debug"
       PROPFIRM_OBSERVABILITY__METRICS_ENABLED: "true"
-      PROPFIRM_EVENT_BUS__REQUEST_STREAM: "propfirm:evaluate:requests"
-      PROPFIRM_EVENT_BUS__RESPONSE_STREAM: "propfirm:evaluate:responses"
-      PROPFIRM_EVENT_BUS__CONSUMER_GROUP: "propfirm-worker"
       RUST_LOG: "info,propfirm=debug"
     ports:
       - "8080:8080"
@@ -88,7 +39,3 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
-volumes:
-  propfirm-pg:
-  propfirm-redis:

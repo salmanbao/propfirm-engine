@@ -41,16 +41,8 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     /// HTTP server settings.
     pub server: ServerSettings,
-    /// PostgreSQL durable persistence (event store + idempotency backend).
-    pub postgres: PostgresSettings,
-    /// Redis (cache + event bus).
-    pub redis: RedisSettings,
     /// Observability (tracing, metrics).
     pub observability: ObservabilitySettings,
-    /// Idempotency backend selection.
-    pub idempotency: IdempotencySettings,
-    /// Event bus (Redis Streams) — used by the worker binary.
-    pub event_bus: EventBusSettings,
 }
 
 /// HTTP server settings.
@@ -120,65 +112,18 @@ impl Default for TlsSettings {
     }
 }
 
-/// PostgreSQL settings (durable event store + idempotency backend).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PostgresSettings {
-    /// `postgresql://user:pass@host:5432/dbname`
-    pub dsn: String,
-    /// Connection pool size. For multi-instance deployments with N
-    /// server pods + M worker pods, set this to approximately
-    /// `(postgres_max_connections / (N + M)) + 20%_headroom`.
-    /// E.g., for 5 server pods + 5 worker pods against a Postgres
-    /// with `max_connections=100`, set this to ~12 per pod.
-    pub max_connections: u32,
-    /// Run pending migrations on startup.
-    pub run_migrations: bool,
-    /// Connection acquisition timeout (seconds).
-    pub acquire_timeout_secs: u64,
-}
-
-impl Default for PostgresSettings {
-    fn default() -> Self {
-        PostgresSettings {
-            dsn: "postgresql://propfirm:propfirm@localhost:5432/propfirm".to_string(),
-            max_connections: 10,
-            run_migrations: true,
-            acquire_timeout_secs: 5,
-        }
-    }
-}
-
-/// Redis settings (cache + event bus).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RedisSettings {
-    /// `redis://host:6379` or `rediss://` for TLS. Comma-separated for cluster.
-    pub url: String,
-    /// Whether to use Redis Cluster mode.
-    pub cluster: bool,
-    /// Connection timeout (seconds).
-    pub connect_timeout_secs: u64,
-    /// Pool size per worker.
-    pub pool_size: u32,
-}
-
-impl Default for RedisSettings {
-    fn default() -> Self {
-        RedisSettings {
-            url: "redis://localhost:6379".to_string(),
-            cluster: false,
-            connect_timeout_secs: 3,
-            pool_size: 8,
-        }
-    }
-}
+// D81: PostgresSettings, RedisSettings, EventBusSettings, and
+// IdempotencySettings have been removed. The engine is a stateless
+// compute service — no database, no Redis, no event bus, no idempotency
+// backend selection. `build_state()` always returns in-memory backends.
+// The platform's `workers` consumer owns all state, ordering,
+// idempotency, retry, and DLQ (docs/64 §4.1).
 
 /// Observability settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ObservabilitySettings {
-    /// `RUST_LOG`-style filter (`info,propfirm=debug,sqlx=warn`).
+    /// `RUST_LOG`-style filter (`info,propfirm=debug`).
     pub log_filter: String,
     /// Log format: `json` (recommended for prod) or `pretty` (dev).
     pub log_format: String,
@@ -243,84 +188,8 @@ impl Default for OtlpSettings {
     }
 }
 
-/// Idempotency backend selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct IdempotencySettings {
-    /// Backend: `memory` (default, dev-only), `postgres`, or `redis`.
-    pub backend: String,
-    /// TTL for stored idempotency keys (seconds). 0 = no TTL.
-    pub ttl_secs: u64,
-    /// Max entries (memory backend only).
-    pub max_entries: usize,
-}
-
-impl Default for IdempotencySettings {
-    fn default() -> Self {
-        IdempotencySettings {
-            backend: "memory".to_string(),
-            ttl_secs: 24 * 60 * 60,
-            max_entries: 10_000,
-        }
-    }
-}
-
-/// Event bus (Redis Streams) settings — used by the worker binary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EventBusSettings {
-    /// Stream name for inbound evaluation requests.
-    pub request_stream: String,
-    /// Stream name for outbound verdicts (results).
-    pub response_stream: String,
-    /// Consumer group name (worker pool).
-    pub consumer_group: String,
-    /// Consumer name (auto-generated UUID if empty). For multi-instance
-    /// deployments, set this to the pod name via env var so each pod
-    /// has a stable consumer identity for PEL tracking.
-    pub consumer_name: String,
-    /// Block timeout for XREADGROUP (milliseconds). Lower values
-    /// (1000-2000) reduce shutdown latency; higher values (5000+)
-    /// reduce Redis round-trips. Default: 5000.
-    pub block_ms: usize,
-    /// Number of concurrent consumer tasks per worker pod.
-    pub concurrency: usize,
-    /// Idle timeout before claiming pending messages (milliseconds).
-    /// Set this to ~5× your p99 evaluation latency. If set too low
-    /// (e.g., 5000ms for a 10s evaluation), XAUTOCLAIM will steal
-    /// messages from healthy-but-slow consumers, causing duplicate
-    /// processing. Default: 60000 (60s).
-    pub idle_claim_ms: usize,
-    /// Soft cap on the number of entries kept in each stream
-    /// (`propfirm:evaluate:requests` and `:responses`). Every `XADD`
-    /// carries `MAXLEN ~ <max_len>` so Redis trims the stream
-    /// approximately to this length. Approximate trimming (`~`)
-    /// is O(1) and never blocks; the consumer-group PEL is
-    /// preserved (un-Acked entries survive trimming).
-    ///
-    /// Set to 0 to **disable trimming** (streams grow without bound —
-    /// only do this if you have an external `XTRIM` / `XADD MAXLEN`
-    /// policy, otherwise Redis will eventually hit `maxmemory` and
-    /// start refusing writes).
-    ///
-    /// Default: 100_000 entries (~50–200 MB depending on payload size).
-    pub max_len: usize,
-}
-
-impl Default for EventBusSettings {
-    fn default() -> Self {
-        EventBusSettings {
-            request_stream: "propfirm:evaluate:requests".to_string(),
-            response_stream: "propfirm:evaluate:responses".to_string(),
-            consumer_group: "propfirm-worker".to_string(),
-            consumer_name: String::new(),
-            block_ms: 5000,
-            concurrency: 16,
-            idle_claim_ms: 60_000,
-            max_len: 100_000,
-        }
-    }
-}
+// D81: IdempotencySettings and EventBusSettings removed — the engine
+// is stateless, no DB, no Redis, no worker. See comment above.
 
 impl Settings {
     /// Load settings from `config/propfirm.toml`, `PROPFIRM_CONFIG` path,
@@ -365,15 +234,8 @@ impl Settings {
         Duration::from_secs(self.server.shutdown_timeout_secs)
     }
 
-    /// Helper: idempotency TTL as `Duration` (None if 0).
-    #[must_use]
-    pub fn idempotency_ttl(&self) -> Option<Duration> {
-        if self.idempotency.ttl_secs == 0 {
-            None
-        } else {
-            Some(Duration::from_secs(self.idempotency.ttl_secs))
-        }
-    }
+    // D81: idempotency_ttl() removed — the engine no longer has an
+    // idempotency backend selection; it always uses in-memory.
 }
 
 /// Inline default config used as the lowest-precedence layer. The shipped
@@ -388,18 +250,6 @@ shutdown_timeout_secs = 30
 [server.tls]
 enabled = false
 
-[postgres]
-dsn = "postgresql://propfirm:propfirm@localhost:5432/propfirm"
-max_connections = 10
-run_migrations = true
-acquire_timeout_secs = 5
-
-[redis]
-url = "redis://localhost:6379"
-cluster = false
-connect_timeout_secs = 3
-pool_size = 8
-
 [observability]
 log_filter = "info,propfirm=debug"
 log_format = "json"
@@ -413,20 +263,6 @@ protocol = "grpc"
 service_name = "propfirm-engine"
 stdout = false
 sample_ratio = 1.0
-
-[idempotency]
-backend = "memory"
-ttl_secs = 86400
-max_entries = 10000
-
-[event_bus]
-request_stream = "propfirm:evaluate:requests"
-response_stream = "propfirm:evaluate:responses"
-consumer_group = "propfirm-worker"
-block_ms = 5000
-concurrency = 16
-idle_claim_ms = 60000
-max_len = 100000
 "#;
 
 #[cfg(test)]
@@ -438,7 +274,6 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.server.bind_addr, "0.0.0.0:8080");
         assert!(!s.server.tls.enabled);
-        assert_eq!(s.idempotency.backend, "memory");
     }
 
     #[test]

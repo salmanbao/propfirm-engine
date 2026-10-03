@@ -84,41 +84,17 @@ server:
     certMountPath: /etc/propfirm/tls
     clientCaMountPath: /etc/propfirm/tls/client-ca
 
-# ---------------------------------------------------------------------------
-# Event bus worker (propfirm-worker binary)
-# ---------------------------------------------------------------------------
-
-# Idempotency backend selection
-# ---------------------------------------------------------------------------
-
-idempotency:
-  backend: redis        # memory | postgres | redis
-  ttlSecs: 604800       # 7 days (recommended for financial systems)
-  maxEntries: 100000    # memory backend only
-
-# ---------------------------------------------------------------------------
-# Event bus settings (worker only)
-# ---------------------------------------------------------------------------
-
-eventBus:
-  requestStream: propfirm:evaluate:requests
-  responseStream: propfirm:evaluate:responses
-  consumerGroup: propfirm-worker
-  consumerName: ""      # auto-generated UUID per pod
-  blockMs: 5000
-  idleClaimMs: 60000
-  # Soft cap on each stream's length. `XADD` carries `MAXLEN ~ N`.
-  # Approximate trimming is O(1) and non-blocking. PEL entries
-  # (un-Acked messages) survive trimming.
-  # Set to 0 to disable trimming (streams grow without bound).
-  maxLen: 100000
+# D81: Postgres, Redis, idempotency, event bus, and worker config blocks
+# have been removed. The engine is a stateless compute service — no DB,
+# no Redis, no worker binary. The platform's `workers` consumer owns all
+# state, ordering, idempotency, retry, and DLQ (docs/64 §4.1).
 
 # ---------------------------------------------------------------------------
 # Observability
 # ---------------------------------------------------------------------------
 
 observability:
-  logFilter: "info,propfirm=debug,sqlx=warn,redis=warn"
+  logFilter: "info,propfirm=debug"
   logFormat: json       # json | pretty
   metricsEnabled: true
   metricsPath: /metrics
