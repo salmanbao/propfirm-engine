@@ -208,8 +208,8 @@ pub async fn evaluate_internal(
             &response.decision_kind,
             &response.input_hash,
         );
-        let pg_pool = s.pg_pool.clone();
-        audit.finish(pg_pool.as_ref(), None, 200).await;
+        // D81: audit writes are no-ops (platform AUD owns the audit trail).
+        audit.finish(None, 200).await;
     }
     Ok(Json(response))
 }
@@ -253,6 +253,7 @@ async fn evaluate_internal_impl(
             violations: Vec::new(),
             violation_details: Vec::new(),
             account_state: acc,
+            hints: None,
         });
     }
     let pack = if req.rule_pack.is_some() {
@@ -453,6 +454,11 @@ async fn evaluate_internal_impl(
     let (new_state, _events) =
         crate::engine::pipeline::apply_decision(state, &verdict.decision, server_time.0, actor_id)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // D81 §4.5 / G6: compute floor hints from the post-evaluation state.
+    // These are advisory — the engine never reads them back (I-27). The
+    // bridge (BRG) uses them to decide *when* to emit a tick.
+    let hints = compute_floor_hints(&new_state.account);
+
     Ok(InternalEvaluateResponse {
         evaluated: true,
         decision_kind: format!("{:?}", verdict.decision.kind),
@@ -468,6 +474,107 @@ async fn evaluate_internal_impl(
             .collect(),
         violation_details: verdict.decision.all_violations,
         account_state: new_state.account,
+        hints,
+    })
+}
+
+/// **D81 §4.5 / G6**: Compute floor hints from the post-evaluation
+/// account state. All values are in **integer cents** to match the
+/// `bridge.tick.v1` envelope's unit convention.
+///
+/// The formulas invert the same expressions the rule evaluators use:
+/// - `floor_daily_cents` = `(day_start_equity − limit) × 100` where
+///   `limit = pct × reference` (reference depends on `daily_loss_type`).
+/// - `floor_total_cents` = the stricter (lower) of the static and
+///   trailing max-loss floors × 100.
+/// - `target_equity_cents` = `(initial_balance + profit_target) × 100`.
+///
+/// `null` on a per-hint basis when no equity-basis rule of that kind
+/// is bound (balance-basis rules need no hint — deals always emit ticks).
+fn compute_floor_hints(acc: &crate::core::account::Account) -> Option<FloorHints> {
+    use crate::config::plan::{DailyLossType, LossReference};
+    use crate::core::types::dec;
+
+    /// Convert a `Money` amount to integer cents (rounding toward zero).
+    fn to_cents(m: crate::core::types::Money) -> i64 {
+        let cents_decimal = m.0 * dec!(100);
+        cents_decimal.try_into().unwrap_or(0)
+    }
+
+    // floor_daily_cents: only for equity-basis daily-loss rules.
+    // When drawdown_on_balance = true, balance moves only on deals,
+    // and deals always emit ticks — no hint needed.
+    let floor_daily_cents = if !acc.plan.drawdown_on_balance
+        && acc.plan.daily_loss_type != DailyLossType::None
+        && acc.plan.max_daily_drawdown_pct.0 > dec!(0)
+    {
+        let pct = acc.plan.max_daily_drawdown_pct.0;
+        let (reference, _current) = match acc.plan.daily_loss_type {
+            DailyLossType::None => return None, // shouldn't reach here
+            DailyLossType::PctInitial => (acc.initial_balance, acc.equity),
+            DailyLossType::PctPriorDay => {
+                if acc.plan.drawdown_on_balance {
+                    (acc.day_start_balance, acc.balance)
+                } else {
+                    (acc.day_start_equity, acc.equity)
+                }
+            }
+            DailyLossType::TrailingIntradayHigh => (acc.intraday_peak_equity, acc.equity),
+        };
+        let limit = pct * reference.0;
+        let floor = reference.0 - limit;
+        Some(to_cents(crate::core::types::Money(floor)))
+    } else {
+        None
+    };
+
+    // floor_total_cents: the stricter (lower) of the static and
+    // trailing floors. Only for equity-basis max-loss rules.
+    let floor_total_cents = if !acc.plan.drawdown_on_balance
+        && acc.plan.max_total_drawdown_pct.0 > dec!(0)
+    {
+        let pct = acc.plan.max_total_drawdown_pct.0;
+        let buffer = pct * acc.initial_balance.0;
+        let floor = match acc.plan.max_loss_reference {
+            LossReference::Static => acc.initial_balance.0 - buffer,
+            LossReference::Trailing => acc.peak_balance.0 - (pct * acc.peak_balance.0),
+            LossReference::EodTrailing => {
+                let unlocked = acc.day_start_balance.0 - buffer;
+                if acc.plan.eod_trail_locks_at_start {
+                    unlocked.min(acc.initial_balance.0)
+                } else {
+                    unlocked
+                }
+            }
+            LossReference::IntradayTrail => acc.peak_equity.0 - (pct * acc.peak_equity.0),
+        };
+        Some(to_cents(crate::core::types::Money(floor)))
+    } else {
+        None
+    };
+
+    // target_equity_cents: the profit-target equity.
+    let target_equity_cents = if acc.plan.profit_target_pct.0 > dec!(0) {
+        let target = acc.initial_balance.0
+            + (acc.plan.profit_target_pct.0 * acc.initial_balance.0);
+        Some(to_cents(crate::core::types::Money(target)))
+    } else {
+        None
+    };
+
+    // Only return hints if at least one is non-null.
+    if floor_daily_cents.is_none()
+        && floor_total_cents.is_none()
+        && target_equity_cents.is_none()
+    {
+        return None;
+    }
+
+    Some(FloorHints {
+        floor_daily_cents,
+        floor_total_cents,
+        target_equity_cents,
+        floors_version: acc.version,
     })
 }
 
@@ -576,7 +683,7 @@ pub async fn override_breach(
         &req.reason,
     )
     .with_request_hash(body_hash);
-    let pg_pool = state.pg_pool.clone();
+    // D81: no pg_pool — audit writes are no-ops.
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -594,12 +701,12 @@ pub async fn override_breach(
 
     let result = match pipeline_result {
         Ok(r) => {
-            audit.finish(pg_pool.as_ref(), None, 200).await;
+            audit.finish(None, 200).await;
             r
         }
         Err(e) => {
             let err_msg = e.to_string();
-            audit.finish(pg_pool.as_ref(), None, 500).await;
+            audit.finish(None, 500).await;
             record_error("/internal/v1/override", "internal_error");
             return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
         }
@@ -652,7 +759,7 @@ pub async fn manual_run(
     let audit =
         crate::api::audit_log::manual_run("manual_run", tenant_id, account_id)
             .with_request_hash(body_hash);
-    let pg_pool = state.pg_pool.clone();
+    // D81: no pg_pool — audit writes are no-ops.
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -663,12 +770,12 @@ pub async fn manual_run(
 
     let result = match pipeline_result {
         Ok(r) => {
-            audit.finish(pg_pool.as_ref(), None, 200).await;
+            audit.finish(None, 200).await;
             r
         }
         Err(e) => {
             let err_msg = e.to_string();
-            audit.finish(pg_pool.as_ref(), None, 500).await;
+            audit.finish(None, 500).await;
             record_error("/internal/v1/manual-run", "internal_error");
             return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
         }
@@ -735,7 +842,7 @@ pub async fn emergency_stop(
     let audit =
         crate::api::audit_log::emergency_stop(&req.actor_id, tenant_id, account_id, &req.reason)
             .with_request_hash(body_hash);
-    let pg_pool = state.pg_pool.clone();
+    // D81: no pg_pool — audit writes are no-ops.
 
     let at = chrono::Utc::now();
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -756,12 +863,12 @@ pub async fn emergency_stop(
 
     let result = match pipeline_result {
         Ok(r) => {
-            audit.finish(pg_pool.as_ref(), None, 200).await;
+            audit.finish(None, 200).await;
             r
         }
         Err(e) => {
             let err_msg = e.to_string();
-            audit.finish(pg_pool.as_ref(), None, 500).await;
+            audit.finish(None, 500).await;
             record_error("/internal/v1/emergency-stop", "internal_error");
             return Err((StatusCode::INTERNAL_SERVER_ERROR, err_msg));
         }
@@ -841,7 +948,7 @@ pub async fn breach_report(
         cleared_violation_ids.len(),
     )
     .with_request_hash(body_hash);
-    let pg_pool = state.pg_pool.clone();
+    // D81: no pg_pool — audit writes are no-ops.
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
     let evaluator =
@@ -867,7 +974,7 @@ pub async fn breach_report(
         .collect();
 
     // Persist the audit entry (read-only action, status 200).
-    audit.finish(pg_pool.as_ref(), None, 200).await;
+    audit.finish(None, 200).await;
 
     Ok(Json(BreachReportResponse {
         account_id: req.account_id,
@@ -970,8 +1077,8 @@ pub async fn evaluate_order(
         &decision_kind,
     )
     .with_request_hash(body_hash);
-    let pg_pool = state.pg_pool.clone();
-    audit.finish(pg_pool.as_ref(), None, 200).await;
+    // D81: no pg_pool — audit writes are no-ops.
+    audit.finish(None, 200).await;
 
     Ok(Json(EvaluateOrderResponse {
         decision: decision_kind,
@@ -1046,43 +1153,13 @@ pub async fn audit_log(
         ));
     }
 
-    let Some(pg_pool) = state.pg_pool.as_ref() else {
-        // Dev mode — no Postgres configured. Return an empty list
-        // rather than 500, so the endpoint is still callable in
-        // integration tests that run without a DB.
-        return Ok(Json(AuditLogResponse {
-            entries: Vec::new(),
-            count: 0,
-        }));
-    };
-
-    let tenant_ref = tenant_id.as_ref().map(|t| t as _);
-    let account_ref = q.account_id.as_ref().map(|a| a as _);
-    let query = crate::api::audit_log::AuditQuery {
-        tenant_id: tenant_ref,
-        account_id: account_ref,
-        action: q.action.as_deref(),
-        since: q.since.as_deref(),
-        limit: q.limit.unwrap_or(100),
-    };
-
-    match crate::api::audit_log::query_entries(pg_pool, query).await {
-        Ok(entries) => {
-            let count = entries.len() as u64;
-            Ok(Json(AuditLogResponse { entries, count }))
-        }
-        Err(e) => {
-            record_error("/internal/v1/audit-log", "query_failed");
-            tracing::error!(error = %e, "audit_log query failed");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("audit_log query failed: {e}"),
-            ))
-        }
-    }
+    // D81: audit-log query removed — engine has no DB. The platform's
+    // AUD module owns the audit trail. Return an empty list.
+    Ok(Json(AuditLogResponse {
+        entries: Vec::new(),
+        count: 0,
+    }))
 }
-
-/// Query parameters for `GET /internal/v1/audit-log`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditLogQuery {
     #[serde(default)]
@@ -1443,6 +1520,43 @@ pub struct InternalEvaluateResponse {
     pub violations: Vec<String>,
     pub violation_details: Vec<crate::core::violation::Violation>,
     pub account_state: crate::core::account::Account,
+    /// **D81 §4.5 / G6 fix**: floor hints computed from the
+    /// post-evaluation state. The bridge (BRG) uses these to decide
+    /// *when* to emit a tick — specifically, to emit early when
+    /// equity approaches a loss floor, rather than waiting for the
+    /// 60s heartbeat cadence. Advisory by construction: the engine
+    /// never reads these back (I-27), so a stale hint changes only
+    /// *when* a tick is emitted, never *what* is decided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<FloorHints>,
+}
+
+/// **D81 §4.5**: Floor hints returned alongside the verdict. All
+/// values are in **integer cents** (not dollars) to match the
+/// `bridge.tick.v1` envelope's unit convention. `null` on a per-hint
+/// basis means "no equity-basis rule of this kind is bound" — balance-
+/// basis rules need no hint because balance moves only on deals, and
+/// deals always emit ticks.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FloorHints {
+    /// The equity at which the active **equity-basis** daily-loss rule
+    /// fires: `day_start_equity − limit`. `null` when no equity-basis
+    /// daily-loss rule is bound (e.g. when `daily_loss_type = None` or
+    /// when `drawdown_on_balance = true` — balance-basis rules need
+    /// no hint because deals always emit ticks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor_daily_cents: Option<i64>,
+    /// The **stricter** of the static and trailing max-loss floors.
+    /// `null` when no equity-basis max-loss rule is bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor_total_cents: Option<i64>,
+    /// The profit-target equity. `null` when no profit-target rule is
+    /// bound (target = 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_equity_cents: Option<i64>,
+    /// The `evaluation_state.version` these hints were derived from.
+    /// Never `null` — always carries the account's current version.
+    pub floors_version: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

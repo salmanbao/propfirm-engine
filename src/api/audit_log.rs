@@ -94,50 +94,16 @@ impl AuditEntry {
         self
     }
 
-    /// Persist the audit entry. No-op when `pg_pool` is None.
+    /// **D81**: Audit writes are now a no-op in the engine. The
+    /// platform's `workers` consumer + AUD module own the audit trail.
+    /// The engine has no database connection (D81/I-25).
     pub async fn finish(
         self,
-        pg_pool: Option<&Arc<sqlx::PgPool>>,
-        correlation_id: Option<Uuid>,
-        response_status: i32,
+        _correlation_id: Option<Uuid>,
+        _response_status: i32,
     ) {
-        let Some(pool) = pg_pool else {
-            // No audit log configured — silently skip. The operation
-            // already succeeded; we just don't have a record of it.
-            tracing::debug!(action = %self.action, "audit log skipped (no pg_pool)");
-            return;
-        };
-
-        let elapsed_ms = self.started_at.elapsed().as_millis() as i32;
-        let occurred_at = chrono::Utc::now();
-        let tenant_uuid = self.tenant_id.map(|t| t.raw());
-        let account_uuid = self.account_id.map(|a| a.raw());
-
-        let result = sqlx::query(
-            r#"INSERT INTO audit_log
-                 (occurred_at, correlation_id, actor_id, action,
-                  tenant_id, account_id, resource_kind, resource_id,
-                  request_hash, response_status, latency_ms, metadata)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
-        )
-        .bind(occurred_at)
-        .bind(correlation_id)
-        .bind(&self.actor_id)
-        .bind(&self.action)
-        .bind(tenant_uuid)
-        .bind(account_uuid)
-        .bind(&self.resource_kind)
-        .bind(&self.resource_id)
-        .bind(&self.request_hash)
-        .bind(response_status)
-        .bind(elapsed_ms)
-        .bind(self.metadata)
-        .execute(&**pool)
-        .await;
-
-        if let Err(e) = result {
-            tracing::error!(error = %e, action = %self.action, "audit log write failed");
-        }
+        // No-op — audit writes moved to platform's AUD module (D81).
+        tracing::debug!(action = %self.action, "audit log entry (D81: no-op, moved to platform AUD)");
     }
 }
 
@@ -319,9 +285,8 @@ pub struct AuditQuery<'a> {
 }
 
 /// One row from the audit_log table, serialized as JSON for the
-/// `GET /internal/v1/audit-log` endpoint. Mirrors the table schema in
-/// `migrations/0001_init.sql` 1:1.
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+/// `GET /internal/v1/audit-log` endpoint (now a no-op — D81: no DB).
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AuditEntryRow {
     pub id: i64,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
@@ -338,54 +303,11 @@ pub struct AuditEntryRow {
     pub metadata: serde_json::Value,
 }
 
-/// Query the `audit_log` table. Returns the most-recent `limit` rows
-/// matching the filters, ordered by `occurred_at DESC, id DESC`
-/// (deterministic for rows with the same timestamp).
-///
-/// The query uses bind parameters for all optional filters — the
-/// planner can use the existing `audit_log_tenant_idx`,
-/// `audit_log_account_idx`, or `audit_log_action_idx` depending on
-/// which filters are set.
-///
-/// # Errors
-/// Returns a `sqlx::Error` if the query fails (e.g. pool exhausted,
-/// Postgres unreachable). The handler maps this to a 500.
-pub async fn query_entries(
-    pool: &sqlx::PgPool,
-    q: AuditQuery<'_>,
-) -> sqlx::Result<Vec<AuditEntryRow>> {
-    // Note: we use `COALESCE` for the optional filters so that a
-    // `None` filter translates to "no constraint" without needing
-    // a separate SQL shape per filter combination. The bind value
-    // for a None filter is just NULL, and `column = COALESCE($n, column)`
-    // reduces to `column = column` (always true) when the bind is NULL.
-    let tenant_uuid = q.tenant_id.map(|t| t.raw());
-    let account_uuid = q.account_id.map(|a| a.raw());
-    let since: Option<chrono::DateTime<chrono::Utc>> = q
-        .since
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc));
-    let limit = q.limit.clamp(1, 500);
-
-    let rows = sqlx::query_as::<_, AuditEntryRow>(
-        r#"SELECT
-             id, occurred_at, correlation_id, actor_id, action,
-             tenant_id, account_id, resource_kind, resource_id,
-             request_hash, response_status, latency_ms, metadata
-           FROM audit_log
-           WHERE (tenant_id  = COALESCE($1, tenant_id))
-             AND (account_id = COALESCE($2, account_id))
-             AND (action     = COALESCE($3, action))
-             AND (occurred_at >= COALESCE($4, occurred_at))
-           ORDER BY occurred_at DESC, id DESC
-           LIMIT $5"#,
-    )
-    .bind(tenant_uuid)
-    .bind(account_uuid)
-    .bind(q.action)
-    .bind(since)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+/// **D81**: The audit-log query function has been removed. The engine
+/// no longer has a database. The platform's AUD module owns the audit
+/// trail. The `GET /internal/v1/audit-log` endpoint returns an empty
+/// list (see handler in `handlers.rs`).
+#[cfg(feature = "server")]
+pub fn query_entries_stub() {
+    // No-op — D81: engine has no DB.
 }

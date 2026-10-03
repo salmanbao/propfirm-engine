@@ -99,7 +99,10 @@ pub mod liquidation;
 pub mod notifications;
 pub mod override_engine;
 pub mod payout;
-pub mod persistence;
+// D81: persistence module removed. The engine is a stateless compute
+// service — no database, no Redis, no event store, no idempotency store.
+// State ownership, ordering, idempotency, retry, and DLQ are the
+// platform's `workers` consumer's job (docs/64 §4.1).
 pub mod pure;
 pub mod registry_cache;
 pub mod reporting;

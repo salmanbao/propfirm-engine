@@ -1,115 +1,62 @@
 //! HTTP server bootstrap: state, TLS, observability, graceful shutdown.
 //!
-//! ## No authentication
+//! ## D81: Stateless compute service (docs/64)
 //!
-//! The engine is deployed as an internal component of the Prop Firm as
-//! a Service Platform. The platform backend is the sole caller over the
-//! private compose network. Trust is established at the network
-//! boundary, not in-process. Authentication has been intentionally
-//! removed.
+//! The engine holds no state and opens no database connection. `workers`
+//! owns `evaluation_state`, ordering, idempotency, retry and DLQ
+//! (docs/64 §4.1). This file constructs a `ServerState` with in-memory
+//! backends only — no Postgres pool, no Redis connection, no migrations.
+//! The `pg_pool` field has been removed; audit-log writes are no-ops
+//! (the platform's AUD module owns the audit trail).
 //!
 //! ## Components
 //!
-//! - [`ServerState`] — shared state with the configured idempotency
-//!   backend (memory/postgres/redis).
-//! - [`run_server`] — load settings, optionally run migrations, build
-//!   the router, and serve with optional TLS + graceful shutdown.
+//! - [`ServerState`] — shared state with in-memory idempotency + event
+//!   store backends (kept for API compat; the platform's `workers`
+//!   consumer is the real idempotency/ordering mechanism).
+//! - [`run_server`] — load settings, build the router, and serve with
+//!   optional TLS + graceful shutdown. **No Postgres/Redis connection.**
 
 use crate::api::handlers::SharedState;
-use crate::api::idempotency::{IdempotencyBackend, IdempotencyStore};
+use crate::api::idempotency::IdempotencyStore;
 use crate::events::store::{EventStore, InMemoryEventStore};
 use crate::notifications::log::LogNotifier;
-use crate::persistence::postgres::{PostgresEventStore, PostgresIdempotencyBackend};
-use crate::persistence::redis_store::{RedisConn, RedisIdempotencyBackend};
 use crate::settings::{Settings, TlsSettings};
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::Duration;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Shared server state.
 ///
-/// All backends are stored as `Arc<dyn ...>` trait objects so the
-/// handler clones share the underlying connection pool / connection
-/// manager. The `metrics_handle` is a clone of the global Prometheus
-/// recorder handle (cheaply cloneable).
+/// All backends are in-memory — the engine is a stateless compute
+/// service (D81). No Postgres pool, no Redis connection.
 #[derive(Clone)]
 pub struct ServerState {
     pub notifier: LogNotifier,
-    pub idempotency: Arc<dyn IdempotencyBackend>,
+    pub idempotency: Arc<dyn crate::api::idempotency::IdempotencyBackend>,
     pub event_store: Arc<dyn EventStore>,
     /// Prometheus metrics render handle. The `/metrics` endpoint calls
     /// `.render()` on this. Cheap to clone (Arc internally).
     pub metrics_handle: PrometheusHandle,
-    /// Optional Postgres pool for audit-log writes (used by the
-    /// `Override` and `EmergencyStop` handlers when `audit_log` table
-    /// is configured).
-    pub pg_pool: Option<Arc<sqlx::PgPool>>,
 }
 
 impl ServerState {
-    /// Build with the in-memory backends (default for tests / dev).
+    /// Build with the in-memory backends (default for tests / dev / prod).
     #[must_use]
     pub fn with_memory() -> Self {
-        ServerState::with_memory_and_handle(default_metrics_handle(), None)
+        ServerState::with_memory_and_handle(default_metrics_handle())
     }
 
-    /// Build with the in-memory backends + an explicit metrics handle +
-    /// optional pg pool (for tests).
+    /// Build with the in-memory backends + an explicit metrics handle.
     #[must_use]
-    pub fn with_memory_and_handle(
-        metrics_handle: PrometheusHandle,
-        pg_pool: Option<Arc<sqlx::PgPool>>,
-    ) -> Self {
+    pub fn with_memory_and_handle(metrics_handle: PrometheusHandle) -> Self {
         ServerState {
             notifier: LogNotifier::new(),
             idempotency: Arc::new(IdempotencyStore::with_defaults()),
             event_store: Arc::new(InMemoryEventStore::new()),
             metrics_handle,
-            pg_pool,
-        }
-    }
-
-    /// Build with Postgres backends (production durable).
-    #[must_use]
-    pub fn with_postgres(
-        pool: Arc<sqlx::PgPool>,
-        idempotency_ttl: Duration,
-        metrics_handle: PrometheusHandle,
-    ) -> Self {
-        ServerState {
-            notifier: LogNotifier::new(),
-            idempotency: Arc::new(PostgresIdempotencyBackend::new(
-                pool.clone(),
-                idempotency_ttl,
-            )),
-            event_store: Arc::new(PostgresEventStore::new(pool.clone())),
-            metrics_handle,
-            pg_pool: Some(pool),
-        }
-    }
-
-    /// Build with Redis idempotency (Postgres still used for the event store,
-    /// or fall back to in-memory event store if Postgres isn't configured).
-    #[must_use]
-    pub fn with_redis_idempotency(
-        redis_conn: RedisConn,
-        idempotency_ttl: Duration,
-        pool: Option<Arc<sqlx::PgPool>>,
-        metrics_handle: PrometheusHandle,
-    ) -> Self {
-        let event_store: Arc<dyn EventStore> = match &pool {
-            Some(p) => Arc::new(PostgresEventStore::new(p.clone())),
-            None => Arc::new(InMemoryEventStore::new()),
-        };
-        ServerState {
-            notifier: LogNotifier::new(),
-            idempotency: Arc::new(RedisIdempotencyBackend::new(redis_conn, idempotency_ttl)),
-            event_store,
-            metrics_handle,
-            pg_pool: pool,
         }
     }
 
@@ -133,9 +80,6 @@ impl ServerState {
 /// Idempotent — the first call installs the recorder and caches the
 /// handle. Subsequent calls (in tests, or when the binary already
 /// called `init_metrics`) return the cached handle.
-///
-/// The global recorder is process-wide, so all clones of `ServerState`
-/// share the same metrics registry.
 #[must_use]
 pub fn default_metrics_handle() -> PrometheusHandle {
     static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
@@ -148,60 +92,15 @@ pub fn default_metrics_handle() -> PrometheusHandle {
         .clone()
 }
 
-/// Build the `ServerState` from `Settings` — picks the configured
-/// idempotency backend, connects to Postgres/Redis, runs migrations
-/// if requested.
+/// Build the `ServerState` from `Settings` — **always in-memory** (D81).
 ///
-/// The `metrics_handle` is created by the binary's `init_metrics()` and
-/// passed in — this ensures the global recorder is installed exactly
-/// once.
+/// No Postgres connection. No Redis connection. No migrations. The
+/// engine is a stateless compute service; `workers` owns all state.
 pub async fn build_state(
-    settings: &Settings,
+    _settings: &Settings,
     metrics_handle: PrometheusHandle,
 ) -> Result<ServerState, anyhow::Error> {
-    let idem_ttl = settings
-        .idempotency_ttl()
-        .unwrap_or_else(|| Duration::from_secs(86_400));
-
-    let needs_postgres = matches!(settings.idempotency.backend.as_str(), "postgres" | "redis");
-    let pg_pool = if needs_postgres {
-        Some(Arc::new(
-            crate::persistence::postgres::connect(&settings.postgres).await?,
-        ))
-    } else {
-        None
-    };
-
-    if let Some(pool) = &pg_pool {
-        if settings.postgres.run_migrations {
-            info!("running pending migrations");
-            crate::persistence::postgres::run_migrations(pool).await?;
-            info!("migrations complete");
-        }
-    }
-
-    let state = match settings.idempotency.backend.as_str() {
-        "memory" => ServerState::with_memory_and_handle(metrics_handle, pg_pool),
-        "postgres" => {
-            let pool = pg_pool.expect("postgres pool required for postgres backend");
-            ServerState::with_postgres(pool, idem_ttl, metrics_handle)
-        }
-        "redis" => {
-            let redis_conn = crate::persistence::redis_store::connect(&settings.redis).await?;
-            ServerState::with_redis_idempotency(
-                redis_conn,
-                idem_ttl,
-                pg_pool.clone(),
-                metrics_handle,
-            )
-        }
-        other => {
-            warn!(backend = %other, "unknown idempotency backend, falling back to memory");
-            ServerState::with_memory_and_handle(metrics_handle, pg_pool)
-        }
-    };
-
-    Ok(state)
+    Ok(ServerState::with_memory_and_handle(metrics_handle))
 }
 
 /// Load TLS config from settings (if enabled).
@@ -239,7 +138,9 @@ pub async fn load_tls_config(
         };
         let mut key_reader = std::io::BufReader::new(key.as_slice());
         let private_key = rustls_pemfile::private_key(&mut key_reader)?
-            .ok_or_else(|| anyhow::anyhow!("no private key found in {}", tls.key_path.display()))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("no private key found in {}", tls.key_path.display())
+            })?;
         let cert_chain: Vec<rustls::pki_types::CertificateDer<'static>> = certs;
 
         // Build the rustls ServerConfig directly.
@@ -247,7 +148,7 @@ pub async fn load_tls_config(
         // Apply the client-cert verifier when mTLS is configured.
         let ca_pem = std::fs::read(client_ca_path).map_err(|e| {
             anyhow::anyhow!(
-                "mTLS client CA read failed (path={}): {}",
+                "mTLS CA read failed (path={}): {}",
                 client_ca_path.display(),
                 e
             )
@@ -277,7 +178,7 @@ pub async fn load_tls_config(
 /// Bind and serve the HTTP server (or HTTPS if TLS is enabled).
 ///
 /// Orchestrates: load settings → build state → build router → optional
-/// TLS → graceful shutdown.
+/// TLS → graceful shutdown. **No Postgres/Redis connection** (D81).
 pub async fn run_server(settings: Settings) -> Result<(), anyhow::Error> {
     let addr = settings.server.bind_addr.clone();
     let shutdown_timeout = settings.shutdown_timeout();
@@ -285,9 +186,7 @@ pub async fn run_server(settings: Settings) -> Result<(), anyhow::Error> {
     // Install panic hook.
     crate::api::middleware::install_panic_hook();
 
-    // Build shared state. `default_metrics_handle()` installs the
-    // global Prometheus recorder if not already installed (idempotent
-    // via OnceLock).
+    // Build shared state — in-memory only (D81: no DB, no Redis).
     let metrics_handle = default_metrics_handle();
     let state = build_state(&settings, metrics_handle).await?;
     let shared: SharedState = Arc::new(state);
@@ -301,7 +200,7 @@ pub async fn run_server(settings: Settings) -> Result<(), anyhow::Error> {
     // Pick TLS or plain.
     let tls_config = load_tls_config(&settings.server.tls).await?;
 
-    info!(bind_addr = %addr, tls_enabled = tls_config.is_some(), "server starting");
+    info!(bind_addr = %addr, tls_enabled = tls_config.is_some(), "server starting (D81: stateless compute service, no DB)");
 
     if let Some(tls) = tls_config {
         // Build a shared `Handle` so we can call `shutdown()` from a

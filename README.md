@@ -1,9 +1,24 @@
 # Prop Firm Risk & Rule Evaluation Engine
 
-An enterprise-grade, fully-typed Rust engine for evaluating proprietary
-trading firm rules, monitoring account risk, and producing audit-grade
-decisions in real time. Designed as an **internal component** of the
-Prop Firm as a Service (PFaaS) Platform.
+A **stateless compute service** (D81, docs/64) that evaluates proprietary
+trading firm rules, monitors account risk, and produces audit-grade
+decisions. Designed as an internal component of the Alpha One PFaaS
+Platform — the platform's `workers` consumer owns all state; the engine
+is a pure function called via HTTP.
+
+## D81: Stateless — no database, no Redis, no worker
+
+The engine holds **no state** and opens **no database connection**.
+Everything it needs arrives in the request; everything it produces leaves
+in the response. `workers` owns `evaluation_state`, ordering,
+idempotency, retry and DLQ (docs/64 §4.1). The engine's sole job:
+
+```
+evaluate(state, rules, tick) → (verdict, new_state, hints)
+```
+
+No Postgres · No Redis · No worker binary · No migrations · No OCC.
+Scales by `--scale engine=N`. ADR-11 (stateless Rust EVL) re-confirmed.
 
 ## Architecture
 

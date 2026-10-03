@@ -24,16 +24,18 @@ name = "propfirm-server"
 path = "src/bin/server.rs"
 required-features = ["server"]
 
-[[bin]]
-name = "propfirm-worker"
-path = "src/bin/worker.rs"
-required-features = ["server"]
+# D81: propfirm-worker binary removed. The engine is a stateless compute
+# service — no Redis Streams consumer, no worker binary. The platform's
+# `workers` Go consumer calls POST /internal/v1/evaluate per tick.
 
 [features]
 default = ["serialization", "in-memory-store"]
 serialization = ["serde", "serde_json", "chrono/serde"]
-# `server` brings in the HTTP server, worker, durable persistence, observability,
-# and TLS — every production-ready subsystem the platform needs.
+# D81: `server` brings in the HTTP server, observability, and TLS.
+# **No database, no Redis, no worker** — the engine is a stateless
+# compute service. `sqlx`, `redis`, `bb8`, `bb8-redis` are removed
+# (I-25: CI must assert no sqlx dep in default build). The platform's
+# `workers` consumer owns state, ordering, idempotency, retry, DLQ.
 server = [
     "dep:axum",
     "dep:axum-server",
@@ -42,10 +44,6 @@ server = [
     "dep:tokio",
     "dep:tracing",
     "dep:tracing-subscriber",
-    "dep:sqlx",
-    "dep:redis",
-    "dep:bb8",
-    "dep:bb8-redis",
     "dep:rustls",
     "dep:rustls-pemfile",
     "dep:tokio-util",
