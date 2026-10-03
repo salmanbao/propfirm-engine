@@ -23,8 +23,8 @@ pub mod max_daily_trades;
 pub mod max_drawdown;
 pub mod max_open_positions;
 pub mod max_position_size;
-pub mod min_trading_days;
 pub mod min_profitable_days; // P1#6 fix: minimum profitable trading days.
+pub mod min_trading_days;
 pub mod news_trading;
 pub mod overnight_holding;
 pub mod per_trade_max_loss;

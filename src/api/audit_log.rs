@@ -24,7 +24,6 @@
 //! );
 //! ```
 
-use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -97,11 +96,7 @@ impl AuditEntry {
     /// **D81**: Audit writes are now a no-op in the engine. The
     /// platform's `workers` consumer + AUD module own the audit trail.
     /// The engine has no database connection (D81/I-25).
-    pub async fn finish(
-        self,
-        _correlation_id: Option<Uuid>,
-        _response_status: i32,
-    ) {
+    pub async fn finish(self, _correlation_id: Option<Uuid>, _response_status: i32) {
         // No-op — audit writes moved to platform's AUD module (D81).
         tracing::debug!(action = %self.action, "audit log entry (D81: no-op, moved to platform AUD)");
     }

@@ -72,34 +72,6 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  propfirm-worker:
-    build:
-      context: .
-      target: runtime
-    image: propfirm-engine:latest
-    container_name: propfirm-worker
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      PROPFIRM_REDIS__URL: "redis://redis:6379"
-      PROPFIRM_IDEMPOTENCY__BACKEND: "redis"
-      PROPFIRM_POSTGRES__DSN: "postgresql://propfirm:${POSTGRES_PASSWORD:-propfirm}@postgres:5432/propfirm"
-      PROPFIRM_POSTGRES__RUN_MIGRATIONS: "false"
-      PROPFIRM_OBSERVABILITY__LOG_FORMAT: "json"
-      PROPFIRM_OBSERVABILITY__LOG_FILTER: "info,propfirm=info,redis=warn"
-      PROPFIRM_EVENT_BUS__REQUEST_STREAM: "propfirm:evaluate:requests"
-      PROPFIRM_EVENT_BUS__RESPONSE_STREAM: "propfirm:evaluate:responses"
-      PROPFIRM_EVENT_BUS__CONSUMER_GROUP: "propfirm-worker"
-      PROPFIRM_EVENT_BUS__CONSUMER_NAME: "worker-1"
-      PROPFIRM_EVENT_BUS__CONCURRENCY: "16"
-      PROPFIRM_EVENT_BUS__BLOCK_MS: "5000"
-      PROPFIRM_EVENT_BUS__IDLE_CLAIM_MS: "60000"
-    command: ["/app/propfirm-worker"]
-    restart: unless-stopped
-
 volumes:
   propfirm-pg:
   propfirm-redis:

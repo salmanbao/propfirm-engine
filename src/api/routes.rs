@@ -33,8 +33,8 @@
 //! - `PropagateRequestIdLayer` — echoes `x-request-id` back in response
 
 use crate::api::handlers::{
-    audit_log, breach_report, emergency_stop, evaluate_internal, evaluate_order, health,
-    manual_run, override_breach, ready, validate_rule_pack, SharedState,
+    breach_report, emergency_stop, evaluate_internal, evaluate_order, health, manual_run,
+    override_breach, ready, validate_rule_pack, SharedState,
 };
 use axum::{
     extract::{Request, State},
@@ -87,7 +87,6 @@ pub async fn router_with_limits(
         .route("/internal/v1/manual-run", post(manual_run))
         .route("/internal/v1/emergency-stop", post(emergency_stop))
         .route("/internal/v1/breach-report", post(breach_report))
-        .route("/internal/v1/audit-log", get(audit_log))
         .route("/v1/evaluate-order", post(evaluate_order))
         .route("/v1/rule-packs/validate", post(validate_rule_pack))
         .route("/metrics", get(metrics_handler));

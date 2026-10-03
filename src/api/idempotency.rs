@@ -1,8 +1,5 @@
 //! Idempotency backend trait + in-memory implementation.
 //!
-//! Durable backends (`PostgresIdempotencyBackend`, `RedisIdempotencyBackend`)
-//! live in [`crate::persistence`] — they require I/O dependencies the core
-//! API module doesn't carry.
 //!
 //! ## Why idempotency is still here even without auth
 //!
@@ -101,7 +98,6 @@ struct Entry {
 ///
 /// This is the **default** backend (no I/O, no setup). For production use
 /// `PostgresIdempotencyBackend` or `RedisIdempotencyBackend` from
-/// [`crate::persistence`].
 #[derive(Clone)]
 pub struct IdempotencyStore {
     inner: Arc<Mutex<Inner>>,

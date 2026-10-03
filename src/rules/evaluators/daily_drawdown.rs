@@ -122,7 +122,10 @@ impl Rule for DailyDrawdownRule {
                 } else {
                     ctx.account.day_start_equity
                 };
-                (ctx.account.initial_balance, Money((day_start.0 - current.0).max(dec!(0))))
+                (
+                    ctx.account.initial_balance,
+                    Money((day_start.0 - current.0).max(dec!(0))),
+                )
             }
             DailyLossType::PctPriorDay => {
                 let day_start = if ctx.account.plan.drawdown_on_balance {

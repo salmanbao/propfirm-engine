@@ -45,16 +45,6 @@ data:
   PROPFIRM_IDEMPOTENCY__TTL_SECS: {{ .Values.idempotency.ttlSecs | quote }}
   PROPFIRM_IDEMPOTENCY__MAX_ENTRIES: {{ .Values.idempotency.maxEntries | quote }}
 
-  # Event bus
-  PROPFIRM_EVENT_BUS__REQUEST_STREAM: {{ .Values.eventBus.requestStream | quote }}
-  PROPFIRM_EVENT_BUS__RESPONSE_STREAM: {{ .Values.eventBus.responseStream | quote }}
-  PROPFIRM_EVENT_BUS__CONSUMER_GROUP: {{ .Values.eventBus.consumerGroup | quote }}
-  PROPFIRM_EVENT_BUS__CONSUMER_NAME: {{ .Values.eventBus.consumerName | quote }}
-  PROPFIRM_EVENT_BUS__BLOCK_MS: {{ .Values.eventBus.blockMs | quote }}
-  PROPFIRM_EVENT_BUS__CONCURRENCY: {{ .Values.worker.concurrency | quote }}
-  PROPFIRM_EVENT_BUS__IDLE_CLAIM_MS: {{ .Values.eventBus.idleClaimMs | quote }}
-  PROPFIRM_EVENT_BUS__MAX_LEN: {{ .Values.eventBus.maxLen | quote }}
-
   # Observability
   PROPFIRM_OBSERVABILITY__LOG_FILTER: {{ .Values.observability.logFilter | quote }}
   PROPFIRM_OBSERVABILITY__LOG_FORMAT: {{ .Values.observability.logFormat | quote }}

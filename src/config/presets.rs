@@ -397,7 +397,11 @@ pub fn fundingpips_1step() -> ChallengePlan {
 /// 3 min trading days.
 #[must_use]
 pub fn fundingpips_2step_standard_phase1() -> ChallengePlan {
-    let mut p = base_plan("FundingPips", "2 Step Standard - Phase 1", Money(dec!(50_000)));
+    let mut p = base_plan(
+        "FundingPips",
+        "2 Step Standard - Phase 1",
+        Money(dec!(50_000)),
+    );
     p.phase = ChallengePhase::Phase1;
     p.profit_target_pct = Pct(dec!(0.08));
     p.max_daily_drawdown_pct = Pct(dec!(0.05));
@@ -482,8 +486,8 @@ pub fn fundingpips_2step_pro_phase2() -> ChallengePlan {
 /// FundingPips Zero — the most complex plan in the dataset. Exercises
 /// every new mechanism variant we shipped: `intraday_trail` max drawdown
 /// + `locks_at: start_balance` + `min_profitable_days = 7` +
-/// `best_day_pct_of_total` consistency (15%). No profit target (funded
-/// stage from day 1). 3% daily loss (pct_prior_day).
+///   `best_day_pct_of_total` consistency (15%). No profit target (funded
+///   stage from day 1). 3% daily loss (pct_prior_day).
 #[must_use]
 pub fn fundingpips_zero() -> ChallengePlan {
     let mut p = base_plan("FundingPips", "Zero", Money(dec!(50_000)));
@@ -716,7 +720,11 @@ pub fn hyrotrader_1step_swing() -> ChallengePlan {
 /// 40% consistency, 5 min trading days, all 4 restrictions.
 #[must_use]
 pub fn hyrotrader_2step_standard_phase1() -> ChallengePlan {
-    let mut p = base_plan("HyroTrader", "2-Step Standard - Phase 1", Money(dec!(50_000)));
+    let mut p = base_plan(
+        "HyroTrader",
+        "2-Step Standard - Phase 1",
+        Money(dec!(50_000)),
+    );
     p.phase = ChallengePhase::Phase1;
     p.profit_target_pct = Pct(dec!(0.10));
     p.max_daily_drawdown_pct = Pct(dec!(0.05));
@@ -879,7 +887,11 @@ pub fn apex_eod_trail(account_size: Money) -> ChallengePlan {
 /// dataset - floor follows unrealised equity peak), 30-day time limit.
 #[must_use]
 pub fn apex_intraday_trail(account_size: Money) -> ChallengePlan {
-    let mut p = base_plan("Apex Trader Funding", "Intraday Trail Evaluation", account_size);
+    let mut p = base_plan(
+        "Apex Trader Funding",
+        "Intraday Trail Evaluation",
+        account_size,
+    );
     p.phase = ChallengePhase::Phase1;
     p.profit_target_pct = Pct(dec!(0.06));
     p.max_daily_drawdown_pct = Pct::ZERO;

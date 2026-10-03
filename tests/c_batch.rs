@@ -101,6 +101,7 @@ fn c1_10k_contract_point_one_lot_boundary() {
     acc.plan.max_position_lots = Some(dec!(0.1));
     let reg = InstrumentRegistry::new();
     reg.register(InstrumentSpec {
+        is_lowcap: false,
         symbol: Symbol::new("EURUSD"),
         contract_size: dec!(10_000),
         digits: 5,

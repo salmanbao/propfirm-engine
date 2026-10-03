@@ -18,6 +18,7 @@ use crate::core::violation::Violation;
     feature = "serialization",
     derive(serde::Serialize, serde::Deserialize)
 )]
+#[allow(clippy::large_enum_variant)]
 pub enum DomainEventKind {
     /// Account opened / started.
     AccountStarted {

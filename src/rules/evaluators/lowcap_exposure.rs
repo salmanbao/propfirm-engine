@@ -103,8 +103,7 @@ impl Rule for LowcapExposureRule {
                 // and under-reports when it has risen; conservative on
                 // the breach-side would be to use the higher of the two,
                 // but we don't have a current price here.
-                let notional =
-                    pos.opened_quantity.0 * spec.contract_size * pos.avg_entry_price.0;
+                let notional = pos.opened_quantity.0 * spec.contract_size * pos.avg_entry_price.0;
                 lowcap_notional += notional;
             }
         }

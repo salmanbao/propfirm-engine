@@ -138,9 +138,7 @@ pub async fn load_tls_config(
         };
         let mut key_reader = std::io::BufReader::new(key.as_slice());
         let private_key = rustls_pemfile::private_key(&mut key_reader)?
-            .ok_or_else(|| {
-                anyhow::anyhow!("no private key found in {}", tls.key_path.display())
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("no private key found in {}", tls.key_path.display()))?;
         let cert_chain: Vec<rustls::pki_types::CertificateDer<'static>> = certs;
 
         // Build the rustls ServerConfig directly.

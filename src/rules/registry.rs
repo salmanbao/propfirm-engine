@@ -164,9 +164,9 @@ pub fn default_rules() -> Vec<Arc<dyn Rule>> {
     use crate::rules::evaluators::{
         consistency, cooldown, copy_trading, cross_account_hedging, daily_drawdown, grid_trading,
         hedging, hft_scalping, inactivity, lowcap_exposure, max_daily_trades, max_drawdown,
-        max_open_positions, max_position_size, min_profitable_days, min_trading_days,
-        news_trading, overnight_holding, per_trade_max_loss, plan_caps, profit_target, sl_required,
-        time_limit, tp_required, trailing_drawdown, weekend_holding,
+        max_open_positions, max_position_size, min_profitable_days, min_trading_days, news_trading,
+        overnight_holding, per_trade_max_loss, plan_caps, profit_target, sl_required, time_limit,
+        tp_required, trailing_drawdown, weekend_holding,
     };
     vec![
         Arc::new(daily_drawdown::DailyDrawdownRule::default()),
@@ -261,8 +261,7 @@ impl RuleRegistry {
         let news_id = crate::core::ids::RuleId::named("news_trading");
         let cooldown_id = crate::core::ids::RuleId::named("cooldown");
         let min_profitable_days_id = crate::core::ids::RuleId::named("min_profitable_days");
-        let cross_account_hedging_id =
-            crate::core::ids::RuleId::named("cross_account_hedging");
+        let cross_account_hedging_id = crate::core::ids::RuleId::named("cross_account_hedging");
         let lowcap_exposure_id = crate::core::ids::RuleId::named("lowcap_exposure");
         let mut r = Self::empty();
         for rule in default_rules() {

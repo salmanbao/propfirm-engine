@@ -146,11 +146,7 @@ impl AccountState {
             // simplification — the dataset's actual rule looks at trade
             // NOTIONAL, not P&L, but notional requires a price feed we
             // don't have here. The P&L-band check (b) is exact.
-            let thresholds_set = self
-                .account
-                .plan
-                .qualifying_day_threshold_pct
-                .is_some()
+            let thresholds_set = self.account.plan.qualifying_day_threshold_pct.is_some()
                 || self.account.plan.qualifying_day_pnl_band_pct.is_some();
             if thresholds_set && had_trades_today {
                 let initial = self.account.initial_balance.0;

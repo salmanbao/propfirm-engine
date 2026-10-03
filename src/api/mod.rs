@@ -9,7 +9,6 @@
 //! - [`dto`] — wire shapes for requests/responses
 //! - [`handlers`] — axum handlers (no auth extraction)
 //! - [`idempotency`] — in-memory idempotency backend (durable backends
-//!   live in [`crate::persistence`])
 //! - [`middleware`] — request-id propagation, panic hook, error IntoResponse
 //! - [`routes`] — router factory
 //! - [`server`] — server state + bootstrap (TLS, observability, shutdown)

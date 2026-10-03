@@ -530,43 +530,38 @@ fn compute_floor_hints(acc: &crate::core::account::Account) -> Option<FloorHints
 
     // floor_total_cents: the stricter (lower) of the static and
     // trailing floors. Only for equity-basis max-loss rules.
-    let floor_total_cents = if !acc.plan.drawdown_on_balance
-        && acc.plan.max_total_drawdown_pct.0 > dec!(0)
-    {
-        let pct = acc.plan.max_total_drawdown_pct.0;
-        let buffer = pct * acc.initial_balance.0;
-        let floor = match acc.plan.max_loss_reference {
-            LossReference::Static => acc.initial_balance.0 - buffer,
-            LossReference::Trailing => acc.peak_balance.0 - (pct * acc.peak_balance.0),
-            LossReference::EodTrailing => {
-                let unlocked = acc.day_start_balance.0 - buffer;
-                if acc.plan.eod_trail_locks_at_start {
-                    unlocked.min(acc.initial_balance.0)
-                } else {
-                    unlocked
+    let floor_total_cents =
+        if !acc.plan.drawdown_on_balance && acc.plan.max_total_drawdown_pct.0 > dec!(0) {
+            let pct = acc.plan.max_total_drawdown_pct.0;
+            let buffer = pct * acc.initial_balance.0;
+            let floor = match acc.plan.max_loss_reference {
+                LossReference::Static => acc.initial_balance.0 - buffer,
+                LossReference::Trailing => acc.peak_balance.0 - (pct * acc.peak_balance.0),
+                LossReference::EodTrailing => {
+                    let unlocked = acc.day_start_balance.0 - buffer;
+                    if acc.plan.eod_trail_locks_at_start {
+                        unlocked.min(acc.initial_balance.0)
+                    } else {
+                        unlocked
+                    }
                 }
-            }
-            LossReference::IntradayTrail => acc.peak_equity.0 - (pct * acc.peak_equity.0),
+                LossReference::IntradayTrail => acc.peak_equity.0 - (pct * acc.peak_equity.0),
+            };
+            Some(to_cents(crate::core::types::Money(floor)))
+        } else {
+            None
         };
-        Some(to_cents(crate::core::types::Money(floor)))
-    } else {
-        None
-    };
 
     // target_equity_cents: the profit-target equity.
     let target_equity_cents = if acc.plan.profit_target_pct.0 > dec!(0) {
-        let target = acc.initial_balance.0
-            + (acc.plan.profit_target_pct.0 * acc.initial_balance.0);
+        let target = acc.initial_balance.0 + (acc.plan.profit_target_pct.0 * acc.initial_balance.0);
         Some(to_cents(crate::core::types::Money(target)))
     } else {
         None
     };
 
     // Only return hints if at least one is non-null.
-    if floor_daily_cents.is_none()
-        && floor_total_cents.is_none()
-        && target_equity_cents.is_none()
-    {
+    if floor_daily_cents.is_none() && floor_total_cents.is_none() && target_equity_cents.is_none() {
         return None;
     }
 
@@ -583,9 +578,9 @@ fn compute_floor_hints(acc: &crate::core::account::Account) -> Option<FloorHints
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, applies the override, and returns the
 /// updated `account_state`. No event-store replay is performed.
-#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/override", actor = ?req.actor_id))]
+#[tracing::instrument(skip(_state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/override", actor = ?req.actor_id))]
 pub async fn override_breach(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<OverrideRequest>,
 ) -> Result<Json<OverrideResponse>, (StatusCode, String)> {
@@ -595,9 +590,8 @@ pub async fn override_breach(
     // any field of `req` is moved (e.g. `req.account_state.ok_or()?`
     // below consumes `req.account_state`). Computing this at the top
     // keeps the hash byte-stable and avoids borrow-of-partially-moved.
-    let body_hash = crate::api::idempotency::hash_body(
-        &serde_json::to_string(&req).unwrap_or_default(),
-    );
+    let body_hash =
+        crate::api::idempotency::hash_body(&serde_json::to_string(&req).unwrap_or_default());
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -724,18 +718,17 @@ pub async fn override_breach(
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, runs evaluation, and returns the
 /// verdict plus updated `account_state`. No event-store replay is performed.
-#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/manual-run"))]
+#[tracing::instrument(skip(_state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/manual-run"))]
 pub async fn manual_run(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<ManualRunRequest>,
 ) -> Result<Json<ManualRunResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/manual-run");
     let tenant_id = extract_tenant_id(&headers)?;
     // Hash the canonical request body up front (before any field moves).
-    let body_hash = crate::api::idempotency::hash_body(
-        &serde_json::to_string(&req).unwrap_or_default(),
-    );
+    let body_hash =
+        crate::api::idempotency::hash_body(&serde_json::to_string(&req).unwrap_or_default());
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -756,9 +749,8 @@ pub async fn manual_run(
 
     // Audit log entry — manual runs are operator-triggered (low
     // volume), so we always write to the audit_log table.
-    let audit =
-        crate::api::audit_log::manual_run("manual_run", tenant_id, account_id)
-            .with_request_hash(body_hash);
+    let audit = crate::api::audit_log::manual_run("manual_run", tenant_id, account_id)
+        .with_request_hash(body_hash);
     // D81: no pg_pool — audit writes are no-ops.
 
     let registry = crate::registry_cache::get_or_build(&acc.plan);
@@ -802,18 +794,17 @@ pub async fn manual_run(
 /// **Stateless design**: takes `account_state` from the caller, builds the
 /// evaluator from that account's plan, applies the emergency stop, and
 /// returns the updated `account_state`. No event-store replay is performed.
-#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/emergency-stop", actor = ?req.actor_id))]
+#[tracing::instrument(skip(_state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/emergency-stop", actor = ?req.actor_id))]
 pub async fn emergency_stop(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<EmergencyStopRequest>,
 ) -> Result<Json<EmergencyStopResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/emergency-stop");
     let tenant_id = extract_tenant_id(&headers)?;
     // Hash the canonical request body up front (before any field moves).
-    let body_hash = crate::api::idempotency::hash_body(
-        &serde_json::to_string(&req).unwrap_or_default(),
-    );
+    let body_hash =
+        crate::api::idempotency::hash_body(&serde_json::to_string(&req).unwrap_or_default());
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -888,18 +879,17 @@ pub async fn emergency_stop(
 /// **Stateless design**: changed to a POST-style request body flow taking
 /// `account_state`. Returns the current account status; violation history
 /// is caller-owned. No event-store replay is performed.
-#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/breach-report"))]
+#[tracing::instrument(skip(_state, headers, req), fields(account_id = ?req.account_id, endpoint = "/internal/v1/breach-report"))]
 pub async fn breach_report(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<BreachReportRequest>,
 ) -> Result<Json<BreachReportResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/internal/v1/breach-report");
     let tenant_id = extract_tenant_id(&headers)?;
     // Hash the canonical request body up front (before any field moves).
-    let body_hash = crate::api::idempotency::hash_body(
-        &serde_json::to_string(&req).unwrap_or_default(),
-    );
+    let body_hash =
+        crate::api::idempotency::hash_body(&serde_json::to_string(&req).unwrap_or_default());
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -984,18 +974,17 @@ pub async fn breach_report(
     }))
 }
 
-#[tracing::instrument(skip(state, headers, req), fields(account_id = ?req.account_id, endpoint = "/v1/evaluate-order", symbol = ?req.symbol, side = ?req.side))]
+#[tracing::instrument(skip(_state, headers, req), fields(account_id = ?req.account_id, endpoint = "/v1/evaluate-order", symbol = ?req.symbol, side = ?req.side))]
 pub async fn evaluate_order(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Json(req): Json<EvaluateOrderRequest>,
 ) -> Result<Json<EvaluateOrderResponse>, (StatusCode, String)> {
     let _latency = LatencyScope::start("/v1/evaluate-order");
     let tenant_id = extract_tenant_id(&headers)?;
     // Hash the canonical request body up front (before any field moves).
-    let body_hash = crate::api::idempotency::hash_body(
-        &serde_json::to_string(&req).unwrap_or_default(),
-    );
+    let body_hash =
+        crate::api::idempotency::hash_body(&serde_json::to_string(&req).unwrap_or_default());
     let account_id = AccountId::from_uuid(
         Uuid::from_str(&req.account_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
@@ -1113,9 +1102,9 @@ pub async fn evaluate_order(
 /// engine resolves to its tenant via the audit row). The platform
 /// backend is trusted to set the correct `tenant_id` for the
 /// authenticated caller.
-#[tracing::instrument(skip(state, headers, q), fields(endpoint = "/internal/v1/audit-log"))]
+#[tracing::instrument(skip(_state, headers, q), fields(endpoint = "/internal/v1/audit-log"))]
 pub async fn audit_log(
-    State(state): State<SharedState>,
+    State(_state): State<SharedState>,
     headers: HeaderMap,
     Query(q): Query<AuditLogQuery>,
 ) -> Result<Json<AuditLogResponse>, (StatusCode, String)> {

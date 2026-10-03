@@ -188,13 +188,12 @@ impl Rule for MaxDrawdownRule {
         };
         let (floor, reference_for_breach_msg) = match basis {
             crate::config::plan::LossReference::Static => {
-                let floor = ctx.account.initial_balance.0
-                    - (plan_pct * ctx.account.initial_balance.0);
+                let floor =
+                    ctx.account.initial_balance.0 - (plan_pct * ctx.account.initial_balance.0);
                 (Money(floor), ctx.account.initial_balance)
             }
             crate::config::plan::LossReference::Trailing => {
-                let floor =
-                    ctx.account.peak_balance.0 - (plan_pct * ctx.account.peak_balance.0);
+                let floor = ctx.account.peak_balance.0 - (plan_pct * ctx.account.peak_balance.0);
                 (Money(floor), ctx.account.peak_balance)
             }
             crate::config::plan::LossReference::EodTrailing => {

@@ -105,11 +105,6 @@ tokio = { version = "1", features = ["full"], optional = true }
 tokio-util = { version = "0.7", optional = true }
 
 # Durable persistence
-sqlx = { version = "0.7", optional = true, default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "migrate", "macros"] }
-redis = { version = "0.27", optional = true, features = ["tokio-comp", "connection-manager", "cluster-async", "streams"] }
-# bb8-redis for true cluster pooling (replaces tokio::sync::Mutex<ClusterConnection>).
-bb8 = { version = "0.9", optional = true }
-bb8-redis = { version = "0.18", optional = true }
 
 # TLS termination
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
