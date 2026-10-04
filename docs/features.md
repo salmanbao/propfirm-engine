@@ -84,7 +84,7 @@ Each `RuleEntry` in a pack can override:
 - `priority` — arbitration priority.
 - `enabled` — whether the rule is active in this pack.
 
-## Architectural correctness properties
+## Architectural correctness properties (D81 Stateless Design)
 
 - **Broker-is-truth equity** — the engine never recomputes equity from positions + quote. `EquityInput::BrokerReported` vs `EquityInput::Estimated` is a type-level distinction; breach-capable rules refuse to terminate on an estimate.
 - **Stateless pure evaluate** — `pure::evaluate(state, pack, tick) -> PureVerdict` produces an `input_hash` (sha256) so any past verdict can be recomputed byte-for-byte from its recorded inputs.
@@ -92,15 +92,16 @@ Each `RuleEntry` in a pack can override:
 - **Tenant isolation** — `TenantId` threaded through `Account`, `ChallengePlan`, `Violation`, `RulePack`. The `X-Tenant-Id` header is required on every request (`/internal/v1/*` and `/v1/*`); a mismatch between the header and the `account_state.tenant_id` returns 403. Cross-tenant reads are never a storage concern.
 - **Stale & out-of-order tick guard** — ticks older than 10 minutes (configurable) or older than the last-evaluated tick are rejected with `Error::TickRejected` before evaluation runs.
 - **Decimal precision** — all monetary values use `rust_decimal::Decimal`; no floating-point drift on money.
-- **Panic safety** — the registry wraps each rule evaluation in `catch_unwind`. A panicking rule degrades to a `Warn` verdict; the process stays alive. The panic hook routes the message to `tracing::error` (and an `audit_log` write on the worker).
+- **Panic safety** — the registry wraps each rule evaluation in `catch_unwind`. A panicking rule degrades to a `Warn` verdict; the process stays alive. The panic hook routes the message to `tracing::error`.
+- **Persistence Platform Responsibility** — The engine emits `DomainEvent` objects and returns updated `account_state`. The platform handles idempotency, event storage, state storage, and audit trail.
 
 ## Operational controls
 
-- **Manual override** — `Override` record (`clears_violation_id`, `reason`, `actor_id`, `at`) clears a false-positive breach without deleting the original verdict. State machine: `Failed` / `EmergencyStopped` → `Active`. Writes to `audit_log` with `action='override_breach'`.
-- **Emergency stop** — `PipelineEvent::EmergencyStop { reason, actor_id, at }` short-circuits normal rule evaluation and forces `DecisionKind::Emergency`. Beats every other verdict, including `Liquidate`. Writes to `audit_log` with `action='emergency_stop'`.
+- **Manual override** — `Override` record (`clears_violation_id`, `reason`, `actor_id`, `at`) clears a false-positive breach without deleting the original verdict. State machine: `Failed` / `EmergencyStopped` → `Active`. Emitted as domain event for platform persistence.
+- **Emergency stop** — `PipelineEvent::EmergencyStop { reason, actor_id, at }` short-circuits normal rule evaluation and forces `DecisionKind::Emergency`. Beats every other verdict, including `Liquidate`. Emitted as domain event for platform persistence.
 - **Early-warning threshold** — first-class `RuleVerdict::EarlyWarning` (ops-paged) distinct from trader-facing `Warn`. Emitted at 80% of breach threshold on every breach-capable rule.
-- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are emitted as domain events alongside the original verdict, returned to the caller on `PipelineResult.events` for persistence.
-- **Idempotency** — all mutating HTTP endpoints accept an `Idempotency-Key` header. The server tracks the last N keys per endpoint to deduplicate retries. Outcomes (`fresh` / `replay` / `conflict` / `error`) are emitted as the `propfirm_idempotency_outcomes_total` Prometheus counter.
+- **Override + emergency audit trail** — both record full metadata (`actor_id`, `reason`, `at`) and are emitted as domain events alongside the original verdict, returned to the caller on `PipelineResult.events` for platform persistence.
+- **Idempotency** — all mutating HTTP endpoints accept an `Idempotency-Key` header. Idempotency handling is the platform's responsibility before calling the engine.
 
 ## Risk analytics
 
@@ -119,28 +120,6 @@ The engine includes a risk module that computes quantitative metrics from accoun
 - Expected Shortfall
 - Exposure analytics (gross/net/long/short, per-symbol concentration)
 
-## Persistence
-
-Account persistence was removed by ADR-11: `/internal/v1/evaluate` receives `account_state` in the request and returns the updated state in the response; persisting it is the caller's responsibility. What remains is a layered persistence stack:
-
-| Layer | Implementations | Use |
-|---|---|---|
-| **Event store** | `events::store::InMemoryEventStore` (dev), `persistence::postgres::PostgresEventStore` (prod) | Append-only domain-event log; `replay(account_id)` rebuilds account state. |
-| **Idempotency backend** | `api::idempotency::IdempotencyStore` (memory), `persistence::postgres::PostgresIdempotencyBackend`, `persistence::redis_store::RedisIdempotencyBackend` | Dedupes mutating HTTP retries. |
-| **Audit log** | `api::audit_log` → Postgres `audit_log` table | Who-did-what-when for sensitive operations. |
-| **Event bus** | `persistence::redis_store::event_bus::RedisEventBus` | Redis Streams at-least-once delivery for the worker. |
-| **Rule pack store** | Postgres `rule_packs` table | Versioned pack lifecycle (Draft → Active → Superseded). |
-
-The `server` cargo feature pulls `sqlx` (Postgres), `redis`, `bb8`,
-`bb8-redis`, `rustls`, `metrics-exporter-prometheus`, `figment`, and
-`dotenvy` — the full production stack is compiled in whenever the
-server feature is on.
-
-The `in-memory-store` cargo feature is vestigial (kept so existing
-build commands keep working); it gates nothing in v0.2.0.
-
-See `docs/persistence.md` for the schema and per-backend semantics.
-
 ## HTTP API
 
 Optional `axum`-based server exposing REST endpoints for account
@@ -155,7 +134,7 @@ details.
 |---|---|---|
 | `default` | `serialization` + `in-memory-store` | Library-only embedding (no server). |
 | `serialization` | `serde`, `serde_json`, `chrono/serde` | JSON config + request/response payloads. |
-| `server` | `axum`, `axum-server`, `tower`, `tower-http`, `tokio`, `tracing`, `tracing-subscriber`, `sqlx`, `redis`, `bb8`, `bb8-redis`, `rustls`, `rustls-pemfile`, `metrics`, `metrics-exporter-prometheus`, `prometheus`, `figment`, `dotenvy`, `tokio-util` | HTTP server + worker + durable persistence + TLS + metrics. |
+| `server` | `axum`, `axum-server`, `tower`, `tower-http`, `tokio`, `tracing`, `tracing-subscriber`, `rustls`, `rustls-pemfile`, `metrics`, `metrics-exporter-prometheus`, `prometheus`, `figment`, `dotenvy`, `tokio-util` | HTTP server (no worker or persistence dependencies). |
 | `otel` | `tracing-opentelemetry`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `opentelemetry-stdout` | OpenTelemetry OTLP exporter (gRPC/HTTP). Enable in production builds. |
 | `flame` | `tracing-flame` | Flame-graph profiling output to `observability.flame_output_path`. Enable for one-off perf investigations. |
 | `openapi` | `utoipa`, `utoipa-swagger-ui` | Serves `GET /openapi.json` + `GET /swagger-ui/`. |
@@ -170,10 +149,7 @@ details.
 propfirm-engine = { features = ["server", "otel", "openapi"] }
 ```
 
-This pulls in: HTTP server + worker + durable persistence + TLS + mTLS
-+ Prometheus metrics + OpenTelemetry OTLP + Swagger UI. Skip `otel`
-when you don't need distributed tracing; skip `openapi` when you
-don't need the spec served at runtime.
+This pulls in: HTTP server + TLS + mTLS + Prometheus metrics + OpenTelemetry OTLP + Swagger UI. Skip `otel` when you don't need distributed tracing; skip `openapi` when you don't need the spec served at runtime.
 
 ### Profiling feature set
 
@@ -196,9 +172,7 @@ All four observability pillars are wired and production-ready (see
 2. **Prometheus metrics** — every handler emits
    `propfirm_http_requests_total`, `propfirm_evaluate_decisions_total`,
    `propfirm_idempotency_outcomes_total`, `propfirm_errors_total`, and
-   `propfirm_request_duration_seconds` (via `LatencyScope`); the worker
-   emits `propfirm_event_bus_messages_consumed_total`, `_produced_total`,
-   `_acked_total`, `_claimed_total`, and `_errors_total`.
+   `propfirm_request_duration_seconds` (via `LatencyScope`).
 3. **Panic hook** — routes panics through `tracing::error`.
 4. **OpenTelemetry OTLP exporter** (when `otel` feature is enabled) —
    gRPC/HTTP transport to Tempo / Jaeger / Honeycomb / etc.
@@ -207,38 +181,11 @@ A prebuilt Grafana dashboard ships at
 `deploy/helm/dashboards/propfirm-overview.json` and 9 alerting rules
 across 4 groups ship at `deploy/helm/alertrules/propfirm-engine.yaml`.
 
-## Worker subcommands
-
-The `propfirm-worker` binary supports five subcommands in addition to
-the default consumer loop:
-
-| Subcommand | Description |
-|---|---|
-| `healthcheck` | Connect to Redis + Postgres, verify stream group exists, exit 0/1. |
-| `metrics` | Dump accumulated worker metrics + exit. |
-| `status` | Print PEL stats + consumer list for the request stream. |
-| `drain [idle_secs]` | XACK all PEL entries idle > `idle_secs` (default 60s). |
-| `reset-group` | Delete + recreate the consumer group. |
-
-```bash
-# Default: run the consumer loop
-propfirm-worker
-
-# Healthcheck (useful for k8s liveness probes)
-propfirm-worker healthcheck
-
-# Drain a stuck PEL
-propfirm-worker drain 120
-
-# Recreate the consumer group (after a Redis flush)
-propfirm-worker reset-group
-```
-
 ## CLI subcommands
 
 The `propfirm-cli` binary supports:
 
-- Default (no args): built-in end-to-end demo (start → order → tick → risk metrics).
+- Default (no args): built-in end-to-ndemo (start → order → tick → risk metrics).
 - `repl`: interactive REPL — paste JSON request bodies, get verdicts.
   - `-j` / `--json`: machine-readable JSON output (for `jq` piping).
   - `-f FILE`: read JSON requests from FILE (one per line) in batch mode.

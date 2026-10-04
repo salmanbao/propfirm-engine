@@ -2,27 +2,28 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Prop Firm Risk & Rule Evaluation Engine",
+    "title": "Prop Firm Risk & Rule Evaluation Engine (D81)",
     "quality_profile": "showcase",
     "views": [
       {
-        "id": "runtime-path",
-        "label": "Runtime Path",
-        "focus": ["external", "api", "auth", "pipeline", "evaluator", "rules", "event_store"],
-        "note": "Request to evaluation to persistence"
+        "id": "stateless-eval",
+        "label": "Stateless Evaluation Flow",
+        "focus": ["api", "pipeline", "evaluator", "rules"],
+        "note": "Request → Pipeline → Rule Evaluation → Response (no server-side state)"
       },
       {
-        "id": "stateless-contract",
-        "label": "Stateless Contract",
-        "focus": ["api", "pipeline", "evaluator"],
-        "note": "No server-side account persistence"
+        "id": "audit-boundary",
+        "label": "Audit Boundary",
+        "focus": ["api", "event_store", "platform_aud"],
+        "note": "Engine emits events, platform AUD owns audit trail"
       }
     ],
     "legend": {
       "mode": "auto",
       "entries": {
         "security": { "label": "Auth & Isolation", "visible": true },
-        "database": { "label": "State & Audit", "visible": true }
+        "database": { "label": "Event Store (append-only)", "visible": true },
+        "external": { "label": "Platform Interface", "visible": true }
       }
     }
   },
@@ -35,32 +36,30 @@
     "cellH": 80
   },
   "components": [
-    { "id": "external", "type": "external", "label": "Platform Bridge", "sublabel": "LCC / trading gateway", "row": 1, "col": 0 },
-    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "axum HTTP", "row": 1, "col": 1 },
+    { "id": "platform", "type": "external", "label": "Platform", "sublabel": "LCC / trading systems", "row": 1, "col": 0 },
+    { "id": "api", "type": "backend", "label": "API Server", "sublabel": "axum HTTP (stateless)", "row": 1, "col": 1 },
     { "id": "pipeline", "type": "backend", "label": "Pipeline", "sublabel": "event orchestrator", "row": 1, "col": 2 },
-    { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only replay", "row": 1, "col": 3 },
-    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "service bearer + tenant", "row": 0, "col": 1, "tag": "Compliance" },
     { "id": "evaluator", "type": "backend", "label": "Evaluator", "sublabel": "pure rule execution", "row": 0, "col": 2 },
-    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "25 pack-driven rules", "row": 0, "col": 3 },
-    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "idempotency + event bus", "row": 2, "col": 1 },
+    { "id": "rules", "type": "backend", "label": "Rule Registry", "sublabel": "25+ pack-driven rules", "row": 0, "col": 3 },
+    { "id": "event_store", "type": "database", "label": "Event Store", "sublabel": "append-only audit", "row": 2, "col": 1 },
+    { "id": "platform_aud", "type": "external", "label": "Platform AUD", "sublabel": "owns audit trail", "row": 2, "col": 2 },
     { "id": "notifications", "type": "messagebus", "label": "Notifier", "sublabel": "webhook / log", "row": 2, "col": 3 }
   ],
   "boundaries": [
-    { "kind": "region", "label": "Engine crate", "wraps": ["api", "auth", "pipeline", "evaluator", "rules", "event_store", "notifications"], "pad": 16 }
+    { "kind": "region", "label": "Prop Firm Engine", "wraps": ["api", "pipeline", "evaluator", "rules"], "pad": 16 }
   ],
   "connections": [
-    { "id": "caller-to-api", "from": "external", "to": "api", "label": "HTTP", "variant": "emphasis", "labelAt": [110, 274] },
-    { "id": "auth-gate", "from": "auth", "to": "api", "label": "verify bearer + tenant", "variant": "security", "labelAt": [285, 150] },
+    { "id": "platform-to-api", "from": "platform", "to": "api", "label": "HTTP Request/Response", "variant": "emphasis", "labelAt": [110, 274] },
     { "id": "api-to-pipeline", "from": "api", "to": "pipeline", "label": "PipelineEvent", "variant": "default", "labelAt": [310, 310] },
     { "id": "pipeline-to-evaluator", "from": "pipeline", "to": "evaluator", "label": "RuleContext", "variant": "emphasis" },
     { "id": "evaluator-to-rules", "from": "evaluator", "to": "rules", "label": "evaluate", "variant": "default", "labelAt": [555, 154] },
-    { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "append/replay", "variant": "dashed", "labelAt": [555, 186] },
-    { "id": "pipeline-to-redis", "from": "pipeline", "to": "redis", "label": "event bus", "variant": "dashed", "labelAt": [330, 390] },
-    { "id": "pipeline-to-notifications", "from": "pipeline", "to": "notifications", "label": "notify", "variant": "security", "labelAt": [700, 394] }
+    { "id": "pipeline-to-event-store", "from": "pipeline", "to": "event_store", "label": "DomainEvent", "variant": "dashed", "labelAt": [555, 186] },
+    { "id": "event-store-to-platform", "from": "event_store", "to": "platform_aud", "label": "replayed by", "variant": "dashed", "labelAt": [400, 186] },
+    { "id": "pipeline-to-notifications", "from": "pipeline", "to": "notifications", "label": "notify violations", "variant": "security", "labelAt": [700, 394] }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Core Modules", "items": ["core: Account, Position, Trade, Tick, Violation", "config: ChallengePlan and presets", "rules: Rule trait, registry, 25 evaluators"] },
-    { "dot": "emerald", "title": "Evaluation Path", "items": ["Pipeline applies events and builds RuleContext", "Evaluator runs pure rule evaluation", "input_hash enables byte-for-byte replay"] },
-    { "dot": "rose", "title": "Statelessness", "items": ["No server-side account store (ADR-11)", "account_state in/out via request/response", "EventStore is audit/replay only"] }
+    { "dot": "cyan", "title": "D81 Stateless Design", "items": ["No server-side account store (ADR-11)", "account_state flows in/out via request/response", "EventStore is audit/replay only"] },
+    { "dot": "emerald", "title": "Core Evaluation", "items": ["Pipeline applies events and builds RuleContext", "Evaluator runs pure rule evaluation", "input_hash enables byte-for-byte replay"] },
+    { "dot": "rose", "title": "Audit Separation", "items": ["Engine emits DomainEvent to Event Store", "Platform AUD replays events to build audit trail", "Engine has no DB connection (D81/I-25)"] }
   ]
 }

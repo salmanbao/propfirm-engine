@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "lifecycle",
   "meta": {
-    "title": "Account Lifecycle",
+    "title": "Account Lifecycle (D81)",
     "output": "lifecycle-account.html",
     "quality_profile": "showcase"
   },

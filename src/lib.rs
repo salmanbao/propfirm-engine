@@ -42,8 +42,8 @@
 //! 8. **Reporting** ([`reporting`]) – builds structured [`PerformanceReport`]
 //!    summaries combining rule status and risk metrics.
 //!
-//! 9. **API** ([`api`]) – an optional `axum`-based HTTP server exposing
-//!     REST endpoints for account evaluation.
+//! 9. **API** (`api`) – an optional `axum`-based HTTP server exposing REST endpoints for account evaluation.
+//!
 //!
 //! ## Example
 //!

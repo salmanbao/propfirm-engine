@@ -1,18 +1,21 @@
-# Integration guide
+# Integration Guide (D81 Stateless Design)
+
+**Important**: As of v0.2.0, the propfirm-engine follows the D81 stateless compute service design.
+The engine is a pure function that transforms inputs to outputs without retaining any server-side state.
+All persistence concerns (idempotency, event storage, audit trail, state storage) are handled by the platform.
 
 This guide shows how to embed the prop firm engine in a Rust service, run evaluations, carry account state in and out (ADR-11), and hook into the HTTP API.
 
 **Version: 0.2.0** — the engine is released as an **internal component**
 of the Prop Firm as a Service Platform. There is no in-process
 authentication: the engine is reached only from the platform backend
-over the private compose network (HTTP) or the centralized Redis event
-bus (worker). Trust is established at the network boundary, optionally
+over the private compose network (HTTP). Trust is established at the network boundary, optionally
 strengthened with mTLS (see `docs/tls.md`).
 
 ## Prerequisites
 
 - Rust 1.70+ (2021 edition)
-- (For the server / worker) Postgres 14+ and Redis 6.2+
+- (For the server) No external dependencies required - persistence is platform responsibility
 
 ## Adding the dependency
 
@@ -34,13 +37,15 @@ propfirm-engine = "0.2"
 |---------|-------------|
 | `default` | Enables `serialization` + `in-memory-store`. |
 | `serialization` | Enables `serde`/`serde_json`/`chrono/serde` for JSON config and request/response payloads. |
-| `server` | Enables the `axum` HTTP server, the `propfirm-worker` binary, durable persistence (`sqlx` + `redis` + `bb8` + `bb8-redis`), `rustls` TLS, `metrics-exporter-prometheus`, `figment` config loading, `dotenvy`. |
+| `server` | Enables the `axum` HTTP server, `rustls` TLS, `metrics-exporter-prometheus`, `figment` config loading, `dotenvy`. |
 | `otel` | Enables `tracing-opentelemetry` + `opentelemetry-otlp` (gRPC/HTTP) for exporting spans to a collector. |
 | `flame` | Enables `tracing-flame` for flame-graph profiling (writes a trace to `observability.flame_output_path`). |
 | `openapi` | Enables `utoipa` + `utoipa-swagger-ui`; serves `GET /openapi.json` + `GET /swagger-ui/`. |
 | `tracing` | Enables `tracing`/`tracing-subscriber` for structured logging. |
 | `tokio-cli` | Enables the `propfirm-cli` binary (tokio runtime). |
 | `in-memory-store` | Vestigial (kept so existing build commands keep working); gates nothing in v0.2.0. |
+
+**Note**: The `server` feature no longer includes persistence dependencies (`sqlx`, `redis`, `bb8`, `bb8-redis`) as persistence is now platform responsibility.
 
 For a typical embedded use (no HTTP server):
 
@@ -73,8 +78,8 @@ async fn main() -> anyhow::Result<()> {
     let account = Account::new(AccountId::new(), plan.clone())
         .with_tenant(TenantId::named("my-firm"));
 
-    // 2. Build the evaluator and pipeline (no store — domain events come
-    //    back on PipelineResult.events for you to persist if you wish).
+    // 2. Build the evaluator and pipeline (domain events come back on
+    //    PipelineResult.events for you to persist if you wish).
     let evaluator = Evaluator::new(&plan);
     let mut pipeline = Pipeline::new(evaluator, LogNotifier::new());
     let now = chrono::Utc::now();
@@ -169,25 +174,25 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-## Persistence
+## Persistence (Platform Responsibility)
 
-Account persistence lives with the caller (ADR-11): `/internal/v1/evaluate` receives `account_state` and returns the updated state; storing it between calls is your responsibility. What the engine keeps:
+Account persistence lives with the **platform** (ADR-11): the engine receives `account_state` and returns the updated state; storing it between calls is the platform's responsibility. The engine emits `DomainEvent` objects that the platform must persist and process.
 
-- **Event store** — `events::store::EventStore` (async trait: `append`, `all`, `recent`, `replay`). Two implementations:
-  - `events::store::InMemoryEventStore` — the dev / in-memory default.
-  - `persistence::postgres::PostgresEventStore` — durable, append-only, backs the `events` table.
-  This is the read-side seam behind breach-report and override replay.
-- **Idempotency store** — three implementations behind the `IdempotencyBackend` trait:
-  - `api::idempotency::IdempotencyStore` — in-memory (dev).
-  - `persistence::postgres::PostgresIdempotencyBackend` — durable, atomic `INSERT ... ON CONFLICT DO NOTHING`.
-  - `persistence::redis_store::RedisIdempotencyBackend` — atomic Lua-script check-and-remember.
-  Backs the `Idempotency-Key` header on `POST /internal/v1/evaluate`.
-- **Audit log** — `api::audit_log` writes to the `audit_log` Postgres table from override / emergency-stop / manual-run / breach-report / evaluate-order / evaluate-internal non-Pass / worker evaluate+error paths.
-- **Event bus** — `persistence::redis_store::event_bus::RedisEventBus` for the worker binary's Redis Streams consumer.
+### What the Engine Provides
+- **Stateless Evaluation**: Pure function with no retained state between calls
+- **Domain Events**: Emits `DomainEvent` objects in `PipelineResult.events` for platform persistence
+- **Updated State**: Returns modified `account_state` in `PipelineResult.account` for platform storage
+- **Input Hashing**: `PureVerdict.input_hash` enables byte-for-byte replay verification
+- **Optimistic Concurrency**: `Account.version` in `account_state` hashed into `input_hash` enables stale replay detection
 
-The `server` cargo feature pulls `sqlx` (Postgres), `redis`, `bb8`, and `bb8-redis` — the durable backends are compiled in whenever the server feature is on. There is no separate `postgres` cargo feature.
+### What the Platform Must Handle
+- **Idempotency**: Deduplicate requests before calling the engine
+- **State Storage**: Store and version `account_state` between engine evaluations
+- **Event Storage**: Persist and process `DomainEvent` emissions from the engine
+- **Audit Trail**: Build audit log by replaying engine-emitted events
+- **Replay Capability**: Reconstruct account state from event log
 
-There is no `AccountStore` and no `put_with_version`. For your own optimistic-concurrency layer, carry `Account.version` inside `account_state`: it is hashed into every verdict's `input_hash`, so replaying a stale state is detectable (`Error::StateConflict` is retained as the typed error for that purpose).
+There is no built-in event store, idempotency store, audit log, or event bus in the engine. These are all platform responsibilities.
 
 ## HTTP API
 
@@ -207,9 +212,7 @@ async fn main() -> anyhow::Result<()> {
 
 `run_server(settings: Settings)` takes a fully-built `Settings` struct
 (loaded via `Settings::load()` from `config/propfirm.toml` + `PROPFIRM_*`
-env vars + `.env`), wires up the idempotency backend, runs Postgres
-migrations when `postgres.run_migrations = true`, builds the axum
-router, optionally installs TLS / mTLS, and serves with graceful shutdown.
+env vars + `.env`), wires up the axum router, optionally installs TLS / mTLS, and serves with graceful shutdown.
 
 There is **no authentication**. The engine is internal-only; trust is
 established at the network boundary (private compose network, k8s
@@ -330,6 +333,60 @@ impl Notifier for WebhookNotifier {
 }
 ```
 
+## Evaluation Flow (D81)
+
+When integrating with the engine, the platform follows this flow:
+
+```
+Platform → Engine → Platform
+  │         │         │
+  │         ▼         │
+  │   Evaluate    │
+  │         │         │
+  ▼         ▼         ▼
+Request → [Engine] → Response
+  │         │         │
+  │  account_state    │
+  │   (from storage)  │
+  │         │         │
+  │         ▼         │
+  │   RuleContext     │
+  │         │         │
+  │         ▼         │
+  │   Pure Evaluation │
+  │         │         │
+  │         ▼         │
+  │   Decision +      │
+  │   Updated State   │
+  │         │         │
+  │         ▼         │
+  │   DomainEvents    │
+  │         │         │
+  ▼         ▼         ▼
+Response ← [Engine] ← Events
+  │         │         │
+  │  account_state    │
+  │   (to storage)    │
+  │         │         │
+  ▼         ▼         ▼
+Storage ← Platform → Message Broker
+  │         │         │
+  │  Store state    │  Emit events
+  │  Handle idempotency  to platform consumers
+  │  Build audit trail   │
+  ▼         ▼         ▼
+```
+
+**Details**:
+1. Platform retrieves current `account_state` from its storage
+2. Platform builds `RuleContext` from the `account_state` and incoming event data
+3. Platform calls engine evaluation function (`evaluate_internal`, `evaluate_order`, etc.)
+4. Engine returns:
+   - Updated `account_state` (platform stores this)
+   - `DomainEvent` objects (platform persists and processes these)
+   - Evaluation result (for immediate response to caller)
+5. Platform acknowledges completion to any message broker (if using queues)
+
 ## Testing
 
 Run the full test suite:
@@ -343,27 +400,13 @@ Run specific test files:
 ```bash
 cargo test --features serialization,in-memory-store --test property_tests
 cargo test --features server --test api_integration
-cargo test --features server --test event_bus_integration
 ```
 
 Run benchmarks (the benchmark harness requires the `server` feature for
-the `IdempotencyStore` + `RuleRegistry` types it exercises):
+the `RuleRegistry` types it exercises):
 
 ```bash
 cargo bench --features server
-```
-
-Run chaos tests (require a live Redis — `#[ignore]` by default):
-
-```bash
-cargo test --features server --test chaos_redis -- --ignored
-```
-
-Run the OTLP end-to-end test (requires a live OTLP collector —
-`#[ignore]` by default):
-
-```bash
-cargo test --features server,otel --test otlp_e2e -- --ignored
 ```
 
 Run fuzz targets (nightly only, via `cargo +nightly fuzz`):
@@ -383,10 +426,64 @@ All fallible operations return `propfirm::Result<T>`. The error type is
 - `Error::RuleNotApplicable(rule_id, ctx_kind)` — a rule was attempted on an unsupported context kind.
 - `Error::NumericConversion(msg)` — a numeric conversion could not be performed safely (e.g. `Decimal` → `i64` overflow when serializing cents).
 - `Error::NotFound(msg)` — entity not found in storage.
-- `Error::Persistence(msg)` — storage failure (event store, idempotency backend, audit-log write).
+- `Error::Persistence(msg)` — storage failure (platform responsibility when calling engine).
 - `Error::Serialization(msg)` — JSON / serde error.
 - `Error::InvalidState(msg)` — a logical precondition was violated (e.g. applying `TradeFilled` to a `Pending` account).
 - `Error::RuleEval(msg)` — a user-supplied rule produced an error.
-- `Error::StateConflict(id, expected, actual)` — optimistic concurrency violation; retained for caller-side use (ADR-11: the stateless contract never produces it).
+- `Error::StateConflict(id, expected, actual)` — optimistic concurrency violation; retained for caller-side use (ADR-11: the stateless contract uses this for stale replay detection).
 - `Error::TickRejected(reason)` — stale or out-of-order tick.
 - `Error::MissingMetric(name)` — a required metric was unavailable for evaluation (distinct from a clean Pass — the verdict should be "ok-with-data-gap" rather than "ok").
+
+## Platform Integration Example (Conceptual)
+
+```rust
+// Platform integration pseudocode
+struct PropFirmPlatform {
+    account_store: Box<dyn AccountStore>,
+    event_store: Box<dyn EventStore>,
+    idempotency_store: Box<dyn IdempotencyStore>,
+}
+
+impl PropFirmPlatform {
+    async fn handle_evaluate_request(
+        &self,
+        request: EvaluateRequest,
+    ) -> Result<EvaluateResponse, Error> {
+        // 1. Idempotency check (platform responsibility)
+        let idempotency_key = request.idempotency_key.clone();
+        if let Some(cached_response) = self.idempotency_store.get(&idempotency_key)? {
+            return Ok(cached_response);
+        }
+
+        // 2. Retrieve current account state (platform responsibility)
+        let mut account = self.account_store.get(request.account_id)?;
+
+        // 3. Build RuleContext from account state and request data
+        let rule_context = RuleContext::from_account_and_request(&account, &request);
+
+        // 4. Call engine for pure evaluation
+        let pipeline_result = self.engine_pipeline
+            .process(account.clone(), PipelineEvent::from_request(&request))
+            .await?;
+
+        // 5. Persist updated account state (platform responsibility)
+        self.account_store.save(pipeline_result.account)?;
+
+        // 6. Persist domain events (platform responsibility)
+        for event in pipeline_result.events {
+            self.event_store.append(event)?;
+        }
+
+        // 7. Cache response for idempotency (platform responsibility)
+        let response = EvaluateResponse {
+            account_state: pipeline_result.account,
+            decision: pipeline_result.snapshot.decision,
+            events: pipeline_result.events,
+            input_hash: pipeline_result.pure_verdict.map(|v| v.input_hash),
+        };
+        self.idempotency_store.set(&idempotency_key, &response)?;
+
+        Ok(response)
+    }
+}
+```

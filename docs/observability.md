@@ -2,7 +2,7 @@
 
 D81: the engine is a stateless compute service — no database, no Redis,
 no worker. Observability covers the HTTP server only. The platform's
-`workers` consumer has its own observability stack.
+event processing system has its own observability stack.
 
 ## Logging
 
@@ -23,7 +23,7 @@ panic_hook = true
 
 | Level | What you see |
 |-------|-------------|
-| `error` | Rule evaluation failures, panic hook catches, audit log failures (no-op D81) |
+| `error` | Rule evaluation failures, panic hook catches |
 | `warn` | Idempotency conflicts, NOSCRIPT reloads, stateless-engine startup warnings |
 | `info` | Server startup, per-request `http` span, evaluate verdicts for non-Pass decisions |
 | `debug` | Per-handler decision logs, idempotency hits/misses, floor hint computation |
@@ -85,8 +85,9 @@ Every handler also has `#[tracing::instrument]` for per-handler spans.
 The evaluate response includes `hints.floor_daily_cents`,
 `hints.floor_total_cents`, `hints.target_equity_cents`,
 `hints.floors_version`. These are advisory (I-27: the engine never
-reads them back). The platform's `workers` consumer persists them into
-`evaluation_state.floor_*` and publishes `evl.floors` on Redis pub/sub.
+reads them back). **The platform's event processing system persists them**
+into `evaluation_state.floor_*` and may publish them via its preferred
+mechanism (e.g., Redis pub/sub, database, or message queue).
 
 ## Panic safety
 
@@ -105,3 +106,15 @@ buggy rule degrades to `Warn` instead of crashing the process.
 | `GET /health` | Liveness probe — always returns `ok` |
 | `GET /ready` | Readiness probe — verifies the in-memory idempotency backend is wired. D81: no DB dependency check (there is no DB). |
 | `GET /metrics` | Prometheus scrape target |
+
+## Platform Observability Responsibilities
+
+While this document covers engine observability, the platform is responsible for:
+
+1. **Event Processing Observability**: Monitoring the consumption and processing of `DomainEvent` objects emitted by the engine
+2. **Storage Observability**: Monitoring account state storage, idempotency stores, and event stores
+3. **Audit Trail Observability**: Monitoring the completeness and correctness of the audit trail built from engine events
+4. **End-to-end Latency**: Measuring total time from request receipt to response emission including platform processing
+5. **Platform-specific Metrics**: Idempotency outcomes, event processing lag, storage performance, etc.
+
+The engine focuses on evaluation correctness and emits sufficient events for the platform to build a complete observability picture.

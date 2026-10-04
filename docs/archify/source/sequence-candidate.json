@@ -2,11 +2,11 @@
   "schema_version": 1,
   "diagram_type": "sequence",
   "meta": {
-    "title": "Evaluate Order Sequence",
+    "title": "Evaluate Order Sequence (D81)",
     "output": "sequence-evaluate-order.html",
     "viewBox": [
-      1320,
-      620
+      1200,
+      650
     ],
     "column_fit": "spread",
     "quality_profile": "showcase",
@@ -80,7 +80,7 @@
     },
     {
       "from": 400,
-      "to": 560,
+      "to": 550,
       "label": "Response"
     }
   ],
